@@ -1,0 +1,108 @@
+---
+title: Workers and caching
+description: Run generators on a pool of Web Workers with makeGeneratorPool and serveGenerators, and keep generated models in IndexedDB between visits.
+---
+
+Generating models is the most expensive part of building a scene, and it is pure CPU work with no
+DOM contact, so it belongs off the thread that has to draw. `@voxolith/engine/worker` runs
+generators on a pool of Web Workers, spreads the work across cores, hands models back without
+copying, and can keep them in IndexedDB so the next visit loads instead of generating.
+
+## The worker file
+
+Functions cannot be posted across the worker boundary, so the pool sends a generator **id** and the
+worker resolves it from its own registry. Your worker file imports the generator packages it
+should offer, registers them and serves:
+
+```ts
+// gen.worker.ts
+import { registerTreeGenerators } from "@voxolith/gen-tree";
+import { registerRockGenerators } from "@voxolith/gen-rock";
+import { serveGenerators } from "@voxolith/engine/worker";
+
+registerTreeGenerators();
+registerRockGenerators();
+serveGenerators({ cache: import.meta.env.DEV ? undefined : "my-game-models" });
+```
+
+## The pool
+
+You supply `spawn`, because only your bundler can resolve a worker entry:
+
+```ts
+import { makeGeneratorPool } from "@voxolith/engine/worker";
+import { PRESETS } from "@voxolith/gen-tree";
+
+const pool = makeGeneratorPool({
+  spawn: () => new Worker(new URL("./gen.worker.ts", import.meta.url), { type: "module" }),
+});
+await pool.ready(); // every worker has registered its generators
+
+const specs = Array.from({ length: 8 }, (_, i) => ({
+  generator: "voxolith/tree.broadleaf",
+  params: PRESETS.oak,
+  seed: seed + i,
+  ctx: { voxelsPerMetre: 100 },
+}));
+const oaks = await pool.generateMany(specs, (done, total) => {
+  status.textContent = `generating ${done}/${total}${pool.cached ? ` (${pool.cached} from the cache)` : ""}`;
+});
+pool.destroy();
+```
+
+- The pool runs one worker per core less one, capped at 4 (`size` overrides). Generation is
+  memory-heavy and the main thread still needs a core to draw.
+- `generateMany` resolves in the order given, not the order they finish, and reports progress as
+  each lands. `generate(spec)` does one.
+- Sparse models come back as their bricks, transferred rather than copied.
+- `ctx` passes through to the generator, so fine models are generated on workers too.
+
+## The model cache
+
+Generation is deterministic, so a model is a pure function of its generator id and version,
+parameters, seed and context. `serveGenerators({ cache: "name" })` keeps each result in IndexedDB
+under that key, deflated, and serves it from there next time. Refined models at 100 voxels per
+metre take seconds each on a phone and a valley needs dozens, so this is the difference between a
+slow first visit and slow every visit.
+
+The key is salted with the worker's own script URL. A production build hashes that URL, so new
+generator code never reads a model the old code made, and entries from any other salt are deleted
+when the cache opens. In development the URL does not change with the code, which is why the
+example above turns the cache off under `import.meta.env.DEV`.
+
+Where there is no IndexedDB or `CompressionStream` (bun, some private windows), the cache is simply
+off and everything is generated. `openModelCache`, `packEntity` and `unpackEntity` are exported if
+you want the same storage for models of your own.
+
+## Falling back
+
+Keep a main-thread path for browsers or embeds where workers fail. The world example catches a
+failed pool and generates in place, reporting progress between models:
+
+```ts
+try {
+  await pool.ready();
+  return await pool.generateMany(specs, report);
+} catch (err) {
+  console.warn("worker generation failed, falling back to the main thread:", err);
+} finally {
+  pool.destroy();
+}
+```
+
+## Pitfalls
+
+- A generator must be registered inside the worker. Registering on the main thread does nothing
+  for the pool.
+- Specs cross the boundary by structured clone, so `params` must be plain data (presets are).
+- Keep the variant count low before reaching for more workers: the valley example generates three
+  models per species at 100 voxels per metre, not ten.
+
+## See also
+
+- [Engine: workers](/docs/engine/workers/)
+- [Using generators](/docs/manual/using-generators/) for variant pools and scales
+- API: [`makeGeneratorPool`](/docs/engine/api/worker/functions/makeGeneratorPool/),
+  [`serveGenerators`](/docs/engine/api/worker/functions/serveGenerators/),
+  [`GenerateSpec`](/docs/engine/api/worker/interfaces/GenerateSpec/),
+  [`openModelCache`](/docs/engine/api/worker/functions/openModelCache/)

@@ -1,0 +1,136 @@
+---
+title: Streaming
+description: Build a large world in chunks around the camera with makeChunkedWorld, place things deterministically with scatterRegion, and stream fine terrain.
+---
+
+Building a whole world up front makes load time grow with its size, and memory with it. A
+**chunked world** builds only what is near the camera and frees what falls behind, so what is
+resident stays bounded while the world it is cut from need not be. This page covers the chunk
+loop, placing things so that chunk order does not matter, and streaming terrain refined to 50 or
+100 voxels per metre.
+
+## Chunks around a focus point
+
+`makeChunkedWorld` splits the world into columns (a square footprint over the full height) and
+calls your `generate(ctx)` for each one it builds. You tell it where to keep the world with
+`focus(x, z, radius, keep?)`, and give it a time budget each frame with `step(ms)`.
+
+```ts
+import { makeChunkedWorld, scatterRegion } from "@voxolith/engine";
+import { generateTerrain } from "@voxolith/gen-terrain";
+
+const SIZE = { x: 2560, y: 192, z: 2560 };
+const terrain = generateTerrain({ width: SIZE.x, depth: SIZE.z, height: SIZE.y }, seed);
+const REACH = 40; // half the widest tree, so trees rooted next door are drawn too
+
+const world = makeChunkedWorld({
+  target: renderer,
+  size: SIZE,
+  chunk: 64,
+  seed,
+  generate(ctx) {
+    ctx.edit({ ...ctx.box, y1: terrain.maxY() }, (cells, ox, oy, oz) =>
+      terrain.fillBrick(cells, ox, oy, oz, terrainBase));
+    scatterRegion({ cell: 24, seed, salt: 1 },
+      ctx.box.x0 - REACH, ctx.box.z0 - REACH, ctx.box.x1 + REACH, ctx.box.z1 + REACH, (p) => {
+        if (p.x < 0 || p.z < 0 || p.x >= SIZE.x || p.z >= SIZE.z) return;
+        if (terrain.waterAt(p.x, p.z) || p.rng() < 0.6) return;
+        const v = oaks.pick(p.rng);
+        ctx.blit(v.entity.model, { x: p.x, y: terrain.heightAt(p.x, p.z) + 1, z: p.z }, oakBase, v.orientation);
+      });
+  },
+});
+
+// Every frame, from the render callback:
+const [x, , z] = orbit.target();
+world.focus(x, z, 900); // queues what is missing, nearest first; frees what is past `keep`
+if (world.pending) world.step(4); // at most 4 ms of building this frame
+```
+
+- `focus` is cheap to call every frame: it only diffs the resident set. Chunks inside `radius` are
+  queued nearest-first, so the view fills from the middle. Chunks beyond `keep` (default
+  `radius * 1.5`) are cleared; the gap stops a camera on the boundary rebuilding the same chunk.
+- `step(budgetMs)` builds queued chunks until the budget runs out and returns how many are left,
+  so you can show progress. `pending` and `resident` report the queue and the live set.
+- `ctx.edit` and `ctx.blit` are clamped to the chunk, and `ctx.rng` is seeded from the chunk
+  coordinates.
+
+To build the middle of the view before showing the page, loop on `step` with a larger budget until
+`pending` drops, yielding to the browser between steps; the world and valley examples do this.
+
+## Placement must not depend on order
+
+Chunks are built in whatever order the camera reaches them, so `generate` must be a pure function
+of the chunk: no shared counters, no global rejection sampling, no `Math.random`. Two tools make
+that easy:
+
+- `scatterRegion(opts, x0, z0, x1, z1, visit)` is a jittered grid. Each cell has one candidate
+  whose position and `rng` come from a hash of its coordinates, so any chunk can work out its own
+  candidates and its neighbours'. Draw every decision about a candidate (whether it exists, which
+  species, which variant) from `p.rng`. Use a different `salt` per layer, so trees and grass do not
+  land on the same points.
+- `ctx.blit` clips to the chunk. Offer every entity that could reach into the chunk, including ones
+  rooted next door, by widening the scatter rectangle by the largest entity's reach. Each chunk
+  then writes only its own voxels and a tree over a boundary comes out whole whichever side is
+  built first.
+
+Decide anything global (where the village goes, which pads are levelled, where the paths run) once,
+up front and deterministically, and have chunks only read it. The world example's `layout.ts` does
+this for a settlement.
+
+## Streaming fine terrain
+
+At 50 or 100 voxels per metre the ground no longer fits in memory at once, so it has to stream.
+`refineTerrain(terrain, k, { seed })` from `@voxolith/gen-terrain` is the same terrain `k` times
+finer, answered a brick at a time. The coarse heightfield stays the source of truth: levelled pads
+stay flat, the river stays put. The fine one adds a smooth surface, grass blades and pebbles, and
+only a skin of ground below the surface.
+
+Edit one box per 8 x 8 brick column, sized by `columnSpan`, and send a chunk's boxes in one
+`editMany`. Each column is then computed once for its whole stack of bricks, about 40 ms per 256²
+chunk.
+
+```ts
+const K = 10;
+const ground = refineTerrain(terrain, K, { seed });
+
+const world = makeChunkedWorld({
+  target: renderer,
+  size: { x: terrain.width * K, y: 192 * K, z: terrain.depth * K },
+  chunk: 256,
+  seed,
+  generate(ctx) {
+    const boxes = [];
+    for (let oz = ctx.box.z0; oz <= ctx.box.z1; oz += 8)
+      for (let ox = ctx.box.x0; ox <= ctx.box.x1; ox += 8) {
+        const [y0, y1] = ground.columnSpan(ox, oz);
+        boxes.push({ x0: ox, y0, z0: oz, x1: ox + 7, y1, z1: oz + 7 });
+      }
+    renderer.editMany(boxes, (cells, ox, oy, oz) => ground.fillBrick(cells, ox, oy, oz, terrainBase));
+  },
+});
+```
+
+Fine models are sparse, so the valley example draws every house, tree and rock as a static
+[instance](/docs/manual/instances/) placed once for the whole map, and streams only the ground.
+
+## Costs
+
+- The GPU cost of a 100 voxels per metre valley is a few hundred MB. The valley example defaults to
+  three model variants per species (`?variants=3`) for that reason; ten match the coarse page
+  exactly but need over a gigabyte.
+- A soft fog at the streaming radius hides the edge. The valley example adds a light haze whatever
+  the weather and keeps the zoom limit well inside it.
+- Frame time spent in `step` is frame time not spent drawing. A budget of 4 to 6 ms per frame while
+  moving keeps the view responsive.
+
+## See also
+
+- [Engine: placement and worlds](/docs/engine/placement-and-worlds/)
+- [Generators: terrain](/docs/generators/terrain/)
+- [Worlds and storage](/docs/manual/worlds-and-storage/) for `edit`, `editMany` and `clear`
+- API: [`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/),
+  [`ChunkContext`](/docs/engine/api/engine/interfaces/ChunkContext/),
+  [`scatterRegion`](/docs/engine/api/engine/functions/scatterRegion/),
+  [`refineTerrain`](/docs/generators/api/gen-terrain/functions/refineTerrain/),
+  [`FineTerrain`](/docs/generators/api/gen-terrain/interfaces/FineTerrain/)

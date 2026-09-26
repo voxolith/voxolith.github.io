@@ -1,0 +1,52 @@
+---
+title: Contributing
+description: How to set up the Voxolith workspace, run the checks and open a pull request, and the policy on AI-assisted contributions.
+---
+
+The full guide is [CONTRIBUTING.md](https://github.com/voxolith/.github/blob/main/CONTRIBUTING.md);
+this is the short version.
+
+## Setting up
+
+Voxolith is several repos that depend on each other, checked out side by side under one
+[bun](https://bun.sh) workspace:
+
+```sh
+mkdir voxolith && cd voxolith
+git clone https://github.com/voxolith/renderer
+git clone https://github.com/voxolith/engine
+git clone https://github.com/voxolith/generators
+git clone https://github.com/voxolith/examples
+```
+
+```json title="package.json"
+{
+  "name": "voxolith-workspace",
+  "private": true,
+  "workspaces": ["renderer", "engine", "generators/*", "examples"]
+}
+```
+
+```sh
+bun install
+bun run --cwd examples dev
+```
+
+## Pull requests
+
+- One topic per pull request; say what changed, why, and how you tested it (browser, OS, GPU).
+- Run the repo's checks: `typecheck`, `verify`, `build`, or `generators/contract full`.
+- For anything visual, look at it in a WebGPU browser and attach a screenshot.
+
+## AI-assisted contributions
+
+Voxolith is itself built with AI assistance: almost all of its code and documentation is drafted
+with Claude, then directed, reviewed and run by the maintainer. AI tools are welcome on the same
+terms:
+
+- you are the author, and can explain and change every line in review;
+- you ran it, and looked at anything visual;
+- you say so in the pull request, and keep any `Co-Authored-By` trailer your tool adds;
+- you stay in scope: no unrequested rewrites or generated churn.
+
+Please report security problems privately, through the repository's **Security** tab.

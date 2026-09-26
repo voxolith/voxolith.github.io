@@ -1,0 +1,143 @@
+---
+title: Project structure
+description: The files of a small Voxolith app, rendering on demand with makeFrameLoop, where assets and workers go, and building for a GitHub Pages sub-path.
+---
+
+A Voxolith app is a Vite app with one canvas. This page covers the conventions the examples and
+apps follow, so a new project starts the same way.
+
+## The files
+
+<Files>
+  <Folder name="my-game" defaultOpen>
+    <File name="index.html" />
+    <File name="package.json" />
+    <File name="tsconfig.json" />
+    <File name="vite.config.ts" />
+    <Folder name="public" defaultOpen>
+      <File name="favicon.svg" />
+      <Folder name="models" defaultOpen>
+        <File name="castle.vox" />
+      </Folder>
+    </Folder>
+    <Folder name="src" defaultOpen>
+      <File name="main.ts" />
+      <File name="style.css" />
+      <File name="gen.worker.ts" />
+    </Folder>
+  </Folder>
+</Files>
+
+| file | what goes in it |
+|---|---|
+| `index.html` | the canvas inside a `#app` element, the HUD, and `<script type="module" src="/src/main.ts">` |
+| `vite.config.ts` | `base`, HTTPS, `optimizeDeps.exclude`; see [Installation](/docs/getting-started/installation/#3-viteconfigts) |
+| `public/` | files fetched at runtime by path: `.vox` models, `.mca` regions, icons. Copied to the build as they are. |
+| `src/main.ts` | the program: `initGpu`, `createRenderer`, the frame loop |
+| `src/*.worker.ts` | optional: generators run off the main thread (see [Workers and caching](/docs/manual/workers-and-caching/)) |
+
+A page with several scenes (like the examples) lists each HTML file in
+`build.rollupOptions.input`; one page needs nothing.
+
+## Render on demand
+
+A raymarcher redraws every pixel every frame, so a scene that is not changing should not render
+at all. [`makeFrameLoop`](/docs/renderer/api/renderer/functions/makeFrameLoop/) only schedules a
+frame when asked:
+
+```ts title="src/main.ts"
+import { createRenderer, initGpu, makeCamera, makeFrameLoop, observeResize, resizeToDisplay } from "@voxolith/renderer";
+import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+
+const canvas = document.getElementById("scene") as HTMLCanvasElement;
+const gpu = await initGpu(canvas);
+const size = { x: 64, y: 32, z: 64 };
+const renderer = await createRenderer(gpu, { size, data: new Uint8Array(size.x * size.y * size.z), palette: new Float32Array(256 * 4) });
+
+const camera = makeCamera({ target: [32, 8, 32], distance: 160, pitchDeg: 30, fovDeg: 40 });
+const sky = atmosphereFrame(timeOfDay(0.4), ATMOSPHERES.clear);
+
+// Draws only when asked: nothing here moves on its own.
+const loop = makeFrameLoop({
+  render() {
+    resizeToDisplay(gpu);
+    renderer.render({ ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()), ...sky });
+  },
+});
+observeResize(canvas, loop); // a resize asks for a frame
+
+prepareSurface(canvas);
+const input = createInput(canvas, { loop }); // so does every input event
+const orbit = makeOrbitController(input, { yaw: 30, pitch: 30, distance: 160, target: [32, 8, 32] });
+loop.invalidate(); // and the first frame
+
+// While something animates, render every frame; then go back to on demand.
+function playOpening(seconds: number) {
+  loop.setContinuous(true);
+  setTimeout(() => loop.setContinuous(false), seconds * 1000);
+}
+```
+
+The rules:
+
+- Call `loop.invalidate()` whenever the camera, the scene or the viewport changes. Passing the
+  loop to `createInput` does this for every input event; `observeResize` does it for resizes.
+  `renderer.edit`, `setLights` and the rest do **not** invalidate on their own.
+- Call `loop.setContinuous(true)` only while something animates (a moving creature, a camera
+  tween, falling rain), and turn it off afterwards. Frames are capped at `maxFps` (default 60).
+- Water animates from `FrameParams.time`, so a scene with water on screen has to render
+  continuously to show it moving. Leave `time` constant and it stays still.
+
+The `render` callback receives `(now, dt)`: `performance.now()` and the seconds since the
+previous frame, capped at 0.05 so a stalled tab does not teleport everything.
+
+## Assets
+
+Anything in `public/` is served at the site root and copied into the build unchanged. Fetch it
+with the base URL, never with a leading slash:
+
+```ts
+const res = await fetch(`${import.meta.env.BASE_URL}models/castle.vox`);
+```
+
+Files that belong to the code rather than the content can be imported, and Vite gives them a
+hashed URL:
+
+```ts
+import castleUrl from "./castle.vox?url";
+const res = await fetch(castleUrl);
+```
+
+Workers are modules next to the code that starts them:
+
+```ts
+const worker = new Worker(new URL("./gen.worker.ts", import.meta.url), { type: "module" });
+```
+
+Most of a Voxolith scene is usually generated rather than loaded: a seed and a few parameters
+replace megabytes of models. See [Using generators](/docs/manual/using-generators/).
+
+## Deploying under a sub-path
+
+GitHub Pages serves a project repository at `https://<user>.github.io/<repo>/`, so every URL the
+app builds has to start with `/<repo>/`. The `vite.config.ts` from Installation reads that prefix
+from an environment variable:
+
+```ts title="vite.config.ts"
+base: process.env.BASE_PATH ?? "/",
+```
+
+```sh
+BASE_PATH=/my-game/ bun run build   # dist/ now works under /my-game/
+```
+
+With `base` set, Vite rewrites the script and CSS URLs in `index.html` itself. What it cannot
+rewrite is URLs your code builds, so:
+
+- fetch with `import.meta.env.BASE_URL` (it is `"/my-game/"` in that build and `"/"` in development);
+- link between pages relatively (`href="../"`, `href="world/"`), never `href="/world/"`;
+- never hard-code `https://...github.io/...` in the app.
+
+The last step of the [tutorial](/docs/tutorial/performance-and-deploying/) sets up the GitHub
+Actions workflow, and [Deploying](/docs/manual/deploying/) covers other hosts.

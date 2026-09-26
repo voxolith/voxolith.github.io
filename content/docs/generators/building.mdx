@@ -1,0 +1,116 @@
+---
+title: Buildings
+description: "@voxolith/gen-building: cottages, farmhouses, townhouses, towers and barns from a shape grammar, with textured walls, furnished openings and coursed roofs."
+---
+
+<ImageZoom src="/generators/building-species.webp" alt="The five building presets: cottage, farmhouse, townhouse, tower and barn" width={940} height={632} />
+
+`@voxolith/gen-building` makes houses. A small shape grammar lays out the mass (a plinth, hollow
+storeys with floor slabs, a gable, hip or flat roof), then detail passes work over it at roughly 2.5
+voxels to the foot, so a storey is about 24 voxels and a cottage sits in proportion beside a
+190-voxel tree.
+
+```ts
+import { seededRandom } from "@voxolith/renderer/core";
+import { generateBuilding, PRESETS } from "@voxolith/gen-building";
+
+const { entity } = generateBuilding(PRESETS.farmhouse, seededRandom(42));
+// rooms are hollow and closed; the front door faces +z
+```
+
+## How it works
+
+<Steps>
+<Step>
+**Mass.** A plinth that stands a voxel proud of the walls, `storeys` hollow shells of
+`storeyHeight` with floor slabs, and the roof shell as a stack of slabs each inset by the pitch
+(`roofPitch` is run per unit rise, 1 being 45 degrees), with gables. The ridge runs along the longer
+side.
+</Step>
+<Step>
+**Layout.** Where every window and the door go is decided before any texture, on a rhythm of
+`windowSpacing` with `windowFraction` of the slots actually cut, so a timber frame can frame them.
+The door takes a ground-floor slot at the front; 14 voxels and wider makes a pair of boarded barn
+doors.
+</Step>
+<Step>
+**Walls.** Brick in running bond, ashlar courses of varying height, plaster that spalls to show brick
+(`spalling`), or a timber frame with posts at every jamb and braced end bays. Mortar joints are
+recessed and timbers stand proud (`relief`), so walls have relief rather than just colour. Walls are
+addressed in face-local coordinates: along the face, up it, and depth into it from the outer skin.
+</Step>
+<Step>
+**Trim.** Quoins at the corners, string courses at each floor line, a projecting plinth with a
+water table, a corniced parapet with dentils under a flat roof.
+</Step>
+<Step>
+**Openings.** Windows are set back in a reveal, framed, with glazing bars, a proud sill, a lintel or
+soldier course, slatted shutters and flower boxes. The glass is real glass to the renderer and a
+fraction of it (`lit`) glows. Doors get a panelled leaf with a glazed transom, a handle and a door
+case, or boarded barn doors with Z braces; a hood on brackets, a lamp, and stone steps up the plinth.
+</Step>
+<Step>
+**Roof.** Tile, slate or shingle laid in staggered courses with per-tile tone, or thatch with
+streaks, ragged eaves and a ligger ridge. Ridge cap, barge boards, rafter tails, gutters and
+downpipes; brick chimneys with a corbelled cap and hollow pots.
+</Step>
+<Step>
+**Weather.** Streaks under sills, rising damp and tonal variation (`weathering`), moss on the roofs,
+heavier low down and on the back slope, and on the plinth (`moss`).
+</Step>
+</Steps>
+
+Everything random comes from the injected rng or from hashes of positions. `shape` and `openings`
+decide which voxels exist and `look` mostly decides which role each gets. The four wall styles and
+four roofings are separate from the geometry, and colours come from 32 roles (walls, mortar, trim,
+beams, glass, lit glass, frames, doors, shutters, roof tones, ridge, chimney, soot, pots, foundation,
+floor, moss, gutters, flowers and leaves), so a house restyles by palette. Four roles carry material
+hints: glass is glass, lit glass emits, and the handle and rainwater goods are metal.
+
+<ImageZoom src="/generators/building-closeup.webp" alt="Close-ups of each preset's front door, windows and wall texture" width={940} height={632} />
+
+## Presets
+
+| preset | walls and roof | shape |
+|---|---|---|
+| `cottage` | plaster, thatch | one storey, gable, one chimney, shutters and flower boxes |
+| `farmhouse` | timber frame, tile | two storeys, two chimneys, gutters, a door hood |
+| `townhouse` | brick with quoins, flat roof behind a corniced parapet | three storeys, tall narrow windows |
+| `tower` | stone with quoins, slate | four storeys on a small square footprint, a steep hip roof |
+| `barn` | timber frame, shingle | two tall storeys, few small windows, boarded double doors |
+
+## Finer scales
+
+At 50 and 100 voxels per metre a building stays crisp (walls flat, corners sharp) and is refined on
+its outside faces only; the rooms are skipped. What the finer grid adds is masonry and joinery at
+their real size, which the coarse building can only suggest (its bricks are 80 cm long and its
+joints 10 cm wide): bricks in running bond with one-voxel joints set back, ashlar courses of blocks
+of varying length, fine plaster mottling, grain along timbers, tile, slate or shingle courses with a
+shadowed lower edge, streaky ragged thatch, boards on doors and shutters and planks on floors. The
+coarse building is generated without its relief first, since the joints are drawn at their own
+scale. Flowers and leaves are loose roles. See [scales and refinement](/docs/generators/scales-and-refinement/).
+
+## Development
+
+```sh
+bun run --cwd generators/building verify            # connectivity, hollowness, openings, determinism, share codes
+bun run --cwd generators/building preview species   # contact sheets into previews/ (also: roofs, walls, seeds, closeup)
+bun run --cwd generators/building gen               # bake .vox files into out/
+```
+
+## House
+
+`voxolith/house` starts from the `cottage` preset; every other preset is reachable through its
+parameters.
+
+<GeneratorReference id="voxolith/house" />
+
+## Townhouse
+
+`voxolith/townhouse` is the same generator starting from the `townhouse` preset, with the brick and
+slate skin as its default roles.
+
+<GeneratorReference id="voxolith/townhouse" />
+
+See the [API reference](/docs/generators/api/gen-building/) for `generateBuilding` and the parameter
+types.

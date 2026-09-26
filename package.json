@@ -1,0 +1,39 @@
+{
+  "name": "voxolith.github.io",
+  "private": true,
+  "type": "module",
+  "description": "The Voxolith website and documentation at voxolith.github.io, built with Fumadocs as a static Next.js export",
+  "scripts": {
+    "api": "bun install --cwd tools/api --silent && bun tools/api/run.ts",
+    "generators": "bun tools/generators.ts",
+    "reference": "bun run api && bun run generators",
+    "predev": "bun run reference",
+    "dev": "next dev",
+    "prebuild": "bun run reference",
+    "build": "next build",
+    "start": "serve out",
+    "links": "bun tools/check-links.ts",
+    "previews": "bun tools/previews.ts",
+    "typecheck": "next typegen && tsc --noEmit"
+  },
+  "dependencies": {
+    "fumadocs-core": "^16.15.14",
+    "fumadocs-mdx": "^15.4.5",
+    "fumadocs-ui": "^16.15.14",
+    "lucide-react": "^1.48.0",
+    "next": "^16.3.6",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/mdx": "^2.0.14",
+    "@types/node": "^26.6.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "postcss": "^8.5.28",
+    "serve": "^14.2.6",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2"
+  }
+}

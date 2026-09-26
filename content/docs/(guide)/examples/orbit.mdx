@@ -1,0 +1,60 @@
+---
+title: orbit
+description: "A voxel grid written by hand, drawn with the engine's orbit camera controller (drag, wheel, pinch, right-drag pan), rendering only when the view changes."
+---
+
+**[Open the live page](/examples/orbit/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/orbit/main.ts)
+
+Sine-wave hills with water in the hollows, 96 × 32 × 96 voxels, written straight into a
+`Uint8Array`. Drag to turn, wheel or pinch to zoom, right-drag or two fingers to pan.
+
+## What it shows
+
+- Building a grid by hand: three palette slots (grass, dirt, water) and an index
+  `x + y * sx + z * sx * sy`. Slot 0 is always empty.
+- The input layer's orbit camera: [`prepareSurface`](/docs/engine/api/input/functions/prepareSurface/),
+  [`createInput`](/docs/engine/api/input/functions/createInput/) and
+  [`makeOrbitController`](/docs/engine/api/input/functions/makeOrbitController/), whose state
+  feeds [`makeCamera`](/docs/renderer/api/renderer/functions/makeCamera/) directly.
+- **Rendering on demand**: the loop is not continuous; the input and
+  [`observeResize`](/docs/renderer/api/renderer/functions/observeResize/) invalidate it, so a still
+  view costs nothing. See [Project structure](/docs/getting-started/project-structure/#render-on-demand).
+
+## The interesting part
+
+```ts
+// Nothing animates here, so render on demand: the loop only draws when
+// input or a resize invalidates it.
+const camera = makeCamera({ target: [size.x / 2, 8, size.z / 2], distance: 200, pitchDeg: 32, fovDeg: 35 });
+const loop = runLoop(() => {
+  resizeToDisplay(gpu);
+  renderer.render({ ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()), ...DAYLIGHT });
+}, false);
+observeResize(canvas, loop);
+
+// One input per surface; the controller reads it. Passing the loop makes
+// every input event request a frame.
+prepareSurface(canvas, { contextMenu: false });
+const input = createInput(canvas, { loop });
+const orbit = makeOrbitController(input, {
+  yaw: 35, pitch: 32, distance: 200, distanceLimits: [40, 600], pitchLimits: [8, 85],
+  target: [size.x / 2, 8, size.z / 2], pan: "secondary", fovDeg: 35,
+});
+loop.invalidate();
+```
+
+`runLoop` is the examples' two-line wrapper round
+[`makeFrameLoop`](/docs/renderer/api/renderer/functions/makeFrameLoop/) (`src/shared/boot.ts`);
+`false` means not continuous. `prepareSurface(canvas, { contextMenu: false })` also suppresses
+the context menu, so right-drag can pan.
+
+## URL options
+
+| option | effect |
+|---|---|
+| `?selftest=1`, `2`, `3` | debug bands showing which stage of the voxel lookup works on this GPU, for diagnosing a blank canvas |
+
+Plus the [common ones](/docs/examples/#common-url-options).
+
+See also [Cameras](/docs/manual/cameras/) and [Input](/docs/manual/input/).

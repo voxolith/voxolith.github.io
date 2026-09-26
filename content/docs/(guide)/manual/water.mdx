@@ -1,0 +1,78 @@
+---
+title: Water
+description: Make water with the water material - ripples, Fresnel reflection, refraction to the bed, depth fade, caustics and wind - and keep it animating.
+---
+
+Water in Voxolith is a material, not a separate system. Voxels whose slot has the `water` material
+ripple over time, reflect the scene by Fresnel, refract down to the bed (found by a second walk
+that treats water as empty), fade into the water's colour with depth and catch moving caustics.
+Because it stays voxels, water streams, clips, edits and carves like everything else.
+
+## Making water
+
+Give a role the `water` material hint and allocate it like any other role:
+
+```ts
+import { PaletteAllocator } from "@voxolith/engine";
+
+const palette = new PaletteAllocator(1);
+const { base } = palette.allocate([
+  { id: "sand", name: "Sand", color: [0.76, 0.7, 0.5] },
+  { id: "water", name: "Water", color: [0.12, 0.3, 0.38], material: { kind: "water", alpha: 0.35, att: 0.08 } },
+], "pond");
+
+const renderer = await createRenderer(gpu, { size, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+```
+
+- `color` is the colour the water fades into with depth.
+- `alpha` is its opacity, 0 clear to 1.
+- `att` is how fast the bed fades with depth, per voxel.
+- `rough` and `spec` shape the reflection.
+
+Then fill the flooded cells with `base + 1` (the water role) up to the water level. Generated
+terrain does this for you: `@voxolith/gen-terrain` fills every flooded column with its `WATER` role,
+which already carries `{ kind: "water", alpha: 0.35, att: 0.18, rough: 0.2, spec: 0.8 }`.
+
+## Keeping it moving
+
+Water animates from `FrameParams.time`, in seconds. Pass the clock every frame:
+
+```ts
+renderer.render({ ...frame(), ...lighting, time: now / 1000 });
+```
+
+A constant `time` freezes the ripples. That has a consequence for render-on-demand apps: with water
+on screen the picture changes every frame, so the app has to render continuously. The world
+example does, and its `?still` option passes `time: 0` and renders on demand instead, which is also
+what you want for screenshots and tests.
+
+`waterWind` in `FrameParams` drifts the ripples and raises them with its length.
+`atmosphereFrame` sets it from the atmosphere's wind, so a storm roughens the river on its own.
+
+## Costs
+
+A water pixel does more work than a plain one: a reflection, a second walk down to the bed and the
+caustics. A lake filling the screen therefore costs more than the same area of grass. The quality
+presets and the adaptive render scale apply to it like everything else.
+
+In a world at more voxels per metre, pass `effectScale` (or `atmosphereFrame(..., { voxelsPerMetre })`)
+so wavelengths and the bed fade keep their size in metres.
+
+## Pitfalls
+
+- Pass `materials` (from `buildMaterials()`, or `updateMaterials` later). Without a material block
+  the renderer uses its flat palette path and water is an opaque colour.
+- Water under instances works (an instanced tree reflects and shades as any voxel does), but
+  instances only fill cells the world leaves empty, so a model standing in a pond needs the water
+  cells under it cleared.
+- A continuously rendered still camera can make `makePerf` resample the image as it probes;
+  pass `retryAfterMs: Infinity` and call `perf.reprobe()` when the view moves.
+
+## See also
+
+- [Palettes and roles](/docs/manual/palettes-and-roles/) for material hints
+- [Atmosphere and weather](/docs/manual/atmosphere-and-weather/)
+- [Generators: terrain](/docs/generators/terrain/)
+- API: [`MaterialHint`](/docs/engine/api/engine/interfaces/MaterialHint/),
+  [`FrameParams`](/docs/renderer/api/renderer/interfaces/FrameParams/),
+  [`ROLE`](/docs/generators/api/gen-terrain/variables/ROLE/)

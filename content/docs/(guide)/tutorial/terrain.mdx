@@ -1,0 +1,185 @@
+---
+title: "2. A generated valley"
+description: "Rat Hunt, step 2: generate rolling ground with ponds using gen-terrain, give its colour roles palette slots, and write it into the renderer's bricks."
+---
+
+In this step you fill the empty world with ground: hills, a few ponds, grass, sand and rock, all
+generated from a seed. At the end a camera circles the valley and the water ripples.
+
+## Generate the ground
+
+[`generateTerrain`](/docs/generators/api/gen-terrain/functions/generateTerrain/) from
+`@voxolith/gen-terrain` describes a region: a height per column, where the water is, and which
+colour role each voxel gets. It does not make voxels itself yet.
+
+```ts
+import { hashSeed } from "@voxolith/renderer";
+import { generateTerrain } from "@voxolith/gen-terrain";
+
+const params = new URLSearchParams(location.search);
+const seed = hashSeed(params.get("seed") ?? "rat-hunt");
+
+const terrain = generateTerrain(
+  {
+    width: SIZE.x, depth: SIZE.z, height: SIZE.y,
+    baseY: 18, relief: 20, featureSize: 100, waterLevel: 13,
+    river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 },
+  },
+  seed,
+);
+```
+
+- `baseY` is the average ground height and `relief` the height of the hills around it.
+- `featureSize` is the typical width of a hill, in voxels.
+- `waterLevel` floods every column below it: at 13, the lowest hollows become ponds.
+- The river is off; the [world example](/docs/examples/world/) shows one.
+
+`hashSeed` turns any string into a number, so `?seed=anything` in the URL gives a different
+valley. The same seed always gives the same valley.
+
+## Give the roles colours
+
+Generated models never contain colours. Each voxel holds a **role** (for the terrain, 1 is grass, 5 is
+rock, 7 is sand, 10 is water, and so on), and the role list says what each one looks like. The world, on the
+other hand, has one palette of 256 slots, shared by everything in it. A
+[`PaletteAllocator`](/docs/engine/api/engine/classes/PaletteAllocator/) hands each thing a range
+of slots:
+
+```ts
+import { PaletteAllocator } from "@voxolith/engine";
+
+const palette = new PaletteAllocator(1);
+const groundBase = palette.allocate(terrain.roles, "terrain").base;
+```
+
+Role `r` of the terrain now lives in slot `groundBase + r - 1`. `buildPalette()` and
+`buildMaterials()` produce the arrays the renderer wants; the materials carry the water role's
+`water` material, which is what makes it transparent and animated.
+
+```ts
+const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
+renderer.setQuality(gpu.software ? "low" : "medium");
+```
+
+`setQuality` picks one of the [`QUALITY_PRESETS`](/docs/renderer/api/renderer/variables/QUALITY_PRESETS/).
+A CPU (software) WebGPU adapter gets the cheapest one; step 7 makes this a player's choice.
+
+## Write the voxels
+
+The renderer stores the world as 8 × 8 × 8 bricks, and only bricks with something in them take
+memory. [`renderer.edit`](/docs/renderer/api/renderer/classes/Renderer/) visits every brick in
+a box and hands you its 512 cells to fill; `terrain.fillBrick` knows how to fill one:
+
+```ts
+renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) =>
+  terrain.fillBrick(cells, ox, oy, oz, groundBase),
+);
+```
+
+The box stops at `terrain.maxY()`, the highest voxel the terrain writes, so the empty air above
+is never visited. There is never a dense copy of the world in memory: 384 × 128 × 384 voxels
+would be 19 MB, and the [valley example](/docs/examples/valley/) is thousands of times bigger.
+
+<Callout title="Bigger worlds">
+  One `edit` over the whole map is right for a world this size. A world too big to build at once
+  is split into chunks with [`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/),
+  which builds and frees chunks around the camera; see [Streaming](/docs/manual/streaming/).
+</Callout>
+
+## Animate the water
+
+Water ripples from `FrameParams.time`, in seconds. To see it move, the loop has to render every
+frame, so it becomes continuous, and the camera turns with the clock:
+
+```ts
+// The ponds ripple, so this loop renders every frame.
+const loop = makeFrameLoop({
+  continuous: true,
+  render(now) {
+    resizeToDisplay(gpu);
+    renderer.render({ ...camera(now / 200), ...sky, time: now / 1000 });
+  },
+});
+observeResize(canvas, loop);
+```
+
+## Run it
+
+Reload the page. The valley appears under the morning sun and the camera circles it. Try
+`?seed=2` or `?seed=moor` on the URL for other valleys.
+
+<Accordions>
+<Accordion title="src/main.ts after step 2">
+
+```ts title="src/main.ts"
+// Rat Hunt: catch the giant rats in the valley before night falls.
+import {
+  createRenderer,
+  hashSeed,
+  initGpu,
+  makeCamera,
+  makeFrameLoop,
+  observeResize,
+  resizeToDisplay,
+  showUnsupportedScreen,
+  WebGPUUnsupportedError,
+} from "@voxolith/renderer";
+import { PaletteAllocator } from "@voxolith/engine";
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { generateTerrain } from "@voxolith/gen-terrain";
+import "./style.css";
+
+const canvas = document.getElementById("scene") as HTMLCanvasElement;
+const params = new URLSearchParams(location.search);
+
+// --- WebGPU -------------------------------------------------------------------
+const gpu = await initGpu(canvas).catch((err: unknown) => {
+  if (err instanceof WebGPUUnsupportedError) showUnsupportedScreen(err.message, { appName: "Rat Hunt" });
+  throw err;
+});
+
+// --- the valley -----------------------------------------------------------------
+const SIZE = { x: 384, y: 128, z: 384 };
+const seed = hashSeed(params.get("seed") ?? "rat-hunt");
+
+const terrain = generateTerrain(
+  {
+    width: SIZE.x, depth: SIZE.z, height: SIZE.y,
+    baseY: 18, relief: 20, featureSize: 100, waterLevel: 13,
+    river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 },
+  },
+  seed,
+);
+
+// --- palette and renderer ----------------------------------------------------------
+const palette = new PaletteAllocator(1);
+const groundBase = palette.allocate(terrain.roles, "terrain").base;
+
+const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
+renderer.setQuality(gpu.software ? "low" : "medium");
+
+renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) =>
+  terrain.fillBrick(cells, ox, oy, oz, groundBase),
+);
+
+const camera = makeCamera({ target: [SIZE.x / 2, 20, SIZE.z / 2], distance: 420, pitchDeg: 30, fovDeg: 45 });
+const sky = atmosphereFrame(timeOfDay(0.35), ATMOSPHERES.clear);
+
+// --- the loop ------------------------------------------------------------------------------
+// The ponds ripple, so this loop renders every frame.
+const loop = makeFrameLoop({
+  continuous: true,
+  render(now) {
+    resizeToDisplay(gpu);
+    renderer.render({ ...camera(now / 200), ...sky, time: now / 1000 });
+  },
+});
+observeResize(canvas, loop);
+```
+
+</Accordion>
+</Accordions>
+
+**Next:** [camera and input](/docs/tutorial/camera-and-input/).

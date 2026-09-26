@@ -1,0 +1,24 @@
+{
+  "title": "Manual",
+  "pages": [
+    "worlds-and-storage",
+    "palettes-and-roles",
+    "entities",
+    "using-generators",
+    "instances",
+    "streaming",
+    "input",
+    "cameras",
+    "picking",
+    "animation",
+    "lighting",
+    "atmosphere-and-weather",
+    "water",
+    "effects",
+    "file-formats",
+    "workers-and-caching",
+    "performance",
+    "mobile-and-pwa",
+    "deploying"
+  ]
+}

@@ -1,0 +1,227 @@
+---
+title: Input
+description: "@voxolith/engine/input: one input per surface, gestures decided on total travel, actions over keys, pad and touch, touch controls, orbit and look cameras."
+---
+
+`@voxolith/engine/input` is desktop and mobile input for Voxolith apps. One
+[`createInput(el)`](/docs/engine/api/input/functions/createInput/) per surface owns every listener;
+everything else reads from it, so two controls can share a canvas and the whole lot disposes in one
+call. Apps take all camera and movement input from here, never from raw listeners.
+
+It is DOM-only, which is why it has its own subpath and the engine barrel stays runtime-safe. The
+targets and clocks can be injected ([`InputOptions`](/docs/engine/api/input/interfaces/InputOptions/)),
+which is how `bun engine/tools/verify-input.ts` drives it headlessly with synthetic events.
+
+```ts
+import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
+import { makeCamera } from "@voxolith/renderer";
+
+prepareSurface(canvas, { contextMenu: false }); // no browser pan or zoom, selection or tap flash; right-drag is free
+const input = createInput(canvas, { loop });
+const orbit = makeOrbitController(input, { distance: 200, distanceLimits: [40, 600], pan: "secondary" });
+const camera = makeCamera({ target: [64, 16, 64], distance: 200, pitchDeg: 25, fovDeg: 45 });
+
+// in the frame:
+input.update();
+loop.setContinuous(input.active());
+renderer.render({ ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()), ...lighting });
+```
+
+## Layers
+
+Each layer is built on the one before it.
+
+<Steps>
+<Step>
+**`createInput`**: Pointer Events (mouse, pen, touch) with capture; keys by `code` with a focus
+guard and release-on-blur; wheel normalised across `deltaMode`s, ctrl+wheel reported as a trackpad
+pinch; pointer lock; the first gamepad (standard mapping, radial deadzone); a virtual channel for
+on-screen controls.
+</Step>
+<Step>
+**`recogniseGestures`**: tap, double-tap, long-press, drag, pinch and wheel steps, with claiming
+between recognisers.
+</Step>
+<Step>
+**`makeActions`**: named buttons and axes over `key:`, `pad:` and `touch:` sources.
+</Step>
+<Step>
+**`makeTouchControls`**: a floating joystick and buttons feeding `touch:` sources.
+</Step>
+<Step>
+**`makeOrbitController`** and **`makeLookController`**: the two camera styles, whose state is what
+the renderer's [`makeCamera`](/docs/renderer/api/renderer/functions/makeCamera/) and
+[`firstPersonFrame`](/docs/renderer/api/renderer/functions/firstPersonFrame/) take.
+</Step>
+</Steps>
+
+## The surface input
+
+An [`Input`](/docs/engine/api/input/interfaces/Input/) is read once per frame:
+
+- **`update()`** advances edges and polls the gamepad. Call it once per frame before reading:
+  `pressed`, `released`, `padPressed`, `virtualPressed` and friends report what changed between
+  the last two `update()` calls.
+- **Keys** by `KeyboardEvent.code` (physical, so WASD stays put on AZERTY): `down`, `pressed`,
+  `released`. Keys are read from `window` (they never target a canvas), ignored while a text field
+  has focus, and released when the window loses focus or the page is hidden. `captureKeys(codes)`
+  prevents the default only for those codes, so bound keys don't scroll the page.
+- **Pointers**: `pointers()` is the live map of
+  [`PointerState`](/docs/engine/api/input/interfaces/PointerState/)s, each with its start, last
+  position and total `travel`. `on(fn, priority?)` delivers normalised
+  [`InputEvent`](/docs/engine/api/input/type-aliases/InputEvent/)s (pointer, wheel, key, and `look`
+  for raw mouse movement under pointer lock), higher priority first. `claim(pointerId, owner)`
+  reserves a pointer; claims release when it lifts.
+- **Wheel** deltas are normalised to pixels ([`wheelPixels`](/docs/engine/api/input/functions/wheelPixels/));
+  the page is kept from scrolling or zooming over the surface (`captureWheel`, default on).
+- **Pointer lock**: `lock()` (from a user gesture), `unlock()`, `locked()`.
+- **Gamepad**: `gamepad()` is a [`GamepadState`](/docs/engine/api/input/interfaces/GamepadState/)
+  of the first connected pad, standard mapping, buttons by name
+  ([`PAD_BUTTONS`](/docs/engine/api/input/variables/PAD_BUTTONS/)) and sticks after a radial
+  deadzone (default 0.15, [`deadzone2`](/docs/engine/api/input/functions/deadzone2/)).
+- **Virtual channel**: `setVirtual(name, value)` and `virtual(name)`, written by on-screen controls
+  and read by `touch:` action sources.
+- **Render on demand**: pass `{ loop }` (anything with `invalidate()`, such as the renderer's
+  [`makeFrameLoop`](/docs/renderer/api/renderer/functions/makeFrameLoop/)) and every event
+  invalidates it; render continuously while `active()` is true, i.e. while anything is held.
+- **Device**: `lastDevice()` and `onDevice(fn)`, for showing the right prompts or touch controls.
+- `dispose()` removes every listener, drops all state and releases pointer lock.
+
+[`prepareSurface(el, { contextMenu? })`](/docs/engine/api/input/functions/prepareSurface/) makes an
+element behave as an input surface on touch devices (no panning or pinch-zooming, no text
+selection, no tap flash, optionally no context menu). Use it instead of per-app `touch-action` CSS.
+
+## Gestures
+
+[`recogniseGestures(input, handlers, options?)`](/docs/engine/api/input/functions/recogniseGestures/)
+turns raw pointers into [`GestureHandlers`](/docs/engine/api/input/interfaces/GestureHandlers/)
+callbacks: `tap`, `doubleTap`, `longPress`, `dragStart` / `drag` / `dragEnd`,
+`pinchStart` / `pinch` / `pinchEnd`, `wheel`, and `press`.
+
+- **Tap versus drag is decided on total travel** since the pointer went down, not on any single
+  move: a slow pan crawls a pixel at a time and must still count as a drag. Past the slop (mouse 6,
+  pen 8, touch 10 CSS pixels) a pointer is a drag for the rest of its life and can never also be a
+  tap.
+- A second finger turns a one-finger drag into a pinch (the drag ends with `cancelled: true`);
+  ctrl+wheel, which is how trackpads report a pinch, arrives as the same `pinch`. After a pinch,
+  nothing is a tap until every finger is up.
+- **Claiming.** Several recognisers can share one input. Give the one that should win a higher
+  `priority` and have it return `true` from `press` or `dragStart`; lower-priority recognisers then
+  leave that pointer alone. That is how a slingshot aim or an editor tool keeps a finger the camera
+  would otherwise take.
+
+```ts
+recogniseGestures(input, {
+  tap: (t) => pick(t.x, t.y),
+  longPress: (t) => openMenu(t.x, t.y),
+});
+```
+
+Timing and filters are in [`GestureOptions`](/docs/engine/api/input/interfaces/GestureOptions/):
+`slop`, `doubleTapMs` (300), `doubleTapDistance` (24), `longPressMs` (500, 0 disables), `buttons`,
+`pointerTypes`, `priority`, `wheelZoom`, `pinchZoom`.
+
+## Actions
+
+A game asks for `jump` or `steer`, never for Space or the left stick.
+[`makeActions(input, bindings)`](/docs/engine/api/input/functions/makeActions/) maps names to
+sources, so the same code runs on a keyboard, a gamepad and a phone, and rebinding is editing a
+list.
+
+| source | meaning |
+|---|---|
+| `key:KeyW` | a key, by `KeyboardEvent.code` |
+| `pad:A` | a gamepad button, 0 to 1 (triggers are analog) |
+| `pad:LeftX` | a signed stick axis, -1 to 1 |
+| `touch:jump`, `touch:move.x` | an on-screen control, or one axis of a joystick |
+| `...+`, `...-` | one half of any signed source, 0 to 1: `pad:LeftY-` or `touch:move.y-` is the stick pushed up (screen and pad Y are down-positive) |
+
+```ts
+import { axis, button, makeActions } from "@voxolith/engine/input";
+
+const actions = makeActions(input, {
+  strafe: axis({ negative: ["key:KeyA", "key:ArrowLeft"], positive: ["key:KeyD", "key:ArrowRight"], analog: ["pad:LeftX", "touch:move.x"] }),
+  walk: axis({ negative: ["key:KeyS", "key:ArrowDown"], positive: ["key:KeyW", "key:ArrowUp"], analog: ["pad:LeftY-", "touch:move.y-"] }),
+  jump: button("key:Space", "pad:A", "touch:jump"),
+});
+
+if (actions.pressed("jump")) player.jump();
+const [sx, wz] = actions.vector("strafe", "walk"); // clamped to the unit circle, so diagonals are not faster
+```
+
+A button is held when any source is. An axis combines negative and positive digital sources with
+signed analog ones and takes whichever is pushed hardest, so a half-tilted stick is not overridden
+by a stale key. [`Actions`](/docs/engine/api/input/interfaces/Actions/) also has `down`,
+`released`, `value`, `bind(name, binding)`, and `bindings()` / `load(saved)`, which round-trip as
+plain JSON for saving a player's rebinding. Bound keys are captured automatically.
+
+## Touch controls
+
+[`makeTouchControls(input, spec)`](/docs/engine/api/input/functions/makeTouchControls/) draws
+on-screen joysticks and round buttons that feed the virtual channel, so a game binds
+`touch:move.x` next to `key:KeyA` and `pad:LeftX` and never knows which one the player used.
+
+```ts
+makeTouchControls(input, {
+  joysticks: [{ id: "move", side: "left" }],
+  buttons: [{ id: "jump", label: "A" }],
+});
+```
+
+- A joystick is **floating**: it appears where the thumb lands inside its zone (the lower part of
+  its side of the screen), which suits phones of every size. Knob travel is `radius` (56 CSS px).
+- Buttons stack bottom-up, innermost first, on their side (default right), `size` 64 px.
+- The controls are their own elements above the canvas, so fingers on them never reach the
+  camera's gestures.
+- `show: "auto"` (the default) shows them once a touch is seen and hides them again on mouse,
+  keyboard or gamepad; `"always"` and `"never"` override.
+- Colours come from CSS custom properties with fallbacks: `--vx-control-bg`, `--vx-control-fg`,
+  `--vx-control-active`. Map them onto the app's theme tokens.
+
+## Camera controllers
+
+### Orbit
+
+[`makeOrbitController(input, options)`](/docs/engine/api/input/functions/makeOrbitController/) is
+one controller for every orbit-style view: a turntable viewer (yaw, pitch and zoom), a room you can
+only look around within (yaw clamped, no pitch), an RTS map (no rotation, primary drag pans, zoom).
+
+- Desktop: primary drag rotates; right, middle or shift+drag pans (with `pan: "secondary"`); wheel
+  and ctrl+wheel zoom. Touch: one finger rotates, two fingers pinch to zoom and drag to pan (or to
+  rotate, when panning is off).
+- [`OrbitOptions`](/docs/engine/api/input/interfaces/OrbitOptions/): initial `yaw`, `pitch`,
+  `distance`, `target`; `yawLimits`, `pitchLimits` (default `[3, 87]`), `distanceLimits`;
+  `rotate: "both" | "yaw" | "none"`; `pan: "secondary" | "primary" | "none"` (default none);
+  `panBounds` on XZ; `sensitivity` (0.35 degrees per pixel); `zoom`; `fovDeg`, so a pan tracks the
+  cursor; `onChange` for a render-on-demand loop.
+- The [`OrbitController`](/docs/engine/api/input/interfaces/OrbitController/) reads back `yaw()`,
+  `pitch()`, `distance()`, `target()` (degrees and voxels), and has `set`, `interacting()` (to stop
+  an idle turntable), `setEnabled` and `dispose`.
+
+### Look
+
+[`makeLookController(input, options)`](/docs/engine/api/input/functions/makeLookController/) is a
+first-person look. Desktop: click to capture the mouse (pointer lock), move to look, Esc to let
+go; without a lock (before the first click, or where the browser refuses one) dragging looks too.
+Touch: drag anywhere that is not an on-screen control. Gamepad: the right stick. Keys: optional
+turn keys.
+
+```ts
+const look = makeLookController(input, { pitch: -10, keys: { left: ["KeyQ"], right: ["KeyE"] } });
+// per frame, after input.update():
+look.update(dt);
+renderer.render({ ...firstPersonFrame(eye, look.yaw(), look.pitch(), 60), ...lighting });
+```
+
+Deltas are gathered as they arrive and applied in `update(dt)`, once a frame, so look speed from
+sticks and keys is independent of the frame rate and the mouse is never counted twice.
+[`LookOptions`](/docs/engine/api/input/interfaces/LookOptions/): `lockSensitivity` (0.12),
+`dragSensitivity` (0.25), `pitchLimits` (`[-85, 85]`), `pointerLock`, `stickRate` (160 degrees per
+second), `keys`, `keyRate`, `invertY`.
+
+<Callout title="Yaw conventions">
+  `firstPersonFrame` faces +Z at yaw 0 and its screen-right is `cross(forward, up)`, so turning
+  right *increases* yaw; moving along the view is `forward = (sin yaw, cos yaw)` and
+  `right = (-cos yaw, sin yaw)` on XZ. An orbit camera's yaw *decreases* when dragging right,
+  because the camera moves round the target the other way.
+</Callout>

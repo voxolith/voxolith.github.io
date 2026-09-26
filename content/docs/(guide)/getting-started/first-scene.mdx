@@ -1,0 +1,173 @@
+---
+title: Your first scene
+description: Load a MagicaVoxel .vox model and draw it with WebGPU, walked through line by line, the same program as the hello-vox example.
+---
+
+This page builds the [hello-vox](/docs/examples/hello-vox/) example from scratch: fetch a
+MagicaVoxel `.vox` file, turn it into a voxel grid, and draw it with a slowly turning camera. It
+assumes the project from [Installation](/docs/getting-started/installation/).
+
+<Files>
+  <Folder name="my-game" defaultOpen>
+    <File name="index.html" />
+    <File name="package.json" />
+    <File name="tsconfig.json" />
+    <File name="vite.config.ts" />
+    <Folder name="public" defaultOpen>
+      <Folder name="models" defaultOpen>
+        <File name="cat-sit.vox" />
+      </Folder>
+    </Folder>
+    <Folder name="src" defaultOpen>
+      <File name="main.ts" />
+    </Folder>
+  </Folder>
+</Files>
+
+Any `.vox` file works. The one used here is the examples' cat,
+[`cat-sit.vox`](https://github.com/voxolith/examples/raw/main/public/models/cat-sit.vox).
+
+## The page
+
+```html title="index.html"
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hello vox</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #151b29; }
+      #app, #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+    </style>
+  </head>
+  <body>
+    <div id="app"><canvas id="scene"></canvas></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
+```
+
+The canvas fills the window. The `#app` wrapper matters: when WebGPU is missing,
+`showUnsupportedScreen` replaces its contents with an explanation.
+
+## The program
+
+```ts title="src/main.ts"
+import {
+  createRenderer,
+  initGpu,
+  makeCamera,
+  makeFrameLoop,
+  observeResize,
+  parseVox,
+  resizeToDisplay,
+  showUnsupportedScreen,
+  WebGPUUnsupportedError,
+  type VoxModel,
+} from "@voxolith/renderer";
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+
+const canvas = document.getElementById("scene") as HTMLCanvasElement;
+
+// 1. WebGPU. Without it, show a card that says why instead of a blank page.
+const gpu = await initGpu(canvas).catch((err: unknown) => {
+  if (err instanceof WebGPUUnsupportedError) showUnsupportedScreen(err.message, { appName: "Hello vox" });
+  throw err;
+});
+
+// 2. Load a MagicaVoxel model from public/models/.
+const res = await fetch(`${import.meta.env.BASE_URL}models/cat-sit.vox`);
+const model = parseVox(await res.arrayBuffer());
+const grid = toGrid(model);
+
+// 3. A renderer for exactly this grid.
+const renderer = await createRenderer(gpu, grid);
+renderer.setFloor({ enabled: true, y: 0, colorA: [0.22, 0.23, 0.27], colorB: [0.17, 0.18, 0.21] });
+
+// 4. An orbit camera: call it with a yaw in degrees to get this frame's camera.
+const { x, y, z } = grid.size;
+const camera = makeCamera({ target: [x / 2, y / 2, z / 2], distance: Math.max(x, y, z) * 2.2 + 16, pitchDeg: 28, fovDeg: 32 });
+const sky = atmosphereFrame(timeOfDay(0.4), ATMOSPHERES.clear);
+
+// 5. Render every frame, turning slowly.
+const loop = makeFrameLoop({
+  continuous: true,
+  render(now) {
+    resizeToDisplay(gpu);
+    renderer.render({ ...camera(now / 50), ...sky });
+  },
+});
+observeResize(canvas, loop);
+
+/** MagicaVoxel is Z-up and the renderer is Y-up: (x, y, z) becomes (x, z, y). */
+function toGrid(m: VoxModel) {
+  const size = { x: m.size.x, y: m.size.z, z: m.size.y };
+  const data = new Uint8Array(size.x * size.y * size.z);
+  for (const v of m.voxels) data[v.x + v.z * size.x + v.y * size.x * size.y] = v.c;
+  // 256 RGBA entries in 0..1, indexed by palette slot; slot 0 is empty.
+  const palette = new Float32Array(256 * 4);
+  for (let i = 1; i < 256; i++) {
+    palette.set([m.palette[i * 4] / 255, m.palette[i * 4 + 1] / 255, m.palette[i * 4 + 2] / 255, 1], i * 4);
+  }
+  return { size, data, palette };
+}
+```
+
+Run `bun run dev`, open the HTTPS URL, and the cat turns on a checkered floor.
+
+## What each part does
+
+<Steps>
+<Step>
+**`initGpu(canvas)`** asks the browser for a WebGPU adapter and device, configures the canvas and
+returns a [`GpuContext`](/docs/renderer/api/renderer/interfaces/GpuContext/): the device, the
+canvas size, a `renderScale`, and a `software` flag for CPU adapters. It throws a
+[`WebGPUUnsupportedError`](/docs/renderer/api/renderer/classes/WebGPUUnsupportedError/) whose
+message says what is missing (no WebGPU at all, not a secure context, no adapter).
+[`showUnsupportedScreen`](/docs/renderer/api/renderer/functions/showUnsupportedScreen/) turns
+that message into a readable card.
+</Step>
+<Step>
+**`parseVox`** reads the first model of a `.vox` file: its size, a list of voxels
+`{ x, y, z, c }` and a 256-entry RGBA palette. Fetch it through `import.meta.env.BASE_URL`, not
+from `/models/...`, so the page still works when deployed under a sub-path.
+</Step>
+<Step>
+**The grid.** The renderer takes a size, a dense `Uint8Array` indexed `x + y * sx + z * sx * sy`
+and a palette of 256 RGBA floats. A voxel's value is its palette slot; 0 is empty. MagicaVoxel
+stores Z as up, so `toGrid` swaps Y and Z.
+</Step>
+<Step>
+**`createRenderer(gpu, scene)`** uploads the grid into the renderer's sparse brick storage and
+compiles the raymarching pipeline (it is async because the shaders are linked at runtime). From
+then on the dense array is not needed: large worlds skip it entirely and fill bricks with
+`renderer.edit` instead (see [Storage](/docs/renderer/storage/)).
+</Step>
+<Step>
+**`makeCamera`** returns a function of yaw (and optionally distance, target and pitch) that
+produces the camera fields of a frame: `camPos`, `camFwd`, `camRight`, `camUp`, `tanHalfFov`.
+</Step>
+<Step>
+**Lighting.** Every frame also needs a sun, ambient light and a sky. `timeOfDay(0.4)` computes
+all of them for mid-morning, and `atmosphereFrame` adds the weather (here, clear). Both are from
+[`@voxolith/engine/atmosphere`](/docs/engine/atmosphere/); you can also pass the fields yourself.
+</Step>
+<Step>
+**`makeFrameLoop`** schedules frames. Here it renders continuously because the camera turns; a
+still scene should render only when something changes. `resizeToDisplay` keeps the canvas's
+backing store matched to its CSS size, and `observeResize` asks for a frame when that changes.
+</Step>
+</Steps>
+
+<Callout title="Using the engine instead">
+  `@voxolith/engine/vox` has `entityFromVox(buffer)`, which does the crop and axis swap and turns
+  each colour into a named role. Its model's `data` and `entityPalette(model)` are a ready-made
+  grid and palette. Entities and roles are how generated models work too; see
+  [Palettes and roles](/docs/manual/palettes-and-roles/).
+</Callout>
+
+## Next
+
+- [Project structure](/docs/getting-started/project-structure/): render on demand, assets, deploying.
+- [The tutorial](/docs/tutorial/): a generated world, input, lights and animated creatures.

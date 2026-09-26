@@ -1,0 +1,105 @@
+---
+title: Entities
+description: What an entity is (a voxel model, an anchor and colour roles), how to load one from .vox, read it, turn it and stamp it into a world.
+---
+
+An **entity** is the unit you place in a world: a voxel model, an anchor that says where its origin
+sits, and a list of colour roles. A `.vox` file and a generator both produce exactly this shape, so
+the rest of your game does not care where a model came from.
+
+## The shape
+
+```ts
+interface Entity {
+  id: string;        // unique within a scene
+  kind: string;      // what it is, e.g. "tree.broadleaf"; group and cull by this
+  model: EntityModel;
+  meta: Record<string, unknown>; // provenance: generator, parameters, seed
+  rig?: Rig;         // rigged entities only (see Animation)
+  clips?: Clip[];
+}
+```
+
+`EntityModel` holds:
+
+- `size`: the tight bounding box, Y-up (y is height).
+- `data`: dense role values, `x + y*sx + z*sx*sy`, 0 empty. Or, for big models, `sparse`: 8³ bricks
+  with `data` left empty. Read either through `modelAt(model, x, y, z)`.
+- `anchor`: the origin inside the box, in voxels. A tree puts it at the trunk base centre with
+  `y = 0`, so placing a tree means putting its anchor on a ground cell.
+- `roles`: `roles[i]` is voxel value `i + 1` (see [Palettes and roles](/docs/manual/palettes-and-roles/)).
+- `bones`: rigged models only, a bone index per voxel.
+
+## Loading one
+
+```ts
+import { modelAt, roleValue, voxelCount, type Entity } from "@voxolith/engine";
+import { entityFromVox } from "@voxolith/engine/vox";
+
+const buf = await (await fetch(`${import.meta.env.BASE_URL}models/lamp.vox`)).arrayBuffer();
+const lamp: Entity = entityFromVox(buf, { id: "lamp", kind: "prop.lamp", anchor: "base" });
+
+console.log(lamp.model.size, voxelCount(lamp.model));
+const flame = roleValue(lamp.model, "color.3"); // 0 when the model has no such role
+```
+
+`entityFromVox` crops to the occupied box, turns MagicaVoxel's Z-up into Y-up, and makes one role
+per distinct colour used, with ids `color.0`, `color.1` and so on (change the prefix with
+`rolePrefix`). The anchor defaults to `"base"` (horizontal centre, y 0); pass `"centre"` for
+things that hang or float, or an explicit `[x, y, z]`.
+
+To get a model out again for MagicaVoxel, the [viewer](/viewer/) or the [editor](/editor/), use
+`entityToVox(entity)`; see [File formats](/docs/manual/file-formats/).
+
+## Orientations
+
+Copies of one model all facing the same way read as wallpaper. The engine offers eight
+axis-aligned **orientations** (`Orientation`, 0 to 7): the low two bits are the yaw step of 90°,
+bit 2 mirrors along x first. They are index permutations, so turning costs nothing and never
+resamples the model's one-voxel twigs.
+
+- `orientVoxel`, `orientAnchor`, `orientedSize` and `swapsXZ` map coordinates and sizes.
+- `blitModel` and `blitModelToBricks` take an orientation as their last argument.
+- `orientationYaw(o)` gives the instance `{ yaw, mirror }` that draws exactly what stamping with
+  `o` would, so a layout can switch between stamping and instancing without moving anything.
+
+Arbitrary headings are only offered for [instances](/docs/manual/instances/), which resample at
+draw time.
+
+## Stamping into a world
+
+Stamping writes a model's voxels into the world's storage, offsetting roles by `base - 1`:
+
+```ts
+import { blitModel, blitModelToBricks } from "@voxolith/engine";
+
+const { base } = palette.allocateFor(tree);
+// A dense world you keep yourself; returns the box it wrote, for updateVoxels.
+const box = blitModel(world, tree.model, { x: 64, y: 8, z: 64 }, base, 1);
+// Or straight into the renderer's bricks.
+blitModelToBricks(renderer, tree.model, { x: 200, y: 16, z: 200 }, base, 3);
+```
+
+Stamped voxels become part of the world: you can carve them, they cost brick memory per copy, and
+removing them means knowing what was there before. For many copies of one model, or for anything
+that moves, [instances](/docs/manual/instances/) or the engine's stampers
+([Animation](/docs/manual/animation/)) are the better fit.
+
+## Pitfalls
+
+- Models are expected to be one connected piece standing on their anchor. Generators guarantee it;
+  a hand-made `.vox` may not.
+- `.vox` allows at most 255 voxels per axis, so `entityToVox` throws for larger models.
+- A sparse model has an empty `data`. Use `modelAt`, `voxelCount` and `roleHistogram`, which read
+  both forms, rather than indexing `data` yourself.
+
+## See also
+
+- [Engine: entities and roles](/docs/engine/entities-and-roles/)
+- [Engine: placement and worlds](/docs/engine/placement-and-worlds/)
+- [Using generators](/docs/manual/using-generators/)
+- API: [`Entity`](/docs/engine/api/engine/interfaces/Entity/),
+  [`EntityModel`](/docs/engine/api/engine/interfaces/EntityModel/),
+  [`Orientation`](/docs/engine/api/engine/type-aliases/Orientation/),
+  [`entityFromVox`](/docs/engine/api/vox/functions/entityFromVox/),
+  [`modelAt`](/docs/engine/api/engine/functions/modelAt/)

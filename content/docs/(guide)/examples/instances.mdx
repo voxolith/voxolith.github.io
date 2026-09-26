@@ -1,0 +1,57 @@
+---
+title: instances
+description: "Trees and a crowd drawn by reference: six tree models placed hundreds of times at any heading, and rats that glide with nothing written to the world."
+---
+
+**[Open the live page](/examples/instances/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/instances/main.ts)
+
+A wide field with 160 trees and 400 rats. Every tree is one of six models, uploaded once and
+placed at any heading; every rat pose is a model of its own (one per variant, clip and frame,
+with no heading buckets), placed at the rat's exact position and yaw. So rats glide and turn
+smoothly, and nothing is written into the world's bricks as they move. The overlay compares the
+GPU memory with what stamping would cost; `?stamp` stamps the trees instead.
+
+## What it shows
+
+- [`makeInstanceLayer`](/docs/engine/api/engine/functions/makeInstanceLayer/): `setStatic` for
+  scenery placed once, and a crowd's dynamic placements committed each frame. Under it are the
+  renderer's `addModel` and `setInstances`.
+- Instances at any yaw and at fractional positions, where stamping allows only the eight
+  [orientations](/docs/engine/api/engine/type-aliases/Orientation/) at whole voxels.
+- [`makeCrowd({ instances })`](/docs/engine/api/animation/functions/makeCrowd/): the same crowd
+  helper as the [swarm](/docs/examples/swarm/), drawing poses as instances instead of stamping
+  them.
+- [`blitModelToBricks`](/docs/engine/api/engine/functions/blitModelToBricks/) for comparison
+  (`?stamp`), turned in 90° steps.
+- `renderer.instanceStats()`: models, instances and the GPU bytes they use.
+
+## The interesting part
+
+```ts
+const layer = makeInstanceLayer(renderer);
+// ... pick spots on dry ground ...
+statics.push({ model: t.entity.model, x: Math.round(x), y: ground(x, z) + 1, z: Math.round(z), yaw: rng() * Math.PI * 2, base: t.base });
+// ...
+layer.setStatic(statics);
+
+// Rats wander between the trees.
+const crowd = makeCrowd({ instances: layer, near: 160, farFps: 6, freeze: 900, budgetMs: 5 });
+```
+
+Here the palette bases still come from the world's `PaletteAllocator`, which is fine for a
+handful of species. With many, give instances palettes of their own with `layer.palettes.of`, as
+the [valley](/docs/examples/valley/) does, and the 256-slot limit no longer applies to them.
+
+## URL options
+
+| option | default | effect |
+|---|---|---|
+| `?trees=` | 160 | number of trees, 0 to 2000 |
+| `?rats=` | 400 | number of rats, 0 to 3000 |
+| `?stamp` | | stamp the trees into the world instead of instancing them |
+| `?seed=` | `instances` | a different field |
+
+Plus the [common ones](/docs/examples/#common-url-options), including `?perf`.
+
+See also [Instances](/docs/manual/instances/) and [Instances in the renderer](/docs/renderer/instances/).

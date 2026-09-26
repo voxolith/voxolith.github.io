@@ -1,0 +1,132 @@
+---
+title: Creatures
+description: "@voxolith/gen-creature: a rigged, animated voxel rat with a 26-bone rig, seven generated clips and a layered interior that damage exposes."
+---
+
+<ImageZoom src="/generators/creature-species.webp" alt="The five creature presets: rat, grey rat, lab rat, black rat and fat rat" width={820} height={452} />
+
+`@voxolith/gen-creature` makes rigged, animated creatures: a rat first, with other small quadrupeds
+to follow from the same shape and different parameters. The entity is a rest-pose model whose voxels
+each know their bone, a rig, and a set of generated clips. Play, blend and bake them with
+[`@voxolith/engine/animation`](/docs/engine/animation/).
+
+```ts
+import { seededRandom } from "@voxolith/renderer/core";
+import { generateCreature, PRESETS } from "@voxolith/gen-creature";
+import { bakePose, makeAnimator, poseMatrices } from "@voxolith/engine/animation";
+
+const { entity } = generateCreature(PRESETS.rat, seededRandom(1));
+const anim = makeAnimator(entity, "walk");
+
+// every frame:
+anim.update(dt);
+const posed = bakePose(entity.model, entity.rig!, poseMatrices(entity.rig!, anim.pose()), { yaw });
+```
+
+For many animated creatures, bake through the engine's pose cache and crowd rather than one
+`bakePose` per frame each; see [stamping and crowds](/docs/engine/stamping-and-crowds/).
+
+## Rig and clips
+
+The rig has 26 bones: pelvis, spine, chest, neck, head, two ears, a seven-bone tail, and upper,
+lower and foot for each of the four legs (`FL`, `FR`, `HL`, `HR`, exported as `LEGS`). Each bone
+rotates about its head; the model binds every voxel to one bone through `model.bones`.
+
+<ImageZoom src="/generators/creature-clips.webp" alt="Frames of the walk, turn-left, turn-right, run, idle, sniff and death clips" width={1600} height={1125} />
+
+The clips are generated from the `gait` parameters (`stride`, `pace`, `bounce`, `tailSway`):
+
+| clip | loop | notes |
+|---|---|---|
+| `walk` | yes | legs in diagonal pairs, a small bob, a `foot.<leg>` event at each footfall |
+| `turn-left`, `turn-right` | yes | the walk with the spine, neck and head yawed into the turn and the tail swung out of it |
+| `run` | yes | a bounding gallop with the spine flexing; `foot.front` and `foot.hind` events |
+| `idle` | yes | 3 s of breathing, bursts of sniffing and an ear twitch |
+| `sniff` | yes | 2 s rearing up on the hind legs and looking around |
+| `death` | no | a roll onto the side, going limp |
+
+Clips are keyed at 12 frames per second, like sprite animation: it suits voxels, where a limb only
+moves a whole voxel or so between keys anyway, and lets a host cache baked poses per frame. Loops
+repeat their first key at the end, so they close exactly. Rotations are quaternions relative to rest,
+about each bone's head, in its parent's frame; clips can also carry a root offset (a bob, a crouch)
+and named events.
+
+## Inside
+
+<ImageZoom src="/generators/creature-cut.webp" alt="A rat cut open along its length, showing fur, fat, flesh, bone and organs" width={820} height={452} />
+
+Under the fur there is fat, flesh and muscle by depth, a skeleton down the spine, legs and tail, a
+skull around a brain, lungs and a heart in the chest and a gut in the belly. The body is built with
+gen-kit's [`RiggedVolume`](/docs/generators/api/gen-kit/gen-kit/classes/RiggedVolume/): masses
+are filled per bone, parents before children so each child owns its joint, then `layerInterior`
+re-roles the mass by depth and bone cores and organs are stamped afterwards.
+
+All of it is out of sight until [`wound`](/docs/engine/api/animation/functions/wound/) carves the
+model or [`sever`](/docs/engine/api/animation/functions/sever/) takes a limb off. Both work on the rest
+model, so damage follows the creature through every pose baked afterwards. When a pose uncovers flesh
+that was buried at rest (under a swinging haunch), the rig's `cover` table, which maps each interior
+role to fur, draws it as fur; `bakePose` uses it by default. Only damage ever shows the inside.
+
+The 19 roles are the eleven visible on a whole animal (fur, dark and light fur, belly, skin, dark
+skin, claw, eye, eye shine, nose, tooth) and eight inside (fat, flesh, muscle, bone, marrow, organ,
+dark organ, blood), exported as `INTERIOR`. Eyes, organs and blood carry a glossy material hint.
+
+## Resolution rules
+
+The proportions are chosen so the rat animates without losing the voxel look:
+
+- nothing animated is thinner than 2 voxels, except the last third of the tail;
+- at least 4 voxels between joints, so a 15 degree bend moves a limb end by a voxel;
+- the detail budget goes to the head (eyes, ears, snout, incisors); the body stays simple masses;
+- legs are longer than a real rat's (`legLength` 1.5): a real rat's legs hide under its belly, and a
+  gait nobody can see does not read.
+
+The default rat is about 3.5k voxels and 26 bones, and bakes a posed model in about 2 ms
+(`bun run --cwd generators/creature bench` measures it).
+
+## Real scale
+
+The presets are stylised game rats: 75 voxels nose to tail tip at `size` 1.2, which is right beside
+a 10 voxels-per-metre house, but a 75 cm rat in a 1 cm world. The creature has no finer `scales`:
+it is authored near that resolution already. Instead,
+[`atScale(params, voxelsPerMetre)`](/docs/generators/api/gen-creature/functions/atScale/) sizes any
+preset for a world with a fixed unit, keeping the presets' ratios to each other and snapping to the
+0.05 grid of `shape.size` (never below 0.7):
+
+```ts
+import { atScale, generateCreature, PRESETS } from "@voxolith/gen-creature";
+
+const rat = generateCreature(atScale(PRESETS.rat, 100), seededRandom(1)).entity;
+// size 0.8: 49 voxels long, a large brown rat of about 50 cm
+```
+
+Small rats are where the resolution rules bite, so below size 1 the body keeps floors: lower legs and
+feet stay over 2 voxels across and the first part of the tail over 1.5; there is no fat layer; and
+bone and organs sit one voxel shallower, so a wound still shows them.
+
+## Presets
+
+| preset | differs from `rat` |
+|---|---|
+| `rat` | a brown rat with a pale belly |
+| `grey rat` | grey coat |
+| `lab rat` | white, red-eyed, barely mottled |
+| `black rat` | black, slimmer, longer tail, bigger ears |
+| `fat rat` | more girth, slower pace, more bounce |
+
+## Development
+
+```sh
+bun run --cwd generators/creature verify            # binding, hidden interior, chest slice, every clip in one piece, footfalls, damage
+bun run --cwd generators/creature preview species   # also: cut, clips, walk, turns; --scale 100 for the real-size rat
+bun run --cwd generators/creature bench             # pose and bake cost
+```
+
+`verify` runs every clip and damage check at both the preset size and the 100 voxels-per-metre size.
+
+## Creature
+
+<GeneratorReference id="voxolith/creature" />
+
+See the [API reference](/docs/generators/api/gen-creature/) for `generateCreature`, `atScale` and the
+parameter types.

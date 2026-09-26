@@ -1,0 +1,122 @@
+---
+title: Atmosphere
+description: "@voxolith/engine/atmosphere: timeOfDay, Atmosphere presets, blending, transitions, approach, and atmosphereFrame, which yields renderer settings."
+---
+
+Time of day and weather are layered in three:
+
+- the **renderer** draws raw atmospheric effects (`fog`, `clouds`, `precipitation`, `surface`,
+  `waterWind` in [`FrameParams`](/docs/renderer/api/renderer/interfaces/FrameParams/), all off at
+  zero) and knows nothing about weather ([Atmosphere](/docs/renderer/atmosphere/) under Renderer);
+- the **engine**, `@voxolith/engine/atmosphere`, is the vocabulary and the translator: a way to
+  describe the sky, presets, blending and transitions, and one function that turns time of day
+  plus an atmosphere into the renderer's settings;
+- the **game** decides whether there is weather, when it changes, and how wetness and snow cover
+  build up.
+
+Keep policy out of the engine and meaning out of the renderer. The module has no simulation and no
+clock of its own, and it is optional: a game without weather never imports it.
+
+```ts
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+
+renderer.render({ ...camera, ...atmosphereFrame(timeOfDay(0.5), { ...ATMOSPHERES.rain, wetness: 0.7 }), time });
+```
+
+## Time of day
+
+[`timeOfDay(phase, options?)`](/docs/engine/api/atmosphere/functions/timeOfDay/) returns the
+lighting half of `FrameParams` (everything but the camera) as a
+[`Lighting`](/docs/engine/api/atmosphere/interfaces/Lighting/): key light direction and colour, sky
+and ground ambient, sun and moon directions, colours and intensities, sky top and horizon, and the
+night factor.
+
+- `phase` runs 0 to 1 over a day: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset.
+- The sun rises in +X and sets in -X on a tilted arc towards +Z, as at mid latitudes: the noon sun
+  stands about 55° up and off to one side, so walls are lit rather than only roofs. The moon is
+  opposite.
+- By day the key light follows the sun (never lower than a flattering elevation). At night it
+  becomes a dim blue moonlight, and the ambient drops low enough for point lights to carry the
+  scene. Around dusk both keys fade out together, so the hand-over is invisible.
+- [`TimeOfDayOptions`](/docs/engine/api/atmosphere/interfaces/TimeOfDayOptions/): `nightAmbient`
+  (0.12; 0 pitch black, 1 as bright as day) and `moonlight` (0.35, relative to sunlight).
+
+Animate a transition by animating `phase`; the sky passes through sunset on the way. The moon disc
+lights nothing itself: `lightDir`, `lightColor` and the ambients do.
+
+## Describing weather
+
+An [`Atmosphere`](/docs/engine/api/atmosphere/interfaces/Atmosphere/):
+
+| field | range | meaning |
+|---|---|---|
+| `cloud` | 0 to 1 | clear to overcast |
+| `precipitation` | `{ kind, intensity }` | `kind` is `"none"`, `"rain"` or `"snow"`; intensity 0 to 1 |
+| `wind` | `{ direction, strength }` | degrees the wind blows towards (0 = +Z, 90 = +X), strength 0 to 1 |
+| `fog` | 0 to 1 | mist on top of whatever the precipitation brings |
+| `wetness` | 0 to 1 | how wet the ground is |
+| `cover` | 0 to 1 | how much snow has settled |
+
+`wetness` and `cover` are the ground's state rather than the sky's. They build up and fade over
+time by the game's rules; presets leave them at 0.
+
+[`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/) has presets: `clear`, `cloudy`,
+`overcast`, `rain`, `storm`, `snow`, `blizzard`, `fog`.
+
+## Changing it
+
+- [`blendAtmosphere(a, b, t)`](/docs/engine/api/atmosphere/functions/blendAtmosphere/) mixes two.
+  A change of precipitation kind fades one out before the other fades in (no sleet halfway between
+  rain and snow), and the wind turns the short way round.
+- [`makeAtmosphereTransition(start?)`](/docs/engine/api/atmosphere/functions/makeAtmosphereTransition/)
+  returns an [`AtmosphereTransition`](/docs/engine/api/atmosphere/interfaces/AtmosphereTransition/):
+  `set(target, seconds = 4)` eases towards a new atmosphere from wherever it is now (so a change of
+  mind mid-transition does not jump), `update(dt)` returns the current one, and `changing()` says
+  whether to keep rendering.
+- [`approach(value, target, rate, dt)`](/docs/engine/api/atmosphere/functions/approach/) moves a
+  value towards a target by at most `rate * dt`, never past it. It is for a game's own
+  accumulators: rain soaking the ground, snow settling, things drying.
+
+```ts
+const weather = makeAtmosphereTransition(ATMOSPHERES.clear);
+let wetness = 0;
+
+function frame(dt: number, phase: number) {
+  if (forecastSaysRain()) weather.set(ATMOSPHERES.rain, 8);
+  const atm = weather.update(dt);
+  const raining = atm.precipitation.kind === "rain" ? atm.precipitation.intensity : 0;
+  wetness = approach(wetness, raining > 0 ? 1 : 0, raining > 0 ? 0.05 : 0.01, dt);
+  renderer.render({ ...camera, ...atmosphereFrame(timeOfDay(phase), { ...atm, wetness }), time });
+}
+```
+
+## Into the renderer
+
+[`atmosphereFrame(lighting, atmosphere, options?)`](/docs/engine/api/atmosphere/functions/atmosphereFrame/)
+returns the lighting plus the renderer's [`AtmosphereParams`](/docs/renderer/api/renderer/interfaces/AtmosphereParams/)
+for one frame:
+
+- Cloud blocks the direct key light and turns it into sky light: overcast dims and flattens the
+  key light and greys the sky, keeping the night dark. Rain clouds are darker than white ones.
+- Fog takes the horizon's colour; precipitation adds some fog of its own (snow more than rain).
+- Wind tilts the rain and snow, drifts the clouds and drives the water (`waterWind`).
+- Precipitation particles are lit like the scene, mostly ambient with some key light.
+- `wetness` and `cover` become the renderer's `surface` settings.
+- With a clear atmosphere the lighting passes through unchanged.
+
+[`AtmosphereFrameOptions`](/docs/engine/api/atmosphere/interfaces/AtmosphereFrameOptions/):
+`coverColor` for settled snow, `rainSpeed` (70 voxels per second) and `snowSpeed` (8), and
+`voxelsPerMetre`.
+
+### Scale
+
+Everything is tuned for 10 voxels per metre. `atmosphereFrame(lighting, atmosphere, { voxelsPerMetre: 100 })`
+gives the same weather in a finer world, in metres: fog per voxel thins, rain and snow fall more
+voxels per second, and the renderer's `effectScale` keeps waves and drops their size.
+
+<Callout title="Continuous rendering">
+  Rain, snow and water animate from `FrameParams.time`, so an app with weather or water on screen
+  renders continuously. With a still camera under vsync, pass `retryAfterMs: Infinity` to
+  `makePerf` and call `perf.reprobe()` when the view moves; see
+  [Quality and performance](/docs/renderer/quality-and-performance/).
+</Callout>

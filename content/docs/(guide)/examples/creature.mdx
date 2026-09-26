@@ -1,0 +1,93 @@
+---
+title: creature
+description: "Rigged, animated rats from gen-creature, baked through a pose cache and stamped with makeBrickStamper. Tap one to wound it, tap again to take a limb off."
+---
+
+**[Open the live page](/examples/creature/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/creature/main.ts)
+
+<ImageZoom src="/shots/creature.webp" alt="The creature example: eight rats in four coats on a grassy field" width={960} height={540} />
+
+Eight rats in four coats wander a small field, turning, sniffing and idling. Tap or click one:
+the first hit opens a wound where you hit it (fur onto fat, flesh and bone) and it runs; a second
+hit on a leg, the tail or the head takes it off, and the piece flies off as a gib that tumbles and
+comes to rest. Blood drops fly and stain the ground. Enough damage and the rat dies.
+
+## What it shows
+
+- **Rigged entities.** [`generateCreature`](/docs/generators/api/gen-creature/functions/generateCreature/)
+  returns a model whose voxels each belong to a bone, a rig and clips. See
+  [Creatures](/docs/generators/creature/) for the parameters and resolution rules.
+- **Playing and baking by hand.** [`makeAnimator`](/docs/engine/api/animation/functions/makeAnimator/)
+  plays and cross-fades clips; [`sampleClip`](/docs/engine/api/animation/functions/sampleClip/),
+  [`poseMatrices`](/docs/engine/api/animation/functions/poseMatrices/) and
+  [`bakePose`](/docs/engine/api/animation/functions/bakePose/) turn a clip time into posed voxels at
+  any heading; [`makePoseCache`](/docs/engine/api/animation/functions/makePoseCache/) keeps them,
+  keyed by variant, damage, clip, frame and one of 16 headings, so most frames cost a stamp, not
+  a bake.
+- **Moving things through the world.** [`makeBrickStamper`](/docs/engine/api/engine/functions/makeBrickStamper/)
+  and [`toSprite`](/docs/engine/api/engine/functions/toSprite/) write each rat, gib and blood drop,
+  and restore what they covered when they move.
+- **Damage.** [`wound`](/docs/engine/api/animation/functions/wound/) carves the rest model around a
+  point; [`sever`](/docs/engine/api/animation/functions/sever/) splits off a bone's subtree as a
+  piece with its own rig; both take a `rim` role for the cut surface.
+- **Picking a bone.** A tap is marched through each rat's posed box; the hit voxel's bone and the
+  inverse of its pose matrix ([`invertRigid`](/docs/engine/api/animation/functions/invertRigid/),
+  [`transformPoint`](/docs/engine/api/animation/functions/transformPoint/)) give the point in rest
+  space where the wound goes.
+- **Taps, not drags.** [`recogniseGestures`](/docs/engine/api/input/functions/recogniseGestures/)
+  with the orbit camera on the same input: a drag turns the view, a tap hits.
+
+## The interesting part
+
+The pose for a frame, from the cache:
+
+```ts
+const posed = (r: Rat) => {
+  const clip = r.anim.clip();
+  const f = Math.floor(r.anim.time() * FPS);
+  const yb = ((Math.round((r.yaw / (Math.PI * 2)) * YAWS) % YAWS) + YAWS) % YAWS;
+  const key = `${r.kind}.${r.id}.${r.damage}|${clip}|${f}|${yb}`;
+  return cache.get(key, () => {
+    const c = r.entity.clips!.find((k) => k.id === clip)!;
+    const n = r.rig.bones.length;
+    const mats = poseMatrices(r.rig, sampleClip(c, f / FPS, n));
+    const yaw = (yb / YAWS) * Math.PI * 2;
+    const model = bakePose(r.rest, r.rig, mats, { yaw });
+    return { model, sprite: toSprite(model), mats, yaw };
+  });
+};
+```
+
+and a hit, which wounds on the first tap and severs on the next:
+
+```ts
+const cut = r.hits > 1 ? severable(r, h.bone) : null;
+if (cut !== null && !r.lost.has(cut)) {
+  const res = sever(r.rest, r.rig, cut, { rim: ROLE.BLOOD });
+  r.rest = res.body;
+  // ... the piece becomes a gib
+} else {
+  r.rest = wound(r.rest, h.rest, 2.2, { rim: ROLE.BLOOD });
+  // ...
+}
+r.damage++;
+```
+
+Bumping `damage` changes the cache key, so the damaged body is baked afresh while undamaged rats
+keep sharing poses.
+
+For many creatures without the per-rat damage, [`makeCrowd`](/docs/engine/api/animation/functions/makeCrowd/)
+does the caching and stamping for you: see the [swarm](/docs/examples/swarm/) and the
+[tutorial's rats](/docs/tutorial/rats/).
+
+## URL options
+
+| option | default | effect |
+|---|---|---|
+| `?count=` | 8 | number of rats, 1 to 40 |
+| `?seed=` | `rats` | a different field and different rats |
+
+Plus the [common ones](/docs/examples/#common-url-options), including `?perf`.
+
+See also [Animation](/docs/manual/animation/) and [Picking](/docs/manual/picking/).

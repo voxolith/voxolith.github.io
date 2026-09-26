@@ -1,0 +1,65 @@
+---
+title: Manual
+description: Task-by-task guide to building a game on Voxolith, from storing a world and placing models to input, lighting, weather, performance and deployment.
+---
+
+The manual is organised by task. Each page answers one question you will have while making a
+game: how do I do this, which parts of Voxolith are involved, what does it cost, and what goes
+wrong. Pages are short and link out to the [API reference](/docs/renderer/api/) and to the
+concept pages of each package when you need the full picture.
+
+If you have not drawn anything yet, start with [Getting started](/docs/getting-started/) and the
+[tutorial](/docs/tutorial/). The manual assumes you have a canvas, a `GpuContext` from `initGpu`
+and a `Renderer` from `createRenderer`.
+
+## How the pieces fit
+
+Voxolith is three layers, and the manual follows their split:
+
+- **`@voxolith/renderer`** draws. It holds the world as bricks, draws instances, lights and
+  atmospheric effects, and knows nothing about entities, weather or gameplay.
+- **`@voxolith/engine`** is the vocabulary between them: entities and colour roles, palettes,
+  placement, streaming, instances, input, animation and atmosphere presets.
+- **Generators** (`@voxolith/gen-*`) bake models: trees, rocks, buildings, creatures, terrain.
+
+Your game decides what happens and when. Where the engine offers a helper for a policy (a phone
+profile, a weather rule, a quality setting), it is a suggestion the game is free to replace.
+
+## The world
+
+<Cards>
+  <Card title="Worlds and storage" href="/docs/manual/worlds-and-storage/" description="Dense grids, bricks, editing voxels, what memory costs." />
+  <Card title="Palettes and roles" href="/docs/manual/palettes-and-roles/" description="256 world slots, colour roles, materials, restyling." />
+  <Card title="Entities" href="/docs/manual/entities/" description="Models with an anchor and roles; orientations; stamping." />
+  <Card title="Using generators" href="/docs/manual/using-generators/" description="Trees, rocks, houses from a seed; share codes; finer scales." />
+  <Card title="Instances" href="/docs/manual/instances/" description="Draw one model many times at any heading, without stamping." />
+  <Card title="Streaming" href="/docs/manual/streaming/" description="Chunked worlds around the camera; deterministic scatter." />
+</Cards>
+
+## Interaction
+
+<Cards>
+  <Card title="Input" href="/docs/manual/input/" description="One input per surface, gestures, actions, touch controls." />
+  <Card title="Cameras" href="/docs/manual/cameras/" description="Orbit, first person and chase cameras; yaw conventions." />
+  <Card title="Picking" href="/docs/manual/picking/" description="Turn a tap into a ray, a ground point or a voxel." />
+  <Card title="Animation" href="/docs/manual/animation/" description="Rigged creatures, clips, crowds and damage." />
+</Cards>
+
+## The look
+
+<Cards>
+  <Card title="Lighting" href="/docs/manual/lighting/" description="One key light, up to 32 point lights, shadows and glow." />
+  <Card title="Atmosphere and weather" href="/docs/manual/atmosphere-and-weather/" description="Time of day, fog, clouds, rain, snow, wet ground." />
+  <Card title="Water" href="/docs/manual/water/" description="The water material: ripples, refraction, wind." />
+  <Card title="Effects" href="/docs/manual/effects/" description="Explosions, muzzle flashes, debris and stains." />
+</Cards>
+
+## Assets and shipping
+
+<Cards>
+  <Card title="File formats" href="/docs/manual/file-formats/" description="MagicaVoxel .vox in and out, Minecraft regions." />
+  <Card title="Workers and caching" href="/docs/manual/workers-and-caching/" description="Generate off the main thread; keep models in IndexedDB." />
+  <Card title="Performance" href="/docs/manual/performance/" description="Render on demand, quality presets, adaptive scale." />
+  <Card title="Mobile and PWA" href="/docs/manual/mobile-and-pwa/" description="Phones, touch controls, installable offline games." />
+  <Card title="Deploying" href="/docs/manual/deploying/" description="HTTPS, base paths, GitHub Pages." />
+</Cards>

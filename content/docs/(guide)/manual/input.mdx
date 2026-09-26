@@ -1,0 +1,117 @@
+---
+title: Input
+description: Take mouse, touch, keyboard and gamepad input through @voxolith/engine/input - one input per surface, gestures, named actions and touch controls.
+---
+
+All camera and movement input goes through `@voxolith/engine/input`, never through listeners you add
+yourself. One `createInput` per surface owns every listener; gestures, actions, on-screen controls
+and camera controllers all read from it. Two controls can then share a canvas without fighting, the
+whole lot disposes in one call, and the same game code runs on a desktop, a phone and a gamepad.
+
+## Setting up a surface
+
+```ts
+import { createInput, makeOrbitController, prepareSurface, recogniseGestures } from "@voxolith/engine/input";
+
+prepareSurface(canvas, { contextMenu: false }); // no browser pan, zoom, selection or tap flash
+const input = createInput(canvas, { loop });     // every event invalidates the frame loop
+const orbit = makeOrbitController(input, { distance: 200, distanceLimits: [40, 600], pan: "secondary" });
+recogniseGestures(input, { tap: (t) => select(t.x, t.y) });
+```
+
+- `prepareSurface` replaces per-app `touch-action` CSS. `contextMenu: false` suppresses the context
+  menu so right-drag can pan.
+- Passing `{ loop }` makes every input event call `loop.invalidate()`, which is all a
+  render-on-demand app needs. While something is held, `input.active()` is true; render
+  continuously then if your controls move things over time.
+- Keys are read by `KeyboardEvent.code` (physical position), so WASD stays put on AZERTY. Held keys
+  are released when the window loses focus. Only codes passed to `input.captureKeys` have their
+  default action prevented.
+
+## Gestures
+
+`recogniseGestures(input, handlers, options)` turns raw pointers into `tap`, `doubleTap`,
+`longPress`, `dragStart`/`drag`/`dragEnd`, `pinch` and `wheel`.
+
+- Tap versus drag is decided on **total travel** since the pointer went down, not on any single
+  move, so a slow pan that crawls a pixel at a time is still a drag. The slop is 6 px for a mouse,
+  8 for a pen, 10 for touch. Past it, a pointer is a drag for the rest of its life.
+- A second finger turns a drag into a pinch (the drag ends with `cancelled`). After a pinch nothing
+  is a tap until every finger is up. Ctrl+wheel, which is how trackpads report a pinch, arrives as a
+  pinch too.
+- Several recognisers can share an input. Give the one that should win a higher `priority`, and
+  have it claim the pointer. The camera controllers then leave it alone:
+
+```ts
+const owner = {};
+input.on((e) => {
+  if (e.kind !== "pointer") return;
+  if (e.phase === "down" && nearHandle(e.pointer.x, e.pointer.y)) input.claim(e.pointer.id, owner);
+  else if (e.phase === "move" && input.claimedBy(e.pointer.id) === owner) dragHandle(e.pointer.x, e.pointer.y);
+}, 10);
+```
+
+The world example's draggable lamp works exactly like this. In a recogniser, return `true` from
+`dragStart` (or from `press`, to claim from the first touch) instead.
+
+## Actions: controls by meaning
+
+Game code should ask for `jump`, not Space. `makeActions` binds named buttons and axes to `key:`,
+`pad:` and `touch:` sources together, and `makeTouchControls` puts a floating joystick and buttons on
+screen that feed the `touch:` ones.
+
+```ts
+import { axis, button, createInput, makeActions, makeTouchControls, prepareSurface } from "@voxolith/engine/input";
+
+prepareSurface(canvas);
+const input = createInput(canvas);
+const actions = makeActions(input, {
+  strafe: axis({ negative: ["key:KeyA"], positive: ["key:KeyD"], analog: ["pad:LeftX", "touch:move.x"] }),
+  walk: axis({ negative: ["key:KeyS"], positive: ["key:KeyW"], analog: ["pad:LeftY-", "touch:move.y-"] }),
+  jump: button("key:Space", "pad:A", "touch:jump"),
+});
+makeTouchControls(input, { joysticks: [{ id: "move", side: "left" }], buttons: [{ id: "jump", label: "Jump" }] });
+
+// In the frame callback:
+input.update();                                   // once per frame, before reading edges
+const [sx, wz] = actions.vector("strafe", "walk"); // clamped to the unit circle
+if (actions.pressed("jump")) jump();
+```
+
+- Screen and stick Y are down-positive; `pad:LeftY-` and `touch:move.y-` read the stick pushed up.
+- `pressed` and `released` report what changed between the last two `input.update()` calls. Call
+  `update()` exactly once per frame, before reading them.
+- Bindings are plain JSON: `actions.bindings()` to save a player's rebinding, `actions.load(saved)`
+  to restore it.
+- Touch controls show once a touch is seen and hide on mouse, keyboard or gamepad use. Theme them
+  with `--vx-control-bg`, `--vx-control-fg` and `--vx-control-active`.
+
+## Pointer lock and gamepads
+
+`makeLookController` asks for pointer lock when the surface is clicked with a mouse (Esc
+releases); while locked, movement arrives as `look` events rather than pointer events. The first
+connected gamepad (standard mapping, radial deadzone 0.15) is polled in `input.update()`, so a game
+that reads the pad must render continuously while it is in use; connecting one invalidates the
+loop. `input.lastDevice()` and `input.onDevice(fn)` tell you what the player used last, for showing
+the right prompts.
+
+## Pitfalls
+
+- Do not add your own `pointerdown` or `keydown` listeners for gameplay: they bypass claiming and
+  the frame loop. The input tracks pressed pointers, not a hovering mouse, so the examples add a
+  plain `pointermove` listener for hover feedback (a cursor change) only.
+- One `createInput` per surface. Priorities and claims live in an input, so a second one on the
+  same canvas cannot coordinate with the first.
+- Call `input.dispose()` when a surface goes away; it removes every listener and releases pointer
+  lock.
+
+## See also
+
+- [Cameras](/docs/manual/cameras/) for the orbit and look controllers and their yaw conventions
+- [Mobile and PWA](/docs/manual/mobile-and-pwa/) for touch-first layouts
+- [Engine: input](/docs/engine/input/)
+- API: [`createInput`](/docs/engine/api/input/functions/createInput/),
+  [`recogniseGestures`](/docs/engine/api/input/functions/recogniseGestures/),
+  [`makeActions`](/docs/engine/api/input/functions/makeActions/),
+  [`makeTouchControls`](/docs/engine/api/input/functions/makeTouchControls/),
+  [`prepareSurface`](/docs/engine/api/input/functions/prepareSurface/)

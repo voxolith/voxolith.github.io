@@ -1,0 +1,144 @@
+---
+title: Stamping and crowds
+description: "Moving entities through a streamed brick world with makeBrickStamper, and animating many rigged members on a budget with makeCrowd, pose caches and LOD."
+---
+
+A creature, a thrown limb or a projectile can be stamped into the same brick grid as the scenery.
+Moving it means putting back what it covered and writing it somewhere else. A streamed world has
+no dense copy to restore from, so the engine's stamper keeps, per brick, exactly the cells it
+overwrote. For many animated things, a crowd poses, caches and stamps them on a time budget.
+
+## The brick stamper
+
+[`makeBrickStamper(target, { size? })`](/docs/engine/api/engine/functions/makeBrickStamper/)
+returns a [`BrickStamper`](/docs/engine/api/engine/interfaces/BrickStamper/):
+
+```ts
+import { makeBrickStamper, toSprite } from "@voxolith/engine";
+
+const stamper = makeBrickStamper(renderer, { size: SIZE });
+const sprite = toSprite(barrel.model);             // surface voxels only
+
+stamper.put(1, sprite, { x: 40, y: 12, z: 80 }, barrelBase);
+stamper.commit();                                  // write
+
+stamper.put(1, sprite, { x: 41, y: 12, z: 80 }, barrelBase);
+const { bricks, voxels, movers } = stamper.commit(); // restore where it was, write where it is
+```
+
+- `put(id, sprite, origin, base)` places or moves mover `id` (its anchor at `origin`, role `v` as
+  slot `base + v - 1`). Nothing changes in the world until `commit`. A `put` with the same sprite,
+  rounded position and base is ignored.
+- `remove(id)` takes it out at the next commit.
+- `commit()` touches only bricks where a changed mover was or now is. For each, inside the same
+  brick edit, it restores what the movers had overwritten (reading the brick's current contents,
+  so scenery edited meanwhile survives), then writes every mover in that brick in a stable order
+  and records what they cover now. It returns
+  [`StampStats`](/docs/engine/api/engine/interfaces/StampStats/).
+
+`target` is a [`MultiBrickTarget`](/docs/engine/api/engine/interfaces/MultiBrickTarget/): an
+`edit(box, fill)`, and optionally `editMany(boxes, fill)`, which the stamper prefers so a frame's
+bricks go out in one upload. [`Renderer`](/docs/renderer/api/renderer/classes/Renderer/) has both.
+Pass `size` to drop voxels outside the world.
+
+### Sprites
+
+Movers are handed in as [`Sprite`](/docs/engine/api/engine/interfaces/Sprite/)s: the voxels worth
+writing as local indices and role values, grouped by destination brick at `put`.
+[`toSprite(model, { surfaceOnly? })`](/docs/engine/api/engine/functions/toSprite/) keeps only
+surface voxels by default: the inside of a solid mover is never seen, and skipping it more than
+halves the work. Pass `{ surfaceOnly: false }` for a mover that will be cut open.
+
+## Crowds
+
+A crowd member is a rigged entity plus where it is, which way it faces, and its
+[animator](/docs/engine/animation/). Each update,
+[`makeCrowd`](/docs/engine/api/animation/functions/makeCrowd/) picks every member's pose
+frame, fetches the baked pose from a shared cache or bakes it within a millisecond budget, and
+hands the result to a stamper or an instance layer.
+
+```ts
+import { makeBrickStamper } from "@voxolith/engine";
+import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
+
+const crowd = makeCrowd({ stamper: makeBrickStamper(renderer, { size: SIZE }), near: 140, farFps: 6, freeze: 700, budgetMs: 5 });
+
+const rats: CrowdMember[] = variants.map((entity, i) => ({
+  id: i + 1, entity, variant: `rat${i}`, anim: makeAnimator(entity, "walk"),
+  base: bases[i], x: 100 + i * 20, y: 1, z: 100, yaw: 0,
+}));
+
+// every frame: move them, advance their animators, then
+for (const r of rats) r.anim.update(dt);
+const stats = crowd.update(rats, camPos);
+```
+
+[`CrowdMember`](/docs/engine/api/animation/interfaces/CrowdMember/) fields: a stable `id`
+(unique among the stamper's movers), the `entity`, a `variant` key shared by members that look
+identical, the `anim`, the palette `base`, the position `x, y, z` of the anchor and `yaw` in
+radians (0 facing +z). To show damage, give the member its own `rest` model (from
+[`wound` or `sever`](/docs/engine/animation/#damage)) and bump `damage` so cached poses of the old
+body are not reused.
+
+### Output: stamper or instances
+
+Exactly one of `stamper` or `instances` is required.
+
+<Tabs items={["stamper", "instances"]}>
+<Tab value="stamper">
+Members are written into the world's bricks through a [`BrickStamper`](#the-brick-stamper). Poses
+are baked at a bucketed heading (`headings`, default 16; plenty at voxel scale), stored as sprites,
+and members land on whole voxels. Beyond `near`, a member is re-stamped only when its pose frame
+changes (`stepFar`, default on), so distant members move in steps like sprite animation instead of
+re-stamping whenever their rounded position changes.
+</Tab>
+<Tab value="instances">
+Members are drawn by reference through an [`InstanceLayer`](/docs/engine/instances/): each pose is
+uploaded once as a model, with no heading buckets since the instance turns it, and members move
+and turn smoothly at fractional positions with nothing written into the world. The crowd calls
+`layer.setDynamic` and `layer.commit()` at the end of each update, and frees the GPU model of an
+evicted pose once no member shows it.
+</Tab>
+</Tabs>
+
+### Level of detail and budget
+
+[`CrowdOptions`](/docs/engine/api/animation/interfaces/CrowdOptions/):
+
+| option | default | meaning |
+|---|---|---|
+| `fps` | 12 | clip sampling rate near the camera (the clips' own rate) |
+| `near` | 120 | full rate within this distance |
+| `farFps` | 6 | sampling rate beyond `near` |
+| `freeze` | 400 | beyond this, poses freeze (members still move) |
+| `budgetMs` | 4 | milliseconds per update allowed for new bakes |
+| `headings` | 16 | heading buckets (stamper only) |
+| `stepFar` | true | beyond `near`, re-stamp only on a new pose frame (stamper only) |
+| `keepModels` | false | keep each pose's full posed model, not just its sprite, for exact hit tests |
+| `cache` | a 96 MB pose cache | share one [`PoseCache`](/docs/engine/api/animation/interfaces/PoseCache/) between crowds |
+
+Once the budget is spent in an update, a member whose pose is not cached keeps last frame's pose
+(counted as `deferred`) rather than stalling the frame. Poses are keyed by variant, damage, clip,
+frame and heading bucket, so a herd sharing a few variants and clips asks for the same few hundred
+poses over and over. `crowd.last(id)` returns the
+[`BakedPose`](/docs/engine/api/animation/interfaces/BakedPose/) a member was last shown with,
+including its bone matrices, for hit tests. `update` returns
+[`CrowdStats`](/docs/engine/api/animation/interfaces/CrowdStats/): members, bakes,
+deferred, cache hits, and the stamper's bricks, voxels and movers.
+
+## Cost
+
+Measured headless with `bun run --cwd generators/creature bench`: CPU per frame for the crowd
+update and brick edits, not the upload or the draw, for rats wandering a 512 x 512 field at 60 Hz,
+stamped.
+
+| rats | ms/frame | bakes/frame | bricks/frame | upload KB/frame |
+|---|---|---|---|---|
+| 10 | 0.4 | 0.1 | 52 | 15 |
+| 100 | 2.8 | 0.6 | 515 | 145 |
+| 500 | 15.5 | 1.0 | 2347 | 660 |
+| 1000 | 37.9 | 1.2 | 4293 | 1207 |
+
+Past a few hundred, brick re-encoding dominates. The instance path removes both the re-encode and
+the upload, which is why `examples/valley` draws its rats as instances; `examples/swarm` shows the
+stamped path live.

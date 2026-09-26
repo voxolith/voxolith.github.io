@@ -1,0 +1,16 @@
+{
+  "root": true,
+  "title": "Guide",
+  "description": "Making games with Voxolith",
+  "icon": "BookOpen",
+  "pages": [
+    "index",
+    "getting-started",
+    "tutorial",
+    "manual",
+    "examples",
+    "troubleshooting",
+    "---Project---",
+    "contributing"
+  ]
+}

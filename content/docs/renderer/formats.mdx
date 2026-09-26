@@ -1,0 +1,143 @@
+---
+title: Formats
+description: "Reading and writing MagicaVoxel .vox (base models, the extended scene graph, materials and animation frames) and loading Minecraft Anvil .mca regions."
+---
+
+The renderer reads and writes MagicaVoxel `.vox` and reads Minecraft Anvil `.mca` regions. The
+readers are pure (no `fs`, no GPU): they take bytes and return data, so they run in the browser, in
+workers and in bun tools. Import them from `@voxolith/renderer/vox` or `@voxolith/renderer/core` in
+tools; browser code may use the main barrel.
+
+For `.vox` files as **entities** (a model with an anchor and named colour roles), use the engine's
+[`entityFromVox` and `entityToVox`](/docs/engine/vox/), which sit on top of these.
+
+## MagicaVoxel `.vox`
+
+The format is a RIFF-like tree of chunks under a root `MAIN`. MagicaVoxel is **Z-up**; the
+renderer's grid is Y-up, so a model's `z` becomes the grid's `y`.
+
+### One model
+
+[`parseVox(buffer)`](/docs/renderer/api/vox/functions/parseVox/) reads the base format: the first
+model's `SIZE` and `XYZI` chunks and the optional `RGBA` palette (the MagicaVoxel default palette
+when there is none). It returns a [`VoxModel`](/docs/renderer/api/vox/interfaces/VoxModel/):
+
+- `size`, in MagicaVoxel axes;
+- `voxels`, a list of `{ x, y, z, c }` with a 1-based colour index;
+- `palette`, 256 RGBA bytes indexed by `c` (file entry `i` is palette index `i + 1`; entry 0 is
+  unused).
+
+```ts
+import { parseVox } from "@voxolith/renderer/vox";
+
+const vox = parseVox(await (await fetch("oak.vox")).arrayBuffer());
+const size = { x: vox.size.x, y: vox.size.z, z: vox.size.y }; // Z-up to Y-up
+const data = new Uint8Array(size.x * size.y * size.z);
+for (const v of vox.voxels) data[v.x + v.z * size.x + v.y * size.x * size.y] = v.c;
+```
+
+### Scenes, materials and animation
+
+[`parseVoxScene(buffer)`](/docs/renderer/api/vox/functions/parseVoxScene/) reads the full
+extended format into a [`VoxScene`](/docs/renderer/api/vox/interfaces/VoxScene/): every model, the
+`nTRN` / `nGRP` / `nSHP` scene graph with its rotations and translations, `MATL` materials, `LAYR`
+layers and keyframes.
+
+| member | is |
+|---|---|
+| `models` | every model in the file |
+| `palette` | the shared RGBA palette |
+| `materials` | per palette index: `diffuse`, `metal`, `glass` or `emit` with their parameters, or `null` |
+| `layers` | id, name and whether hidden |
+| `frameCount` | the number of animation frames (at least 1) |
+| `sample(frame)` | the model placements at a frame: model, rotation matrix, translation, layer |
+| `bounds()` | the world box over **all** frames, for sizing a stable playback grid |
+
+Rotations in the file are packed bytes;
+[`decodeVoxRotation(r)`](/docs/renderer/api/vox/functions/decodeVoxRotation/) turns one into a
+row-major signed permutation matrix (4 is the identity).
+
+[`voxSceneAnimator(scene)`](/docs/renderer/api/renderer/functions/voxSceneAnimator/) turns a scene
+into something a renderer can play: a Y-up grid sized from `bounds()` so it never resizes
+mid-playback, the palette as floats, and `frame(i)`, which composes that frame's placements into
+the grid (a cached buffer). Re-upload it each tick with `updateVoxels`.
+[`packMaterials(scene)`](/docs/renderer/api/renderer/functions/packMaterials/) packs the `MATL`
+materials into the renderer's material buffer, or returns `undefined` when the file has none, which
+keeps the flat-palette path.
+
+```ts
+import { createRenderer, parseVoxScene, voxSceneAnimator, packMaterials } from "@voxolith/renderer";
+
+const scene = parseVoxScene(bytes);
+const anim = voxSceneAnimator(scene);
+const renderer = await createRenderer(gpu, {
+  size: anim.size,
+  data: anim.frame(0),
+  palette: anim.palette,
+  materials: packMaterials(scene),
+});
+
+let frame = 0;
+setInterval(() => {
+  frame = (frame + 1) % anim.frameCount;
+  renderer.updateVoxels(anim.frame(frame));
+  loop.invalidate();
+}, 100);
+```
+
+### Writing
+
+[`writeVox(size, voxels, colorFor)`](/docs/renderer/api/vox/functions/writeVox/) serialises one
+model (`SIZE`, `XYZI`, `RGBA`) to an `ArrayBuffer`. `voxels` are `[x, y, z, colourIndex]` in
+MagicaVoxel axes with a 1-based index, and `colorFor(index)` returns an RGB triple or `null` for an
+unused entry. It is pure: the caller writes the bytes wherever it likes.
+
+```ts
+import { writeVox } from "@voxolith/renderer/vox";
+
+const bytes = writeVox({ x: 2, y: 1, z: 1 }, [[0, 0, 0, 1], [1, 0, 0, 2]], (i) =>
+  i === 1 ? [200, 60, 40] : i === 2 ? [40, 60, 200] : null,
+);
+await Bun.write("pair.vox", bytes);
+```
+
+## Minecraft `.mca`
+
+[`buildMinecraftRegion(bytes, options?)`](/docs/renderer/api/renderer/functions/buildMinecraftRegion/)
+reads an Anvil region file (an 8 KiB header of chunk locations, then zlib or gzip compressed NBT
+chunks in 4 KiB sectors), decodes the chunks overlapping a crop box in parallel and maps blocks to
+a palette built on the fly. It returns a
+[`MinecraftScene`](/docs/renderer/api/renderer/interfaces/MinecraftScene/) with `size`, `data`,
+`palette` and `materials`, which is a `RenderScene` as it stands, plus `meta` (chunks, colours,
+voxels, the crop used and whether it was clamped).
+
+It decodes all three eras of chunk encoding, chosen by structure and `DataVersion`:
+
+| era | layout |
+|---|---|
+| before 1.13 | `Level.Sections[]` with numeric `Blocks` (plus `Add` and `Data` nibbles) |
+| 1.13 to 1.17 | `Level.Sections[]` with a `Palette` and packed `BlockStates` (indices span longs before `DataVersion` 2529) |
+| 1.18 and later | top-level `sections[]` with `block_states = { palette, data }` and negative section Y |
+
+Blocks get flat colours from two curated tables (legacy numeric ids and modern names), with no
+textures; a few map to materials (emissive, glass, metal). Minecraft is Y-up, so no axes swap.
+
+<TypeTable
+  type={{
+    'x0, x1, z0, z1': { description: 'Region-local block crop, 0 to 511.', type: 'number', default: 'the centred 256 × 256' },
+    'yMin, yMax': { description: 'World-Y band, inclusive.', type: 'number', default: 'the occupied section range' },
+    maxDim: { description: 'Cap per axis; larger crops are trimmed (Y keeps the top).', type: 'number', default: '320' },
+    downsample: { description: 'Sample every Nth block.', type: 'number', default: '1' },
+  }}
+/>
+
+```ts
+import { buildMinecraftRegion, createRenderer } from "@voxolith/renderer";
+
+const bytes = new Uint8Array(await file.arrayBuffer());
+const scene = await buildMinecraftRegion(bytes, { x0: 128, x1: 383, z0: 128, z1: 383, downsample: 2 });
+const renderer = await createRenderer(gpu, scene);
+```
+
+Decompression uses the web `DecompressionStream`, available in browsers, bun and Node 18 and
+later. The [viewer](/viewer/) opens both formats by drag and drop.

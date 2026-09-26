@@ -1,0 +1,75 @@
+---
+title: minecraft-region
+description: "Drop a Minecraft .mca region file on the page, crop and downsample it with buildMinecraftRegion, and fly through it with keyboard, mouse, gamepad or touch."
+---
+
+**[Open the live page](/examples/minecraft-region/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/minecraft-region/main.ts)
+
+The page starts empty: drop a Minecraft Anvil region file (`r.X.Z.mca`, from any world's
+`region/` folder) onto it. It crops the middle 256 × 256 blocks of the region, keeps every second one, and
+lets you fly through it in first person.
+
+<Callout>
+  No region file is bundled, so until you drop one the canvas stays blank. That is expected; see
+  [Troubleshooting](/docs/troubleshooting/).
+</Callout>
+
+## What it shows
+
+- [`buildMinecraftRegion`](/docs/renderer/api/renderer/functions/buildMinecraftRegion/): parse a
+  region, crop it to a box of blocks, downsample it, and get a dense grid, a palette with a slot per
+  block colour, and materials when any block is emissive, metal or glass.
+- A renderer created after startup, once the data exists.
+- First-person controls from the input layer:
+  [`makeActions`](/docs/engine/api/input/functions/makeActions/) for movement by action rather than
+  key, [`makeLookController`](/docs/engine/api/input/functions/makeLookController/) (click to
+  capture the mouse, Esc to release, drag, right stick, Q/E and R/F), and
+  [`makeTouchControls`](/docs/engine/api/input/functions/makeTouchControls/) for a joystick and
+  up and down buttons on phones.
+- [`firstPersonFrame`](/docs/renderer/api/renderer/functions/firstPersonFrame/) and its
+  yaw convention.
+
+## The interesting part
+
+```ts
+// Free-fly controls, by action rather than by key, so the same loop works on
+// a keyboard, a gamepad and a phone. Keys are physical (`code`), so WASD
+// stays put on AZERTY.
+prepareSurface(canvas);
+const input = createInput(canvas);
+const actions = makeActions(input, {
+  strafe: axis({ negative: ["key:KeyA", "key:ArrowLeft"], positive: ["key:KeyD", "key:ArrowRight"], analog: ["pad:LeftX", "touch:move.x"] }),
+  walk: axis({ negative: ["key:KeyS", "key:ArrowDown"], positive: ["key:KeyW", "key:ArrowUp"], analog: ["pad:LeftY-", "touch:move.y-"] }),
+  rise: axis({ negative: ["key:KeyC", "pad:LB", "touch:down"], positive: ["key:Space", "pad:RB", "touch:up"] }),
+  fast: button("key:ShiftLeft", "key:ShiftRight", "pad:LT"),
+});
+```
+
+and the crop, when a file arrives:
+
+```ts
+// A 256×256 block crop from the middle of the region, every 2nd block.
+const scene = await buildMinecraftRegion(new Uint8Array(buf), {
+  x0: 128, x1: 383, z0: 128, z1: 383, downsample: 2,
+});
+const r = await createRenderer(gpu, {
+  size: scene.size, data: scene.data, palette: scene.palette, materials: scene.materials,
+});
+```
+
+## Controls
+
+| input | does |
+|---|---|
+| click, then mouse | look (Esc releases the mouse); or drag without capturing |
+| W A S D, arrows, left stick, left joystick | move |
+| Space / C, RB / LB, ▲ / ▼ buttons | up / down |
+| Shift, LT | fast |
+| Q E R F, right stick | turn |
+
+## URL options
+
+None besides the [common ones](/docs/examples/#common-url-options).
+
+See also [File formats](/docs/manual/file-formats/).

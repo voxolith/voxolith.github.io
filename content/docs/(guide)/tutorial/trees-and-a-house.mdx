@@ -1,0 +1,369 @@
+---
+title: "4. Trees and a house"
+description: "Rat Hunt, step 4: generate a cottage and trees with gen-building and gen-tree, level the ground under the house, and stamp the models into the world."
+---
+
+In this step the valley gets a farmhouse and a small wood. Both come from generators: a
+[generator](/docs/generators/) takes parameters and a random-number function, and returns an
+**entity**, a voxel model with an anchor and named colour roles. You then stamp it into the world
+at a position, with an offset into the palette.
+
+## The house
+
+[`generateBuilding`](/docs/generators/api/gen-building/functions/generateBuilding/) takes the
+building parameters and an `rng`. Start from a preset and change what you want:
+
+```ts
+import { seededRandom } from "@voxolith/renderer";
+import { generateBuilding, PRESETS as BUILDINGS } from "@voxolith/gen-building";
+
+const houseParams = structuredClone(BUILDINGS.cottage);
+houseParams.look.lit = 0.5; // half the windows glow
+const house = generateBuilding(houseParams, seededRandom(seed + 1)).entity;
+```
+
+Copy a preset with `structuredClone` before editing it: the presets are shared objects.
+Generators are deterministic, so the same parameters and seed always build the same house, and
+all randomness comes from the `rng` you pass (`seededRandom(n)` is a small seeded generator from
+the renderer). Lit windows glow at night; step 5 needs them.
+
+## Where it stands
+
+The house needs dry, reasonably flat ground. Try a few spots near the middle, checking the corners
+and the centre of the footprint are above the water:
+
+```ts
+const rng = seededRandom(seed);
+
+// Somewhere dry near the middle, levelled flat before any ground is built.
+const hs = house.model.size, ha = house.model.anchor;
+let hx = SIZE.x / 2, hz = SIZE.z / 2;
+for (let i = 0; i < 50; i++) {
+  const x = SIZE.x * (0.3 + rng() * 0.4), z = SIZE.z * (0.3 + rng() * 0.4);
+  const corners = [[-1, -1], [1, -1], [-1, 1], [1, 1], [0, 0]];
+  if (corners.every(([cx, cz]) => terrain.heightAt(x + cx * hs.x * 0.7, z + cz * hs.z * 0.7) > terrain.waterLevel + 1)) {
+    hx = Math.round(x); hz = Math.round(z);
+    break;
+  }
+}
+const hx0 = hx - ha[0], hz0 = hz - ha[2], hx1 = hx0 + hs.x - 1, hz1 = hz0 + hs.z - 1;
+const pad = levelPad(hx0, hz0, hx1, hz1, 12);
+const insideHouse = (x: number, z: number, margin: number) =>
+  x > hx0 - margin && x < hx1 + margin && z > hz0 - margin && z < hz1 + margin;
+```
+
+A model's `anchor` is its origin inside its box: for a building, the centre of the footprint at
+ground level. So `(hx, hz)` is where the middle of the house stands, and `hx0..hx1`, `hz0..hz1`
+is the box it covers. The front door faces +Z.
+
+### Levelling the pad
+
+A house on a slope floats at one end and is buried at the other. The terrain's `heights` array is
+editable, and everything the terrain does afterwards (filling bricks, `heightAt`, picking) reads
+it, so flatten the footprint **before** the ground is written:
+
+```ts
+/** Flatten a box to its average height and blend the ground back over an apron. */
+function levelPad(x0: number, z0: number, x1: number, z1: number, apron: number): number {
+  let sum = 0, n = 0;
+  for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) { sum += terrain.heightAt(x, z); n++; }
+  const h = Math.round(sum / n);
+  for (let z = z0 - apron; z <= z1 + apron; z++)
+    for (let x = x0 - apron; x <= x1 + apron; x++) {
+      if (x < 0 || z < 0 || x >= terrain.width || z >= terrain.depth) continue;
+      const edge = Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(z0 - z, 0, z - z1));
+      if (edge > apron) continue;
+      const w = 1 - edge / apron, i = x + z * terrain.width;
+      terrain.heights[i] = Math.round(h * w + terrain.heights[i] * (1 - w));
+    }
+  return h;
+}
+```
+
+Inside the box the ground becomes the average height; over a 12-voxel apron around it, it blends
+back into the hills.
+
+## The trees
+
+[`generateTree`](/docs/generators/api/gen-tree/functions/generateTree/) grows broadleaf and
+conifer trees. A tree is a few hundred thousand voxels and takes a moment to grow, so make a few
+models and reuse them:
+
+```ts
+import { blitModelToBricks, type Entity, type Orientation } from "@voxolith/engine";
+import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
+
+// Six tree models, two of each species, reused for every tree.
+const treeModels: { kind: string; entity: Entity }[] = [];
+for (const kind of ["oak", "birch", "spruce"] as const)
+  for (let n = 0; n < 2; n++) {
+    const p = structuredClone(TREES[kind]);
+    p.shape.height = 80 + n * 30;
+    treeModels.push({ kind, entity: generateTree(p, seededRandom(seed + treeModels.length * 31)).entity });
+  }
+```
+
+`shape.height` is in voxels: 80 and 110, so 8 and 11 metres. Then scatter 28 trees on dry
+ground, away from the house and from each other, each turned one of the eight
+[orientations](/docs/engine/api/engine/type-aliases/Orientation/) (four quarter turns, each
+optionally mirrored), so six models look like many more:
+
+```ts
+const trees: { x: number; z: number; model: (typeof treeModels)[number]; orientation: Orientation }[] = [];
+for (let tries = 0; trees.length < 28 && tries < 2000; tries++) {
+  const x = Math.round(20 + rng() * (SIZE.x - 40)), z = Math.round(20 + rng() * (SIZE.z - 40));
+  if (terrain.waterAt(x, z) || insideHouse(x, z, 40)) continue;
+  if (trees.some((t) => Math.hypot(t.x - x, t.z - z) < 34)) continue;
+  const model = treeModels[Math.floor(rng() * treeModels.length)];
+  trees.push({ x, z, model, orientation: Math.floor(rng() * 8) as Orientation });
+}
+```
+
+All of this goes **before** the palette and the renderer, because they need to know every role.
+
+## Palette slots for the models
+
+Each model's roles need slots in the world's palette. Trees of one species share role lists, so
+they share a range, keyed by species:
+
+```ts
+const palette = new PaletteAllocator(1);
+const groundBase = palette.allocate(terrain.roles, "terrain").base;
+const houseBase = palette.allocateFor(house, "house").base;
+const treeBase = new Map(treeModels.map((t) => [t, palette.allocate(t.entity.model.roles, t.kind).base]));
+```
+
+A second `allocate` with a key it has seen returns the same range, which is why two oaks cost 17
+slots and not 34. The world has 255 usable slots; the terrain, the house and three species use
+about 90.
+
+## Stamp them in
+
+After the ground is written, [`blitModelToBricks`](/docs/engine/api/engine/functions/blitModelToBricks/)
+writes a model into the renderer's bricks, with its anchor at a position, its roles offset to its
+palette base, and an orientation:
+
+```ts
+blitModelToBricks(renderer, house.model, { x: hx, y: pad + 1, z: hz }, houseBase);
+for (const t of trees) {
+  blitModelToBricks(renderer, t.model.entity.model, { x: t.x, y: terrain.heightAt(t.x, t.z) + 1, z: t.z }, treeBase.get(t.model)!, t.orientation);
+}
+```
+
+`y` is one above the ground height, the first empty voxel. The house sits on the pad, so it uses
+`pad + 1`.
+
+Finally, start the player in front of the door, facing it, and keep them out of the walls. In the
+player section:
+
+```ts
+const player = { x: hx, z: Math.min(SIZE.z - 10, hz1 + 70), eyeY: 0 };
+```
+
+and in `movePlayer`:
+
+```ts
+  if (nx < 4 || nz < 4 || nx > SIZE.x - 5 || nz > SIZE.z - 5 || insideHouse(nx, nz, 3)) return false;
+```
+
+The look controller already starts at yaw 180, facing -Z, which is towards the door.
+
+## Run it
+
+The page takes a second or two longer to start while the trees grow. You arrive in front of a
+thatched cottage with a wood around it.
+
+<Accordions>
+<Accordion title="src/main.ts after step 4">
+
+```ts title="src/main.ts"
+// Rat Hunt: catch the giant rats in the valley before night falls.
+import {
+  createRenderer,
+  firstPersonFrame,
+  hashSeed,
+  initGpu,
+  makeFrameLoop,
+  observeResize,
+  resizeToDisplay,
+  seededRandom,
+  showUnsupportedScreen,
+  WebGPUUnsupportedError,
+} from "@voxolith/renderer";
+import { blitModelToBricks, PaletteAllocator, type Entity, type Orientation } from "@voxolith/engine";
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import {
+  axis,
+  button,
+  createInput,
+  makeActions,
+  makeLookController,
+  makeTouchControls,
+  prepareSurface,
+} from "@voxolith/engine/input";
+import { generateTerrain } from "@voxolith/gen-terrain";
+import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
+import { generateBuilding, PRESETS as BUILDINGS } from "@voxolith/gen-building";
+import "./style.css";
+
+const canvas = document.getElementById("scene") as HTMLCanvasElement;
+const params = new URLSearchParams(location.search);
+
+// --- WebGPU -------------------------------------------------------------------
+const gpu = await initGpu(canvas).catch((err: unknown) => {
+  if (err instanceof WebGPUUnsupportedError) showUnsupportedScreen(err.message, { appName: "Rat Hunt" });
+  throw err;
+});
+
+// --- the valley -----------------------------------------------------------------
+const SIZE = { x: 384, y: 128, z: 384 };
+const seed = hashSeed(params.get("seed") ?? "rat-hunt");
+const rng = seededRandom(seed);
+
+const terrain = generateTerrain(
+  {
+    width: SIZE.x, depth: SIZE.z, height: SIZE.y,
+    baseY: 18, relief: 20, featureSize: 100, waterLevel: 13,
+    river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 },
+  },
+  seed,
+);
+
+// --- the farmhouse and the trees -------------------------------------------------
+const houseParams = structuredClone(BUILDINGS.cottage);
+houseParams.look.lit = 0.5; // half the windows glow
+const house = generateBuilding(houseParams, seededRandom(seed + 1)).entity;
+
+// Somewhere dry near the middle, levelled flat before any ground is built.
+const hs = house.model.size, ha = house.model.anchor;
+let hx = SIZE.x / 2, hz = SIZE.z / 2;
+for (let i = 0; i < 50; i++) {
+  const x = SIZE.x * (0.3 + rng() * 0.4), z = SIZE.z * (0.3 + rng() * 0.4);
+  const corners = [[-1, -1], [1, -1], [-1, 1], [1, 1], [0, 0]];
+  if (corners.every(([cx, cz]) => terrain.heightAt(x + cx * hs.x * 0.7, z + cz * hs.z * 0.7) > terrain.waterLevel + 1)) {
+    hx = Math.round(x); hz = Math.round(z);
+    break;
+  }
+}
+const hx0 = hx - ha[0], hz0 = hz - ha[2], hx1 = hx0 + hs.x - 1, hz1 = hz0 + hs.z - 1;
+const pad = levelPad(hx0, hz0, hx1, hz1, 12);
+const insideHouse = (x: number, z: number, margin: number) =>
+  x > hx0 - margin && x < hx1 + margin && z > hz0 - margin && z < hz1 + margin;
+
+/** Flatten a box to its average height and blend the ground back over an apron. */
+function levelPad(x0: number, z0: number, x1: number, z1: number, apron: number): number {
+  let sum = 0, n = 0;
+  for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) { sum += terrain.heightAt(x, z); n++; }
+  const h = Math.round(sum / n);
+  for (let z = z0 - apron; z <= z1 + apron; z++)
+    for (let x = x0 - apron; x <= x1 + apron; x++) {
+      if (x < 0 || z < 0 || x >= terrain.width || z >= terrain.depth) continue;
+      const edge = Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(z0 - z, 0, z - z1));
+      if (edge > apron) continue;
+      const w = 1 - edge / apron, i = x + z * terrain.width;
+      terrain.heights[i] = Math.round(h * w + terrain.heights[i] * (1 - w));
+    }
+  return h;
+}
+
+// Six tree models, two of each species, reused for every tree.
+const treeModels: { kind: string; entity: Entity }[] = [];
+for (const kind of ["oak", "birch", "spruce"] as const)
+  for (let n = 0; n < 2; n++) {
+    const p = structuredClone(TREES[kind]);
+    p.shape.height = 80 + n * 30;
+    treeModels.push({ kind, entity: generateTree(p, seededRandom(seed + treeModels.length * 31)).entity });
+  }
+const trees: { x: number; z: number; model: (typeof treeModels)[number]; orientation: Orientation }[] = [];
+for (let tries = 0; trees.length < 28 && tries < 2000; tries++) {
+  const x = Math.round(20 + rng() * (SIZE.x - 40)), z = Math.round(20 + rng() * (SIZE.z - 40));
+  if (terrain.waterAt(x, z) || insideHouse(x, z, 40)) continue;
+  if (trees.some((t) => Math.hypot(t.x - x, t.z - z) < 34)) continue;
+  const model = treeModels[Math.floor(rng() * treeModels.length)];
+  trees.push({ x, z, model, orientation: Math.floor(rng() * 8) as Orientation });
+}
+
+// --- palette and renderer ----------------------------------------------------------
+const palette = new PaletteAllocator(1);
+const groundBase = palette.allocate(terrain.roles, "terrain").base;
+const houseBase = palette.allocateFor(house, "house").base;
+const treeBase = new Map(treeModels.map((t) => [t, palette.allocate(t.entity.model.roles, t.kind).base]));
+
+const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
+renderer.setQuality(gpu.software ? "low" : "medium");
+
+renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) =>
+  terrain.fillBrick(cells, ox, oy, oz, groundBase),
+);
+blitModelToBricks(renderer, house.model, { x: hx, y: pad + 1, z: hz }, houseBase);
+for (const t of trees) {
+  blitModelToBricks(renderer, t.model.entity.model, { x: t.x, y: terrain.heightAt(t.x, t.z) + 1, z: t.z }, treeBase.get(t.model)!, t.orientation);
+}
+
+const sky = atmosphereFrame(timeOfDay(0.35), ATMOSPHERES.clear);
+
+// --- input --------------------------------------------------------------------------
+prepareSurface(canvas);
+const input = createInput(canvas);
+const actions = makeActions(input, {
+  strafe: axis({ negative: ["key:KeyA", "key:ArrowLeft"], positive: ["key:KeyD", "key:ArrowRight"], analog: ["pad:LeftX", "touch:move.x"] }),
+  walk: axis({
+    negative: ["key:KeyS", "key:ArrowDown", "pad:LeftY+", "touch:move.y+"],
+    positive: ["key:KeyW", "key:ArrowUp", "pad:LeftY-", "touch:move.y-"],
+  }),
+  run: button("key:ShiftLeft", "key:ShiftRight", "pad:LT"),
+});
+const look = makeLookController(input, { yaw: 180, pitch: -8, keys: { left: ["KeyQ"], right: ["KeyE"] } });
+makeTouchControls(input, { joysticks: [{ id: "move", side: "left" }] });
+
+// --- the player ---------------------------------------------------------------------
+const EYE = 17; // 1.7 m
+const player = { x: hx, z: Math.min(SIZE.z - 10, hz1 + 70), eyeY: 0 };
+player.eyeY = terrain.heightAt(player.x, player.z) + EYE;
+const view = () => firstPersonFrame([player.x, player.eyeY, player.z], look.yaw(), look.pitch(), 70);
+
+function movePlayer(dt: number): boolean {
+  const [sx, wz] = actions.vector("strafe", "walk");
+  if (!sx && !wz) return false;
+  const speed = (actions.down("run") ? 80 : 40) * dt;
+  const yaw = (look.yaw() * Math.PI) / 180;
+  // firstPersonFrame: forward is (sin, cos), screen-right is cross(forward, up).
+  const nx = player.x + (Math.sin(yaw) * wz - Math.cos(yaw) * sx) * speed;
+  const nz = player.z + (Math.cos(yaw) * wz + Math.sin(yaw) * sx) * speed;
+  if (nx < 4 || nz < 4 || nx > SIZE.x - 5 || nz > SIZE.z - 5 || insideHouse(nx, nz, 3)) return false;
+  player.x = nx;
+  player.z = nz;
+  return true;
+}
+
+// --- the loop ------------------------------------------------------------------------------
+const loop = makeFrameLoop({
+  continuous: true,
+  render(now, dt) {
+    input.update();
+    look.update(dt);
+    movePlayer(dt);
+    const ground = terrain.heightAt(player.x, player.z) + EYE;
+    player.eyeY += (ground - player.eyeY) * Math.min(1, dt * 10);
+
+    resizeToDisplay(gpu);
+    renderer.render({ ...view(), ...sky, time: now / 1000 });
+  },
+});
+observeResize(canvas, loop);
+```
+
+</Accordion>
+</Accordions>
+
+<Callout title="Many more models">
+  Stamping writes every voxel into the world, which is simplest and right for a few dozen models.
+  For hundreds or thousands, draw them as **instances** instead: each model is uploaded once and
+  placed by reference at any angle, and nothing is written into the world. See
+  [Instances](/docs/manual/instances/) and the [instances example](/docs/examples/instances/). To
+  keep the page responsive while many models generate, run the generators on workers
+  ([Workers and caching](/docs/manual/workers-and-caching/)).
+</Callout>
+
+**Next:** [day and night](/docs/tutorial/day-and-night/).

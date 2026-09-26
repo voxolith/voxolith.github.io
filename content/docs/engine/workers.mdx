@@ -1,0 +1,107 @@
+---
+title: Workers
+description: "Running Voxolith generators off the main thread with makeGeneratorPool and serveGenerators, zero-copy transfer, and the IndexedDB model cache."
+---
+
+Generation is the most expensive part of building a scene, and it is pure CPU work with no DOM
+contact, so it belongs off the render thread. Doing it inline competes with the frame loop:
+yielding between entities keeps the page responsive, but the work still lands on the one thread
+that has to draw. `@voxolith/engine/worker` runs generators on a pool of workers, which also
+spreads the work across cores.
+
+It comes in two halves, because they run in different realms:
+
+- [`makeGeneratorPool`](/docs/engine/api/worker/functions/makeGeneratorPool/) on the main thread
+  owns the workers and the queue.
+- [`serveGenerators`](/docs/engine/api/worker/functions/serveGenerators/) inside the worker
+  answers requests from the worker's own registry.
+
+## The worker file
+
+The consumer writes the worker entry, because only their bundler can resolve one. It imports the
+generator packages it wants, registers them, and serves:
+
+```ts title="gen.worker.ts"
+import { registerTreeGenerators } from "@voxolith/gen-tree";
+import { registerRockGenerators } from "@voxolith/gen-rock";
+import { serveGenerators } from "@voxolith/engine/worker";
+
+registerTreeGenerators();
+registerRockGenerators();
+serveGenerators({ cache: import.meta.env.DEV ? undefined : "voxolith-models" });
+```
+
+The registry has to be populated in the worker itself: a function cannot be posted across the
+boundary, so the pool sends a generator **id** and the worker resolves it locally. Generators are
+pure and take all their randomness from the injected rng, so they are worker-safe as written.
+
+## The pool
+
+```ts
+import { makeGeneratorPool } from "@voxolith/engine/worker";
+
+const pool = makeGeneratorPool({
+  spawn: () => new Worker(new URL("./gen.worker.ts", import.meta.url), { type: "module" }),
+});
+await pool.ready();
+
+const oak = await pool.generate({ generator: "voxolith/tree.broadleaf", params: PRESETS.oak, seed: 42 });
+
+const forest = await pool.generateMany(
+  Array.from({ length: 12 }, (_, n) => ({ generator: "voxolith/tree.broadleaf", params: PRESETS.oak, seed: 100 + n, entityId: `oak-${n}` })),
+  (done, total) => (progress.textContent = `${done} / ${total}`),
+);
+pool.destroy();
+```
+
+- `size` defaults to one worker per core less one, capped at 4: generation is memory-heavy and
+  the main thread still needs a core to draw on.
+- A [`GenerateSpec`](/docs/engine/api/worker/interfaces/GenerateSpec/) is `generator`, `params`,
+  `seed`, an optional `entityId`, and an optional `ctx` passed to the generator
+  (`{ voxelsPerMetre: 100 }` for a fine model).
+- `generateMany` resolves in the order given, not the order the models finish; `onDone` reports
+  progress as each lands.
+- A worker that dies fails the request it was running rather than hanging, and the remaining
+  workers carry on. `destroy()` rejects everything outstanding and terminates the workers.
+- `pending` counts requests not yet resolved; `cached` counts results served from the model cache.
+
+Results come back without copying: the worker transfers the model's buffers (a dense `data`, each
+512-byte brick of a sparse model, and `bones`), copying only arrays that are views into a larger
+buffer, since transferring those would take unrelated data with them.
+
+Keep a main-thread fallback for environments without module workers; the examples' world page
+catches a failed pool and generates inline.
+
+## The model cache
+
+Generation is deterministic, so a model is a pure function of its generator id and version,
+parameters, seed and context: generate it once, keep it, and the next visit loads it instead.
+Refined models at 100 voxels per metre take seconds each on a phone, and a valley needs dozens.
+
+`serveGenerators({ cache: "name" })` keeps generated models in the IndexedDB database `name`:
+
+- Entries are packed ([`packEntity`](/docs/engine/api/worker/functions/packEntity/): a small
+  header plus one byte buffer holding a sparse model's bricks, or its dense data, and its bones)
+  and deflated with `CompressionStream`.
+- The key is the generator id and version, seed, parameters and context, prefixed by a **salt**:
+  the worker's own script URL. A production build hashes that URL, so new generator code never
+  reads a model the old code made; entries under any other salt are deleted when the cache opens.
+- Storage that is full or unavailable is not an error: the model still works, it is just not kept.
+  Where there is no IndexedDB or `CompressionStream` (bun, some private windows) the cache is
+  silently off.
+
+<Callout type="warn" title="Off in development">
+  Leave the cache off in development. A dev server's worker URL does not change with the code, so
+  edited generator code would be served models made by the old code. Hence
+  `import.meta.env.DEV ? undefined : "..."` above.
+</Callout>
+
+The cache is also usable on its own: [`openModelCache(name, salt)`](/docs/engine/api/worker/functions/openModelCache/)
+returns a [`ModelCache`](/docs/engine/api/worker/interfaces/ModelCache/) with `get` and `put`, or
+`null` where there is none; [`unpackEntity`](/docs/engine/api/worker/functions/unpackEntity/)
+reverses `packEntity`.
+
+The request and response shapes are
+[`WorkerRequest`](/docs/engine/api/worker/type-aliases/WorkerRequest/) and
+[`WorkerResponse`](/docs/engine/api/worker/type-aliases/WorkerResponse/), for hosts that want to
+drive a worker directly.

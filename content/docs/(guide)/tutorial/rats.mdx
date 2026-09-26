@@ -1,0 +1,574 @@
+---
+title: "6. Rats"
+description: "Rat Hunt, step 6: rigged, animated rats from gen-creature, moved with makeCrowd and makeBrickStamper, that flee from you and are caught with a tap."
+---
+
+This is the step that makes it a game. Eight rats wander the valley, run when you come close,
+and a tap, a click or the Space bar catches the one you are pointing at. Catch them all before
+nightfall and you win.
+
+## Rats from a generator
+
+[`generateCreature`](/docs/generators/api/gen-creature/functions/generateCreature/) builds a
+**rigged** entity: a voxel model whose voxels each belong to a bone, a skeleton, and animation
+clips (`idle`, `walk`, `turn-left`, `turn-right`, `run`, `sniff`, `death`). Make one model per
+coat and share them:
+
+```ts
+import { atScale, generateCreature, PRESETS as RATS } from "@voxolith/gen-creature";
+
+const RAT_KINDS = ["rat", "grey rat", "lab rat", "black rat"];
+// atScale sizes a preset for 10 voxels per metre; 0.7 is as small as a rat gets.
+const ratModels = RAT_KINDS.map((k, i) => generateCreature(atScale(RATS[k], 10), seededRandom(seed + 100 + i), k).entity);
+```
+
+The presets are stylised, big game rats. [`atScale`](/docs/generators/api/gen-creature/functions/atScale/)
+sizes one for a world with a fixed number of voxels per metre, but never below the size at which
+legs would get thinner than two voxels. At 10 voxels per metre that floor wins, and each rat is
+about 43 voxels (over four metres) long and 12 tall. Hence *giant* rats.
+
+Rats need palette slots like everything else. Add them to the palette section:
+
+```ts
+const ratBase = ratModels.map((e, i) => palette.allocate(e.model.roles, RAT_KINDS[i]).base);
+```
+
+## A crowd
+
+A moving model cannot be stamped once and left: every frame it has to be taken out of the bricks
+where it was and written where it is now, in its current pose. Two engine pieces do that:
+
+- [`makeBrickStamper`](/docs/engine/api/engine/functions/makeBrickStamper/) places "movers" in
+  the world and, on each commit, restores exactly what they covered before writing them at their
+  new places. Nothing else in the world is touched.
+- [`makeCrowd`](/docs/engine/api/animation/functions/makeCrowd/) poses each member from its
+  animator, bakes the pose into voxels (cached, since rats in the same clip frame and heading look
+  identical) and hands the result to the stamper, within a time budget per frame.
+
+```ts
+import { makeBrickStamper } from "@voxolith/engine";
+import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
+
+interface Rat extends CrowdMember { state: "wander" | "flee" | "caught"; speed: number; turn: number; timer: number; }
+const crowd = makeCrowd({ stamper: makeBrickStamper(renderer, { size: SIZE }), near: 200, keepModels: true });
+```
+
+`near: 200` animates every rat within 200 voxels at the full 12 frames a second (further ones
+step at a lower rate). `keepModels: true` keeps each baked pose's voxels, which the tap test
+below reads.
+
+A [`CrowdMember`](/docs/engine/api/animation/interfaces/CrowdMember/) is an id, the entity, a
+cache key for its look (`variant`), an animator, a palette base, a position and a yaw in radians.
+The `Rat` type adds the game's own state. Spawn eight on dry ground, away from the player:
+
+```ts
+const blocked = (x: number, z: number) =>
+  x < 10 || z < 10 || x > SIZE.x - 10 || z > SIZE.z - 10 || terrain.waterAt(Math.round(x), Math.round(z)) || insideHouse(x, z, 8);
+
+const rats: Rat[] = [];
+const RAT_COUNT = Math.max(1, Math.min(20, Number(params.get("rats") ?? 8)));
+for (let i = 0; i < RAT_COUNT; i++) {
+  const k = i % ratModels.length;
+  let x = 0, z = 0;
+  do { x = 20 + rng() * (SIZE.x - 40); z = 20 + rng() * (SIZE.z - 40); }
+  while (blocked(x, z) || Math.hypot(x - player.x, z - player.z) < 80);
+  const anim = makeAnimator(ratModels[k], "idle");
+  rats.push({ id: i + 1, entity: ratModels[k], variant: RAT_KINDS[k], anim, base: ratBase[k], x, y: 0, z, yaw: rng() * Math.PI * 2, state: "wander", speed: 0, turn: 0, timer: rng() * 3 });
+}
+let caught = 0;
+let over = false;
+```
+
+[`makeAnimator`](/docs/engine/api/animation/functions/makeAnimator/) plays an entity's clips:
+`play(id, { fade })` cross-fades to another clip, `update(dt)` advances time, and `finished()`
+says when a clip that does not loop has ended.
+
+## Behaviour
+
+What a rat does is the game's business, not the engine's. Each frame a rat either wanders
+(picks a clip and a new heading every couple of seconds), flees (runs straight away from the
+player when they come within 70 voxels), or, once caught, plays its death and is removed:
+
+```ts
+const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+function think(r: Rat, dt: number): void {
+  r.timer -= dt;
+  if (r.state === "caught") {
+    if (r.anim.finished() && r.timer <= 0) {
+      crowd.remove(r.id);
+      rats.splice(rats.indexOf(r), 1);
+    }
+    r.anim.update(dt);
+    return;
+  }
+  const away = Math.hypot(r.x - player.x, r.z - player.z);
+  if (away < 70 && r.state !== "flee") {
+    // Too close: run directly away from the player.
+    r.state = "flee";
+    r.turn = Math.atan2(r.x - player.x, r.z - player.z);
+    r.speed = 45;
+    r.timer = 2 + rng();
+    r.anim.play("run", { fade: 0.1 });
+  } else if (r.timer <= 0) {
+    r.state = "wander";
+    const clip = ["walk", "walk", "idle", "sniff"][Math.floor(rng() * 4)];
+    r.anim.play(clip, { fade: 0.25 });
+    r.speed = clip === "walk" ? 14 : 0;
+    r.turn = r.yaw + (rng() - 0.5) * 2.4;
+    r.timer = 1.5 + rng() * 3;
+  }
+  if (r.speed > 0) {
+    r.yaw += Math.max(-4 * dt, Math.min(4 * dt, wrap(r.turn - r.yaw)));
+    const nx = r.x + Math.sin(r.yaw) * r.speed * dt, nz = r.z + Math.cos(r.yaw) * r.speed * dt;
+    if (blocked(nx, nz)) { r.turn = r.yaw + Math.PI * (0.6 + rng() * 0.8); }
+    else { r.x = nx; r.z = nz; }
+  }
+  r.y = terrain.heightAt(r.x, r.z) + 1;
+  r.anim.update(dt);
+}
+```
+
+A fleeing rat runs at 45 voxels a second, faster than you walk (40) and slower than you run (80),
+so catching one means sprinting after it. A yaw of 0 faces +Z, as for the player, so a heading
+towards `(dx, dz)` is `atan2(dx, dz)`.
+
+## Catching a rat
+
+A tap happens on the screen; the rat is in the world. [`makeRay`](/docs/renderer/api/ray/functions/makeRay/)
+turns a screen point into a ray from the camera. Then, for each rat:
+
+1. [`rayAABB`](/docs/renderer/api/ray/functions/rayAABB/) tests the ray against the box of the
+   rat's current pose, which throws out most rats at once;
+2. [`voxelRaycast`](/docs/renderer/api/ray/functions/voxelRaycast/) walks the ray through that
+   pose's voxels, so a tap between the legs or past the tail misses.
+
+The pose is the one the crowd last stamped (`crowd.last(id)`), placed exactly as the stamper
+placed it: anchor at the rat's rounded position. `terrain.pick` finds where the ray meets the
+ground, so a rat behind a hill cannot be caught through it, and `REACH` limits it to 9 metres.
+
+```ts
+const REACH = 90; // 9 m
+function grabAt(clientX: number, clientY: number): void {
+  if (over) return;
+  const { origin, dir } = makeRay(canvas, view(), clientX, clientY);
+  const len = Math.hypot(dir[0], dir[1], dir[2]);
+  // Nothing behind the ground counts, and nothing out of reach.
+  let best = REACH / len;
+  const hit = terrain.pick(origin, dir, { maxT: REACH });
+  if (hit) best = Math.min(best, ((hit[0] - origin[0]) * dir[0] + (hit[1] - origin[1]) * dir[1] + (hit[2] - origin[2]) * dir[2]) / (len * len));
+  let target: Rat | null = null;
+  for (const r of rats) {
+    const pose = crowd.last(r.id);
+    if (r.state === "caught" || !pose?.model) continue;
+    const m = pose.model;
+    // Where the stamper put this pose: the anchor sits at the rat's position.
+    const o: Vec3 = [Math.round(r.x - m.anchor[0]), Math.round(r.y - m.anchor[1]), Math.round(r.z - m.anchor[2])];
+    const box = rayAABB(origin, dir, o, [o[0] + m.size.x, o[1] + m.size.y, o[2] + m.size.z]);
+    if (box === null || box > best) continue;
+    const exact = voxelRaycast(m.size, m.data, [origin[0] - o[0], origin[1] - o[1], origin[2] - o[2]], dir, best);
+    if (exact && exact.t < best) { best = exact.t; target = r; }
+  }
+  if (!target) return;
+  target.state = "caught";
+  target.timer = 1;
+  target.anim.play("death", { fade: 0.1 });
+  caught++;
+}
+```
+
+The distances are all measured in units of `dir`, which `makeRay` does not normalise: `rayAABB`
+and `voxelRaycast` both return `t` in those units, and the reach and the ground hit are converted
+to match. Trees and the house do not block a catch; to add that, test the ray against them
+with the same two functions.
+
+Now connect it to the input. [`recogniseGestures`](/docs/engine/api/input/functions/recogniseGestures/)
+tells a tap from a drag by the total distance the pointer travelled, so looking around with a
+drag never catches anything. With the mouse captured the pointer does not move, so a click
+catches at the crosshair in the middle of the screen:
+
+```ts
+// A tap or click grabs where it lands; with the mouse captured, at the crosshair.
+const centre = () => { const b = canvas.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2] as const; };
+recogniseGestures(input, { tap: (t) => (input.locked() ? grabAt(...centre()) : grabAt(t.x, t.y)) }, { longPressMs: 0 });
+```
+
+And add a `grab` action for the keyboard and gamepad to the action map from step 3:
+
+```ts
+  grab: button("key:Space", "pad:A"),
+```
+
+## Winning and losing
+
+```ts
+function finish(text: string): void {
+  over = true;
+  input.unlock();
+  message.textContent = text;
+  message.hidden = false;
+}
+```
+
+`const message = document.getElementById("message")!;` goes next to `status` at the top. The
+frame now moves the player only while the game is on, updates the rats and the crowd, and
+checks the end:
+
+```ts
+    if (!over) movePlayer(dt);
+    const ground = terrain.heightAt(player.x, player.z) + EYE;
+    player.eyeY += (ground - player.eyeY) * Math.min(1, dt * 10);
+    if (!over && actions.pressed("grab")) grabAt(...centre());
+
+    for (const r of [...rats]) think(r, dt);
+    const f = view();
+    crowd.update(rats, f.camPos);
+
+    if (!over) {
+      clock += dt;
+      if (caught === RAT_COUNT) finish(`All ${RAT_COUNT} rats caught with ${Math.ceil(DAY_SECONDS - clock)} s of daylight to spare.`);
+      else if (clock >= DAY_SECONDS) finish(`Night fell. You caught ${caught} of ${RAT_COUNT} rats.`);
+    }
+```
+
+`think` can remove a rat from the list, so the loop walks a copy (`[...rats]`). `crowd.update`
+needs the camera position for its distance levels, and render with the same frame `f`. The
+status line counts the catch:
+
+```ts
+    status.textContent = `${caught}/${RAT_COUNT} rats · ${Math.max(0, Math.ceil(DAY_SECONDS - clock))} s to nightfall`;
+```
+
+## Run it
+
+Walk towards a rat and it bolts; sprint after it and click (or tap, or press Space) when it is
+under the crosshair. It plays its death animation and disappears. `?rats=3` makes a quicker game.
+
+<Accordions>
+<Accordion title="src/main.ts after step 6">
+
+```ts title="src/main.ts"
+// Rat Hunt: catch the giant rats in the valley before night falls.
+import {
+  createRenderer,
+  firstPersonFrame,
+  hashSeed,
+  initGpu,
+  makeFrameLoop,
+  makeRay,
+  observeResize,
+  rayAABB,
+  resizeToDisplay,
+  seededRandom,
+  showUnsupportedScreen,
+  voxelRaycast,
+  WebGPUUnsupportedError,
+  type PointLight,
+  type Vec3,
+} from "@voxolith/renderer";
+import { blitModelToBricks, makeBrickStamper, PaletteAllocator, type Entity, type Orientation } from "@voxolith/engine";
+import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import {
+  axis,
+  button,
+  createInput,
+  makeActions,
+  makeLookController,
+  makeTouchControls,
+  prepareSurface,
+  recogniseGestures,
+} from "@voxolith/engine/input";
+import { generateTerrain } from "@voxolith/gen-terrain";
+import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
+import { generateBuilding, PRESETS as BUILDINGS } from "@voxolith/gen-building";
+import { atScale, generateCreature, PRESETS as RATS } from "@voxolith/gen-creature";
+import "./style.css";
+
+const canvas = document.getElementById("scene") as HTMLCanvasElement;
+const status = document.getElementById("status")!;
+const message = document.getElementById("message")!;
+const params = new URLSearchParams(location.search);
+
+// --- WebGPU -------------------------------------------------------------------
+const gpu = await initGpu(canvas).catch((err: unknown) => {
+  if (err instanceof WebGPUUnsupportedError) showUnsupportedScreen(err.message, { appName: "Rat Hunt" });
+  throw err;
+});
+
+// --- the valley -----------------------------------------------------------------
+const SIZE = { x: 384, y: 128, z: 384 };
+const seed = hashSeed(params.get("seed") ?? "rat-hunt");
+const rng = seededRandom(seed);
+
+const terrain = generateTerrain(
+  {
+    width: SIZE.x, depth: SIZE.z, height: SIZE.y,
+    baseY: 18, relief: 20, featureSize: 100, waterLevel: 13,
+    river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 },
+  },
+  seed,
+);
+
+// --- the farmhouse and the trees -------------------------------------------------
+const houseParams = structuredClone(BUILDINGS.cottage);
+houseParams.look.lit = 0.5; // half the windows glow
+const house = generateBuilding(houseParams, seededRandom(seed + 1)).entity;
+
+// Somewhere dry near the middle, levelled flat before any ground is built.
+const hs = house.model.size, ha = house.model.anchor;
+let hx = SIZE.x / 2, hz = SIZE.z / 2;
+for (let i = 0; i < 50; i++) {
+  const x = SIZE.x * (0.3 + rng() * 0.4), z = SIZE.z * (0.3 + rng() * 0.4);
+  const corners = [[-1, -1], [1, -1], [-1, 1], [1, 1], [0, 0]];
+  if (corners.every(([cx, cz]) => terrain.heightAt(x + cx * hs.x * 0.7, z + cz * hs.z * 0.7) > terrain.waterLevel + 1)) {
+    hx = Math.round(x); hz = Math.round(z);
+    break;
+  }
+}
+const hx0 = hx - ha[0], hz0 = hz - ha[2], hx1 = hx0 + hs.x - 1, hz1 = hz0 + hs.z - 1;
+const pad = levelPad(hx0, hz0, hx1, hz1, 12);
+const insideHouse = (x: number, z: number, margin: number) =>
+  x > hx0 - margin && x < hx1 + margin && z > hz0 - margin && z < hz1 + margin;
+
+/** Flatten a box to its average height and blend the ground back over an apron. */
+function levelPad(x0: number, z0: number, x1: number, z1: number, apron: number): number {
+  let sum = 0, n = 0;
+  for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) { sum += terrain.heightAt(x, z); n++; }
+  const h = Math.round(sum / n);
+  for (let z = z0 - apron; z <= z1 + apron; z++)
+    for (let x = x0 - apron; x <= x1 + apron; x++) {
+      if (x < 0 || z < 0 || x >= terrain.width || z >= terrain.depth) continue;
+      const edge = Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(z0 - z, 0, z - z1));
+      if (edge > apron) continue;
+      const w = 1 - edge / apron, i = x + z * terrain.width;
+      terrain.heights[i] = Math.round(h * w + terrain.heights[i] * (1 - w));
+    }
+  return h;
+}
+
+// Six tree models, two of each species, reused for every tree.
+const treeModels: { kind: string; entity: Entity }[] = [];
+for (const kind of ["oak", "birch", "spruce"] as const)
+  for (let n = 0; n < 2; n++) {
+    const p = structuredClone(TREES[kind]);
+    p.shape.height = 80 + n * 30;
+    treeModels.push({ kind, entity: generateTree(p, seededRandom(seed + treeModels.length * 31)).entity });
+  }
+const trees: { x: number; z: number; model: (typeof treeModels)[number]; orientation: Orientation }[] = [];
+for (let tries = 0; trees.length < 28 && tries < 2000; tries++) {
+  const x = Math.round(20 + rng() * (SIZE.x - 40)), z = Math.round(20 + rng() * (SIZE.z - 40));
+  if (terrain.waterAt(x, z) || insideHouse(x, z, 40)) continue;
+  if (trees.some((t) => Math.hypot(t.x - x, t.z - z) < 34)) continue;
+  const model = treeModels[Math.floor(rng() * treeModels.length)];
+  trees.push({ x, z, model, orientation: Math.floor(rng() * 8) as Orientation });
+}
+
+// --- the rats ---------------------------------------------------------------------
+const RAT_KINDS = ["rat", "grey rat", "lab rat", "black rat"];
+// atScale sizes a preset for 10 voxels per metre; 0.7 is as small as a rat gets.
+const ratModels = RAT_KINDS.map((k, i) => generateCreature(atScale(RATS[k], 10), seededRandom(seed + 100 + i), k).entity);
+
+// --- palette and renderer ----------------------------------------------------------
+const palette = new PaletteAllocator(1);
+const groundBase = palette.allocate(terrain.roles, "terrain").base;
+const houseBase = palette.allocateFor(house, "house").base;
+const treeBase = new Map(treeModels.map((t) => [t, palette.allocate(t.entity.model.roles, t.kind).base]));
+const ratBase = ratModels.map((e, i) => palette.allocate(e.model.roles, RAT_KINDS[i]).base);
+
+const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
+renderer.setQuality(gpu.software ? "low" : "medium");
+
+renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) =>
+  terrain.fillBrick(cells, ox, oy, oz, groundBase),
+);
+blitModelToBricks(renderer, house.model, { x: hx, y: pad + 1, z: hz }, houseBase);
+for (const t of trees) {
+  blitModelToBricks(renderer, t.model.entity.model, { x: t.x, y: terrain.heightAt(t.x, t.z) + 1, z: t.z }, treeBase.get(t.model)!, t.orientation);
+}
+
+// --- input --------------------------------------------------------------------------
+prepareSurface(canvas);
+const input = createInput(canvas);
+const actions = makeActions(input, {
+  strafe: axis({ negative: ["key:KeyA", "key:ArrowLeft"], positive: ["key:KeyD", "key:ArrowRight"], analog: ["pad:LeftX", "touch:move.x"] }),
+  walk: axis({
+    negative: ["key:KeyS", "key:ArrowDown", "pad:LeftY+", "touch:move.y+"],
+    positive: ["key:KeyW", "key:ArrowUp", "pad:LeftY-", "touch:move.y-"],
+  }),
+  run: button("key:ShiftLeft", "key:ShiftRight", "pad:LT"),
+  grab: button("key:Space", "pad:A"),
+});
+const look = makeLookController(input, { yaw: 180, pitch: -8, keys: { left: ["KeyQ"], right: ["KeyE"] } });
+makeTouchControls(input, { joysticks: [{ id: "move", side: "left" }] });
+
+// --- the player ---------------------------------------------------------------------
+const EYE = 17; // 1.7 m
+const player = { x: hx, z: Math.min(SIZE.z - 10, hz1 + 70), eyeY: 0 };
+player.eyeY = terrain.heightAt(player.x, player.z) + EYE;
+const view = () => firstPersonFrame([player.x, player.eyeY, player.z], look.yaw(), look.pitch(), 70);
+
+function movePlayer(dt: number): boolean {
+  const [sx, wz] = actions.vector("strafe", "walk");
+  if (!sx && !wz) return false;
+  const speed = (actions.down("run") ? 80 : 40) * dt;
+  const yaw = (look.yaw() * Math.PI) / 180;
+  // firstPersonFrame: forward is (sin, cos), screen-right is cross(forward, up).
+  const nx = player.x + (Math.sin(yaw) * wz - Math.cos(yaw) * sx) * speed;
+  const nz = player.z + (Math.cos(yaw) * wz + Math.sin(yaw) * sx) * speed;
+  if (nx < 4 || nz < 4 || nx > SIZE.x - 5 || nz > SIZE.z - 5 || insideHouse(nx, nz, 3)) return false;
+  player.x = nx;
+  player.z = nz;
+  return true;
+}
+
+// --- rats ---------------------------------------------------------------------------
+interface Rat extends CrowdMember { state: "wander" | "flee" | "caught"; speed: number; turn: number; timer: number; }
+const crowd = makeCrowd({ stamper: makeBrickStamper(renderer, { size: SIZE }), near: 200, keepModels: true });
+const blocked = (x: number, z: number) =>
+  x < 10 || z < 10 || x > SIZE.x - 10 || z > SIZE.z - 10 || terrain.waterAt(Math.round(x), Math.round(z)) || insideHouse(x, z, 8);
+
+const rats: Rat[] = [];
+const RAT_COUNT = Math.max(1, Math.min(20, Number(params.get("rats") ?? 8)));
+for (let i = 0; i < RAT_COUNT; i++) {
+  const k = i % ratModels.length;
+  let x = 0, z = 0;
+  do { x = 20 + rng() * (SIZE.x - 40); z = 20 + rng() * (SIZE.z - 40); }
+  while (blocked(x, z) || Math.hypot(x - player.x, z - player.z) < 80);
+  const anim = makeAnimator(ratModels[k], "idle");
+  rats.push({ id: i + 1, entity: ratModels[k], variant: RAT_KINDS[k], anim, base: ratBase[k], x, y: 0, z, yaw: rng() * Math.PI * 2, state: "wander", speed: 0, turn: 0, timer: rng() * 3 });
+}
+let caught = 0;
+let over = false;
+
+const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+function think(r: Rat, dt: number): void {
+  r.timer -= dt;
+  if (r.state === "caught") {
+    if (r.anim.finished() && r.timer <= 0) {
+      crowd.remove(r.id);
+      rats.splice(rats.indexOf(r), 1);
+    }
+    r.anim.update(dt);
+    return;
+  }
+  const away = Math.hypot(r.x - player.x, r.z - player.z);
+  if (away < 70 && r.state !== "flee") {
+    // Too close: run directly away from the player.
+    r.state = "flee";
+    r.turn = Math.atan2(r.x - player.x, r.z - player.z);
+    r.speed = 45;
+    r.timer = 2 + rng();
+    r.anim.play("run", { fade: 0.1 });
+  } else if (r.timer <= 0) {
+    r.state = "wander";
+    const clip = ["walk", "walk", "idle", "sniff"][Math.floor(rng() * 4)];
+    r.anim.play(clip, { fade: 0.25 });
+    r.speed = clip === "walk" ? 14 : 0;
+    r.turn = r.yaw + (rng() - 0.5) * 2.4;
+    r.timer = 1.5 + rng() * 3;
+  }
+  if (r.speed > 0) {
+    r.yaw += Math.max(-4 * dt, Math.min(4 * dt, wrap(r.turn - r.yaw)));
+    const nx = r.x + Math.sin(r.yaw) * r.speed * dt, nz = r.z + Math.cos(r.yaw) * r.speed * dt;
+    if (blocked(nx, nz)) { r.turn = r.yaw + Math.PI * (0.6 + rng() * 0.8); }
+    else { r.x = nx; r.z = nz; }
+  }
+  r.y = terrain.heightAt(r.x, r.z) + 1;
+  r.anim.update(dt);
+}
+
+// --- catching -------------------------------------------------------------------------
+const REACH = 90; // 9 m
+function grabAt(clientX: number, clientY: number): void {
+  if (over) return;
+  const { origin, dir } = makeRay(canvas, view(), clientX, clientY);
+  const len = Math.hypot(dir[0], dir[1], dir[2]);
+  // Nothing behind the ground counts, and nothing out of reach.
+  let best = REACH / len;
+  const hit = terrain.pick(origin, dir, { maxT: REACH });
+  if (hit) best = Math.min(best, ((hit[0] - origin[0]) * dir[0] + (hit[1] - origin[1]) * dir[1] + (hit[2] - origin[2]) * dir[2]) / (len * len));
+  let target: Rat | null = null;
+  for (const r of rats) {
+    const pose = crowd.last(r.id);
+    if (r.state === "caught" || !pose?.model) continue;
+    const m = pose.model;
+    // Where the stamper put this pose: the anchor sits at the rat's position.
+    const o: Vec3 = [Math.round(r.x - m.anchor[0]), Math.round(r.y - m.anchor[1]), Math.round(r.z - m.anchor[2])];
+    const box = rayAABB(origin, dir, o, [o[0] + m.size.x, o[1] + m.size.y, o[2] + m.size.z]);
+    if (box === null || box > best) continue;
+    const exact = voxelRaycast(m.size, m.data, [origin[0] - o[0], origin[1] - o[1], origin[2] - o[2]], dir, best);
+    if (exact && exact.t < best) { best = exact.t; target = r; }
+  }
+  if (!target) return;
+  target.state = "caught";
+  target.timer = 1;
+  target.anim.play("death", { fade: 0.1 });
+  caught++;
+}
+// A tap or click grabs where it lands; with the mouse captured, at the crosshair.
+const centre = () => { const b = canvas.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2] as const; };
+recogniseGestures(input, { tap: (t) => (input.locked() ? grabAt(...centre()) : grabAt(t.x, t.y)) }, { longPressMs: 0 });
+
+// --- day, night and lights ---------------------------------------------------------------
+const DAY_SECONDS = Math.max(10, Number(params.get("day") ?? 180));
+const DAWN = 0.3, DUSK = 0.78;
+let clock = 0;
+const doorLamp: Vec3 = [hx, pad + 20, hz1 + 3];
+
+function lights(night: number): PointLight[] {
+  if (night < 0.02) return [];
+  return [
+    { position: doorLamp, color: [1, 0.72, 0.4], intensity: 2.4 * night, range: 90, glow: 2 * night },
+    // A lantern the player carries: no shadow ray, so it costs little.
+    { position: [player.x, player.eyeY - 4, player.z], color: [1, 0.85, 0.6], intensity: 0.9 * night, range: 60, shadows: false },
+  ];
+}
+
+function finish(text: string): void {
+  over = true;
+  input.unlock();
+  message.textContent = text;
+  message.hidden = false;
+}
+
+// --- the loop ------------------------------------------------------------------------------
+const loop = makeFrameLoop({
+  continuous: true,
+  render(now, dt) {
+    input.update();
+    look.update(dt);
+    if (!over) movePlayer(dt);
+    const ground = terrain.heightAt(player.x, player.z) + EYE;
+    player.eyeY += (ground - player.eyeY) * Math.min(1, dt * 10);
+    if (!over && actions.pressed("grab")) grabAt(...centre());
+
+    for (const r of [...rats]) think(r, dt);
+    const f = view();
+    crowd.update(rats, f.camPos);
+
+    if (!over) {
+      clock += dt;
+      if (caught === RAT_COUNT) finish(`All ${RAT_COUNT} rats caught with ${Math.ceil(DAY_SECONDS - clock)} s of daylight to spare.`);
+      else if (clock >= DAY_SECONDS) finish(`Night fell. You caught ${caught} of ${RAT_COUNT} rats.`);
+    }
+    const phase = DAWN + (Math.min(clock, DAY_SECONDS) / DAY_SECONDS) * (DUSK - DAWN);
+    const lighting = timeOfDay(phase);
+    renderer.setLights(lights(lighting.nightFactor));
+    status.textContent = `${caught}/${RAT_COUNT} rats · ${Math.max(0, Math.ceil(DAY_SECONDS - clock))} s to nightfall`;
+
+    resizeToDisplay(gpu);
+    renderer.render({ ...f, ...atmosphereFrame(lighting, ATMOSPHERES.clear), time: now / 1000 });
+  },
+});
+observeResize(canvas, loop);
+```
+
+</Accordion>
+</Accordions>
+
+The [creature example](/docs/examples/creature/) goes further with the same parts: it hits a rat
+at a bone, opens a wound where you tapped (`wound`) and takes limbs off (`sever`). See
+[Animation](/docs/manual/animation/) and [Picking](/docs/manual/picking/).
+
+**Next:** [performance and deploying](/docs/tutorial/performance-and-deploying/).

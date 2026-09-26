@@ -1,0 +1,107 @@
+---
+title: Renderer
+description: "@voxolith/renderer: a WebGPU raymarcher over sparse 8³ bricks, with instances, point lights, materials, atmospheric effects and .vox and .mca I/O."
+---
+
+`@voxolith/renderer` is the part of Voxolith that draws. It is a single fullscreen raymarch pass
+written in WGSL (`.wesl` modules linked at runtime by [wesl](https://wesl-lang.dev)): every pixel
+walks a ray through the voxel grid with a DDA until it hits something, then shades the hit with
+shadows, ambient occlusion, materials and lights. There are no meshes, so an edit to the world
+costs an upload of the bricks it touched and nothing else.
+
+The renderer is **WebGPU only**. It needs `navigator.gpu` and a secure context (HTTPS or
+`localhost`); there is no WebGL fallback.
+
+## What it does
+
+- **Storage**: the world is 8³ bricks with a 4-bit palette per brick (8-bit when a brick needs
+  more values), under a two-level index held in one storage buffer. Edits go a brick at a time
+  (`edit`, `editMany`, `clear`), so a large world never needs a dense copy of itself.
+  See [Storage](/docs/renderer/storage/).
+- **Instances**: `addModel` uploads a model once and `setInstances` draws it any number of times,
+  at any yaw, mirrored, at fractional positions, with palettes of its own. See
+  [Instances](/docs/renderer/instances/).
+- **Lighting and materials**: a directional key light, a sky with sun and moon discs, soft
+  shadows, face ambient occlusion, up to 32 point lights with range-limited shadows and a visible
+  glow; emissive, glass, metal and animated water materials. See
+  [Lighting and materials](/docs/renderer/lighting/).
+- **Atmosphere**: fog, clouds, rain and snow, wet and snow-covered surfaces and wind on water, all
+  off at zero. The renderer knows the effects, not the weather. See
+  [Atmosphere](/docs/renderer/atmosphere/).
+- **Performance**: quality presets, an adaptive render scale and a render-on-demand frame loop,
+  all runtime knobs. See [Quality and performance](/docs/renderer/quality-and-performance/).
+- **Formats**: MagicaVoxel `.vox` read and write (scene graph, rotations, materials, animation
+  frames) and Minecraft Anvil `.mca` regions. See [Formats](/docs/renderer/formats/).
+- **Cameras, picking and effects**: orbit, first-person and chase camera frames, CPU ray helpers
+  for picking, and explosion and muzzle-flash effects. See
+  [Entry points](/docs/renderer/entry-points/#cameras).
+
+The renderer only draws. Input (orbit and look controllers, gestures, touch controls), entities
+and colour roles, animation and the meaning of weather live in
+[`@voxolith/engine`](/docs/engine/).
+
+## Entry points
+
+| import | use from | contents |
+|---|---|---|
+| `@voxolith/renderer` | browser code | everything, including `initGpu`, `createRenderer`, `makeFrameLoop` |
+| `@voxolith/renderer/core` | Node and bun tools | everything that does not touch the GPU |
+| `@voxolith/renderer/vox` | Node and bun tools | `.vox` parse and write only |
+| `@voxolith/renderer/ray` | Node and bun tools | ray and box helpers only |
+
+The package ships raw TypeScript, and the main barrel imports shaders with Vite's `?raw`, so it
+only resolves inside a bundler. [Entry points](/docs/renderer/entry-points/) has the setup and a
+first frame.
+
+## A frame, in short
+
+```ts
+import { initGpu, createRenderer, makeCamera, makeFrameLoop, observeResize, resizeToDisplay } from "@voxolith/renderer";
+
+const canvas = document.querySelector("canvas")!;
+const gpu = await initGpu(canvas);
+
+const size = { x: 32, y: 32, z: 32 };
+const data = new Uint8Array(size.x * size.y * size.z).fill(1); // palette slot 1 everywhere
+const palette = new Float32Array(256 * 4);
+palette.set([0.9, 0.5, 0.2, 1], 4); // slot 1: RGBA
+
+const renderer = await createRenderer(gpu, { size, data, palette });
+const camera = makeCamera({ target: [16, 16, 16], distance: 80, pitchDeg: 30, fovDeg: 35 });
+
+const loop = makeFrameLoop({
+  render() {
+    resizeToDisplay(gpu);
+    renderer.render({ ...camera(35), ...LIGHTING }); // LIGHTING: the key light and sky fields of FrameParams
+  },
+});
+observeResize(canvas, loop);
+loop.invalidate();
+```
+
+`FrameParams` is the camera frame plus the lighting and sky fields, and optionally the atmosphere
+fields. `timeOfDay(phase)` from [`@voxolith/engine/atmosphere`](/docs/engine/atmosphere/) produces
+the lighting half from one number.
+
+## Where to start
+
+<Cards>
+  <Card title="Entry points" href="/docs/renderer/entry-points/">
+    Install, bundler setup, which import to use where, and a first frame.
+  </Card>
+  <Card title="Storage" href="/docs/renderer/storage/">
+    Bricks, per-brick palettes, the two-level index, and how to edit the world.
+  </Card>
+  <Card title="Instances" href="/docs/renderer/instances/">
+    Drawing models by reference: scenery and crowds without stamping.
+  </Card>
+  <Card title="Quality and performance" href="/docs/renderer/quality-and-performance/">
+    What costs what, and the knobs that trade it.
+  </Card>
+  <Card title="API reference" href="/docs/renderer/api/">
+    Every export, generated from the source.
+  </Card>
+  <Card title="Examples" href="/examples/">
+    Runnable pages built on the renderer and engine.
+  </Card>
+</Cards>

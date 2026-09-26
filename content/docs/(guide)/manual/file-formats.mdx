@@ -1,0 +1,101 @@
+---
+title: File formats
+description: Load MagicaVoxel .vox models and scenes, animate .vox frames, export entities back to .vox, and import Minecraft .mca regions.
+---
+
+Voxolith reads and writes MagicaVoxel `.vox` files and reads Minecraft Anvil `.mca` region files.
+`.vox` is the way hand-made models enter a game and the way generated ones leave it for the
+[viewer](/viewer/), the [editor](/editor/) or MagicaVoxel. This page covers which reader to use
+for what, and the axis and palette details that trip people up.
+
+## Which function
+
+| you want | use | from |
+|---|---|---|
+| a model as an entity, to place, instance, restyle | `entityFromVox(buffer, opts)` | `@voxolith/engine/vox` |
+| an entity back out as `.vox` | `entityToVox(entity)` | `@voxolith/engine/vox` |
+| the raw first model: size, voxels, 256-colour palette | `parseVox(buffer)` | `@voxolith/renderer` or `/vox` |
+| the full scene: every model, transforms, layers, materials, animation frames | `parseVoxScene(buffer)` | `@voxolith/renderer` or `/vox` |
+| to play a `.vox` animation | `voxSceneAnimator(scene)` | `@voxolith/renderer` |
+| `.vox` materials as the renderer's material block | `packMaterials(scene)` | `@voxolith/renderer` |
+| to write arbitrary voxels as `.vox` | `writeVox(size, voxels, colorFor)` | `@voxolith/renderer` or `/vox` |
+| a Minecraft region as a grid | `buildMinecraftRegion(bytes, opts)` | `@voxolith/renderer` |
+
+In Node or bun tools, import from `@voxolith/renderer/vox` or `/core`, never the main barrel: it
+pulls in the renderer, whose shader imports only a bundler can resolve.
+
+## Models as entities
+
+For almost everything in a game, turn a `.vox` into an [entity](/docs/manual/entities/). It is
+cropped to its occupied box, turned from Z-up to Y-up, gets one colour role per distinct colour, and
+an anchor at the base centre:
+
+```ts
+import { entityFromVox, entityToVox } from "@voxolith/engine/vox";
+
+const lamp = entityFromVox(await (await fetch(`${import.meta.env.BASE_URL}models/lamp.vox`)).arrayBuffer(), {
+  kind: "prop.lamp",
+  anchor: "base", // or "centre", or [x, y, z]
+});
+
+// And back out, e.g. to let a player download a generated tree.
+const blob = new Blob([entityToVox(lamp)], { type: "application/octet-stream" });
+```
+
+Roles come out as `color.0`, `color.1`, ... in first-seen order, named by the source palette index,
+with the source colours as defaults. Restyle them like any other roles.
+
+## Scenes and animation
+
+`parseVoxScene` reads the scene graph: every model, the transforms and rotations that place them,
+layers (hidden ones are still sampled), MATL materials and keyframes. `voxSceneAnimator` bakes it
+into a stable Y-up grid for every frame:
+
+```ts
+import { createRenderer, packMaterials, parseVoxScene, voxSceneAnimator } from "@voxolith/renderer";
+
+const scene = parseVoxScene(buf);
+const anim = voxSceneAnimator(scene);
+const renderer = await createRenderer(gpu, {
+  size: anim.size, data: anim.frame(0), palette: anim.palette, materials: packMaterials(scene),
+});
+// Later, to show frame i:
+renderer.updateVoxels(anim.frame(i));
+```
+
+MagicaVoxel materials map to the renderer's kinds: diffuse, metal, glass and emit. There is no
+`.vox` water; give a role the `water` material yourself.
+
+## Minecraft regions
+
+`buildMinecraftRegion(bytes, opts)` reads an Anvil region (NBT, all three chunk encodings) and
+returns a colour-mapped `{ size, data, palette, materials, meta }` ready for `createRenderer`. A
+region is 512 x 512 blocks, so crop and downsample:
+
+```ts
+const region = await buildMinecraftRegion(new Uint8Array(buf), { x0: 128, x1: 383, z0: 128, z1: 383, downsample: 2 });
+const renderer = await createRenderer(gpu, { size: region.size, data: region.data, palette: region.palette, materials: region.materials });
+```
+
+Options are `x0`..`x1`, `z0`..`z1` (region-local, default a centred 256 x 256), `yMin`/`yMax`,
+`maxDim` (default 320 per axis) and `downsample`. The minecraft-region example loads a dropped
+file this way and flies through it.
+
+## Pitfalls
+
+- `.vox` is Z-up and Voxolith is Y-up. The engine and the renderer's scene animator swizzle
+  `(x, y, z)` to `(x, z, y)` for you; `parseVox` returns the file's own axes, so convert if you use
+  it directly.
+- `.vox` stores coordinates in single bytes, so no axis may exceed 255. `entityToVox` throws for
+  bigger models, which rules out most models generated at 50 or 100 voxels per metre.
+- A `.vox` palette has 255 colours; an entity from it has at most 255 roles.
+
+## See also
+
+- [Renderer: formats](/docs/renderer/formats/) and [Engine: vox](/docs/engine/vox/)
+- [Entities](/docs/manual/entities/)
+- API: [`entityFromVox`](/docs/engine/api/vox/functions/entityFromVox/),
+  [`entityToVox`](/docs/engine/api/vox/functions/entityToVox/),
+  [`parseVoxScene`](/docs/renderer/api/vox/functions/parseVoxScene/),
+  [`voxSceneAnimator`](/docs/renderer/api/renderer/functions/voxSceneAnimator/),
+  [`buildMinecraftRegion`](/docs/renderer/api/renderer/functions/buildMinecraftRegion/)

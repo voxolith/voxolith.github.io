@@ -1,0 +1,180 @@
+---
+title: Placement and worlds
+description: Axis-aligned orientations, stamping models into dense grids and brick storage, chunked worlds that stream around a focus point, scatter and variant pools.
+---
+
+Placing an entity means writing its voxels into the world at an anchor, with its roles offset into
+the palette range the host allocated for it. This page covers stamping (voxels written into the
+world); drawing a model by reference instead is [Instances](/docs/engine/instances/), which is the
+better choice for large or sparse models.
+
+## Orientations
+
+Copies of one model all facing the same way read as wallpaper. The eight axis-aligned
+orientations, four yaw steps of 90° and an optional mirror, fix that for free: they are pure index
+permutations, so nothing is resampled and no memory is allocated.
+
+```ts
+type Orientation = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7; // low two bits: yaw step x 90°; bit 2: mirror along x first
+```
+
+Arbitrary angles are deliberately not offered for stamping. Rotating a voxel grid by anything
+other than a right angle means resampling it, which blurs or shreds exactly the one-voxel twigs
+and grass blades the generators work hardest to keep 6-connected. (Instances turn at any angle,
+because the renderer samples the model per ray; [animation](/docs/engine/animation/) bakes turned
+poses and accepts the resampling.)
+
+- [`ORIENTATIONS`](/docs/engine/api/engine/variables/ORIENTATIONS/) lists all eight.
+- [`orientVoxel(o, x, y, z, size, out)`](/docs/engine/api/engine/functions/orientVoxel/) and
+  [`orientAnchor(o, anchor, size)`](/docs/engine/api/engine/functions/orientAnchor/) map a cell and
+  an anchor with the same `extent - 1 - i` convention, so a model and its anchor never drift apart.
+- [`orientedSize(size, o)`](/docs/engine/api/engine/functions/orientedSize/) and
+  [`swapsXZ(o)`](/docs/engine/api/engine/functions/swapsXZ/) give the turned extents.
+- [`orientModel(model, o)`](/docs/engine/api/engine/functions/orientModel/) materialises a turned
+  copy, for exporting or previewing. Placement never needs it: the blits apply the orientation
+  while writing.
+- [`orientationYaw(o)`](/docs/engine/api/engine/functions/orientationYaw/) gives the instance turn
+  `{ yaw, mirror }` that draws exactly the same voxels as stamping with `o`.
+
+## Stamping into a dense world
+
+[`blitModel(world, model, origin, base, orientation?)`](/docs/engine/api/engine/functions/blitModel/)
+copies a dense model into a `{ size, data }` grid with its anchor at `origin`, writing role `v` as
+`base + v - 1`, and returns the box it touched (or `null` when nothing landed inside the world).
+Empty voxels are skipped, so the model's air never erases the world.
+
+```ts
+const { base } = palette.allocateFor(oak);
+const box = blitModel(world, oak.model, { x: 64, y: groundY, z: 64 }, base, 3);
+if (box) renderer.updateVoxels(world.data, box); // re-upload only the bricks it touched
+```
+
+A dense world is simple and fast for a small scene. For a large one it is not: the examples forest
+at 8x8 tiles would need 1.1 GB of `Uint8Array` purely as a staging copy of a world the GPU
+already holds sparsely in 159 MB.
+
+## Stamping into bricks
+
+[`blitModelToBricks(target, model, origin, base, orientation?, clip?)`](/docs/engine/api/engine/functions/blitModelToBricks/)
+writes straight into brick storage instead. `target` is any
+[`BrickTarget`](/docs/engine/api/engine/interfaces/BrickTarget/), an object with an
+`edit(box, fill)` method; [`Renderer.edit`](/docs/renderer/api/renderer/classes/Renderer/)
+satisfies it structurally, so the engine keeps its one-way dependency on the renderer.
+
+It buckets the model's solid voxels by destination brick in one pass (visiting the model once per
+brick would be quadratic: an oak is 462k cells over about 900 bricks) and writes each brick
+through a 512-voxel scratch, so the cost is proportional to the model's box, not the world. The
+optional `clip` box restricts writes, and a model entirely outside it is rejected before its voxels
+are scanned; chunked worlds depend on both.
+
+See [Storage](/docs/renderer/storage/) for the brick layout on the renderer side.
+
+## Chunked worlds
+
+Building a whole world up front makes load time and memory scale with its size.
+[`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/) keeps a **resident set**
+instead: chunks near a focus point are generated on demand and chunks that fall outside it are
+freed, so what is resident is bounded and the world it is cut from need not be.
+
+Chunks are columns, a square footprint over the full height, which suits terrain and keeps
+addressing to two axes.
+
+```ts
+import { makeChunkedWorld } from "@voxolith/engine";
+
+const world = makeChunkedWorld({
+  target: renderer,           // edit(box, fill) and clear(box)
+  size: SIZE,
+  chunk: 256,                 // a multiple of the 8-voxel brick
+  seed,
+  generate(ctx) {
+    // ground for this column
+    ctx.edit(ctx.box, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase));
+    // every tree that reaches into it, including ones rooted next door
+    const m = 40;
+    scatterRegion({ cell: 48, seed, salt: 1 }, ctx.box.x0 - m, ctx.box.z0 - m, ctx.box.x1 + m, ctx.box.z1 + m, (pt) => {
+      const v = trees.pick(pt.rng);
+      ctx.blit(v.entity.model, { x: pt.x, y: terrain.heightAt(pt.x, pt.z) + 1, z: pt.z }, treeBase, v.orientation);
+    });
+  },
+});
+
+// every frame:
+world.focus(camPos[0], camPos[2], 1200);   // queue within the radius, free beyond 1.5x
+world.step(8);                              // build for up to 8 ms, returns chunks still queued
+```
+
+The rules that make it work:
+
+- **Generation is a pure function of the chunk.** The order chunks are built in depends on where
+  the camera went, so `generate` must depend only on its
+  [`ChunkContext`](/docs/engine/api/engine/interfaces/ChunkContext/): `cx`, `cz`, the chunk's
+  `box`, and an `rng` seeded from the coordinates and the world seed.
+- **Each chunk writes only its own voxels.** `ctx.edit` clamps its box to the chunk and `ctx.blit`
+  clips the model to it. Pass entities rooted in neighbouring chunks too: a tree that straddles a
+  boundary then comes out the same whichever side is built first.
+- **Hysteresis.** `focus(x, z, radius, keep?)` queues chunks within `radius`, nearest first, so the
+  view fills from the middle, and frees chunks beyond `keep` (default `radius * 1.5`), so a camera
+  jittering on the boundary does not rebuild the same chunk every frame. It only diffs the resident
+  set and is cheap to call every frame.
+- **A budget.** `step(budgetMs = 8)` builds queued chunks until the budget is spent;
+  `pending` and `resident` report progress.
+
+A chunk can also fill itself with one batched edit rather than `ctx.edit` (the valley example
+sends a box per brick column through `renderer.editMany`, sized to what the column holds).
+
+## Scatter
+
+A global loop that rejection-samples positions works only when the whole world is built at once,
+because each point depends on the ones before it. [`scatterRegion`](/docs/engine/api/engine/functions/scatterRegion/)
+makes placement a pure function of position instead: a **jittered grid**, one candidate per cell,
+its position and properties drawn from a hash of the cell's coordinates. Any chunk can work out its
+own candidates and its neighbours' without shared state.
+
+```ts
+scatterRegion({ cell: 90, seed, salt: 21, jitter: 0.3 }, x0 - margin, z0 - margin, x1 + margin, z1 + margin, (pt) => {
+  if (pt.rng() > 0.6) return;             // whether it exists: drawn from the cell's rng
+  const species = pt.rng() < 0.5 ? "oak" : "birch";
+  // ...
+});
+```
+
+- [`ScatterOptions`](/docs/engine/api/engine/interfaces/ScatterOptions/): `cell` (world voxels,
+  which sets density), `seed`, `salt` (distinguishes layers, so trees and grass do not land on the
+  same points), `jitter` (fraction of a cell a candidate may stray, 0 a rigid lattice, 0.5 anywhere
+  in the cell; default 0.4, which looks scattered while keeping a minimum spacing).
+- Each [`ScatterPoint`](/docs/engine/api/engine/interfaces/ScatterPoint/) has `x`, `z`, its cell
+  `cx`, `cz` (a stable id) and a per-cell `rng`. Draw every decision about the candidate from that
+  rng, and the result is identical however the world is traversed. The offset is drawn first, so
+  the caller's own draws stay aligned whatever it does with the point.
+- Expand the rectangle by the largest thing a candidate can produce, or entities rooted just
+  outside a chunk will be missing where they reach into it.
+
+## Variant pools
+
+Generating every placement of a species uniquely is what makes a large scene slow to build.
+Measured on the examples forest at 4x4, generation is 89.6% of the build (10.8 of 12.1 seconds
+for 1120 entities) while placement is 2%, so cutting the number of models generated is the only
+change to load time that matters. Vegetation systems ship a handful of variants per species rather
+than a unique tree per instance, and so does this.
+
+[`makeVariantPool({ count, make })`](/docs/engine/api/engine/functions/makeVariantPool/) is a
+lazily filled pool of interchangeable models. `pick(rng)` returns a
+[`Variant`](/docs/engine/api/engine/interfaces/Variant/), a model from the pool with a random
+orientation, generating it on first use; `at(index, rng)` picks a given slot. `count` models in
+eight orientations give `count * 8` silhouettes for `count` generations; around a dozen per species
+is plenty. Vary the parameters by index (height, age, seed) so the pool is not twelve copies of one
+thing. A scene that places fewer entities than the pool size never pays for the rest; `generated`
+counts what was built.
+
+```ts
+const oaks = makeVariantPool({
+  count: 12,
+  make: (i) => generateTree({ ...PRESETS.oak, shape: { ...PRESETS.oak.shape, height: 160 + i * 6 } }, seededRandom(1000 + i)).entity,
+});
+const v = oaks.pick(pt.rng); // { entity, orientation, index }
+```
+
+Pools pair with a [worker pool](/docs/engine/workers/) that generates the models off the main
+thread, and with [instances](/docs/engine/instances/), where `orientationYaw(v.orientation)` turns
+the same choice into an instance heading.

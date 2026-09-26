@@ -1,0 +1,76 @@
+---
+title: Share codes
+description: What a generator author must know about share codes - parameter specs as the shared state, step grids, the layout hash, and versions.
+---
+
+A generator, its parameters and a seed are a complete description of one model, because generation
+is pure. A share code packs those three into a short base64url string that can go in a URL or a chat
+and be rebuilt on the other side. The viewer shows the code for whatever it is displaying and accepts
+one pasted in. The encoding itself is documented with the engine under
+[share codes](/docs/engine/share-codes/); this page is about what it asks of a generator.
+
+```ts
+import { decodeState, encodeState, generateFromState, getGenerator } from "@voxolith/engine";
+import { registerRockGenerators } from "@voxolith/gen-rock";
+
+registerRockGenerators();
+const gen = getGenerator("voxolith/outcrop")!;
+
+const code = encodeState(gen, { seed: 4242, params: gen.defaults });
+const entity = generateFromState(decodeState(code)); // the same voxels as generating directly
+```
+
+## Only the declared parameters travel
+
+A code carries a value for each of the generator's `params`, in declaration order, and decoding
+starts from the generator's `defaults`. So the shared state is exactly what a UI can show and a
+person can tweak. Anything in the parameter object without a `ParamSpec` (a tree's branch level
+table, a bush's stem count range) is part of the preset: it comes from the generator's defaults on
+decode, whatever the sender had.
+
+Two consequences for authors:
+
+- **Expose what people will want to share.** A knob that matters but has no spec cannot survive a
+  round trip through a code.
+- **Changing `defaults` changes what old codes decode to** for every undeclared field. That is a
+  change of output for the same input: bump `version`.
+
+## Values are quantised on the step grid
+
+Each value is stored as a small integer: an `int` as its offset from `min`, a `bool` as 0 or 1, an
+`enum` as its option index, and a `number` as the count of `step`s from `min` (a `number` without a
+step is stored at a thousandth of its range). `clampToSpec` does exactly this snapping, and decoding
+returns the snapped value.
+
+So **defaults must lie on their spec's step grid**. A default of 0.137 on a 0.01 step decodes as
+0.14, and a share code of the default would rebuild a different model from the default itself. The
+contract checks every default against `clampToSpec`. When it fails, fix the default; never change the
+step, since a new step silently changes what every existing code decodes to.
+
+## The layout is hashed
+
+A code is a positional list, so it records a 16-bit hash of the parameter layout: each spec's
+`path`, `kind` and, for enums, its options. A generator that gains, loses, reorders or renames a
+parameter, or changes an enum's options, can no longer read old codes, and `decodeState` refuses
+them with an error rather than guess at a different model. Ranges and steps are not in the hash:
+changing them is allowed, and reinterprets old codes.
+
+| change | old codes |
+|---|---|
+| add, remove, reorder or rename a spec; change a spec's `kind` or an enum's options | refused |
+| change a spec's `step` | decode to different values (avoid) |
+| change `min` | decode to different values (avoid) |
+| widen `max` | unchanged |
+| change an undeclared field of `defaults` | decode to a different model: bump `version` |
+
+## Version and fingerprint
+
+The code also records the generator `version` it was made with, and the error for a refused code
+names both versions. Bump the version whenever the same input gives different output, so caches
+(the worker's IndexedDB cache, baked files) can tell.
+
+`fingerprint(code)` is a short one-way hash of a code, for file names, cache keys and "is this the
+same tree?" comparisons. It names a model; only the code can rebuild one.
+
+Finer scales are not part of the code: a code describes a design, and
+`generateFromState(state, id?, ctx?)` builds it for whichever world asks.

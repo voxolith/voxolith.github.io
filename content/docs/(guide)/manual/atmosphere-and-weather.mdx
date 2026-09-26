@@ -1,0 +1,121 @@
+---
+title: Atmosphere and weather
+description: Time of day, fog, clouds, rain, snow and wet or snowy ground - what the renderer draws, what the engine translates, and what your game decides.
+---
+
+Weather in Voxolith is split across three layers, and keeping them apart is what makes it easy to
+change:
+
+- The **renderer** draws raw atmospheric effects: `fog`, `clouds`, `precipitation`, `surface`
+  (wet and snow-covered ground) and `waterWind`, all optional fields of `FrameParams` and all off at
+  zero. It knows nothing about weather.
+- The **engine** (`@voxolith/engine/atmosphere`, optional) is the vocabulary and the translator:
+  `timeOfDay(phase)`, `Atmosphere` presets, blending and transitions, `approach`, and
+  `atmosphereFrame(lighting, atmosphere)`, which turns them into the renderer's fields. It has no
+  simulation and no clock of its own.
+- The **game** decides whether there is weather at all, when it changes, and how wetness and snow
+  cover build up and fade.
+
+## One frame
+
+```ts
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+
+renderer.render({
+  ...frame(),
+  ...atmosphereFrame(timeOfDay(0.5), { ...ATMOSPHERES.rain, wetness: 0.7 }),
+  time: now / 1000,
+});
+```
+
+`timeOfDay(phase)` runs 0 to 1 over a day: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset.
+Animate `phase` for a day passing; the sky goes through sunset on the way. Options: `nightAmbient`
+(how dark the night is, default 0.12) and `moonlight` (default 0.35 of sunlight).
+
+An `Atmosphere` is `cloud` (0 clear to 1 overcast), `precipitation` (`none`, `rain` or `snow`, with
+an intensity), `wind` (direction in degrees, 0 towards +Z, and strength), `fog`, and the ground's
+`wetness` and snow `cover`. `ATMOSPHERES` has presets: `clear`, `cloudy`, `overcast`, `rain`,
+`storm`, `snow`, `blizzard`, `fog`. `atmosphereFrame` dims and flattens the key light under
+overcast, greys the sky while keeping the night dark, gives fog the horizon's colour, and lets the
+wind tilt the rain and drive the clouds and the water. Clear weather passes the lighting through
+unchanged.
+
+## Changing weather over time
+
+Wetness and cover are the ground's state, not the sky's, so presets leave them at 0 and your game
+keeps its own accumulators. The world example's rules, written with `approach`:
+
+```ts
+import { approach, atmosphereFrame, ATMOSPHERES, makeAtmosphereTransition, timeOfDay, type AtmosphereName } from "@voxolith/engine/atmosphere";
+
+const sky = makeAtmosphereTransition(ATMOSPHERES.clear);
+let wetness = 0, cover = 0, phase = 0.35;
+
+function setWeather(name: AtmosphereName) {
+  sky.set(ATMOSPHERES[name], 4); // eased over 4 s, from wherever it is now
+  loop.setContinuous(true);
+}
+
+function render(now: number, dt: number) {
+  phase = (phase + dt / 600) % 1; // a ten-minute day
+  const atm = sky.update(dt);
+  const p = atm.precipitation;
+  const rain = p.kind === "rain" ? p.intensity : 0;
+  const snow = p.kind === "snow" ? p.intensity : 0;
+  // Rain soaks the ground and it dries slowly; snow settles and melts in rain or sun.
+  wetness = rain > 0 ? approach(wetness, 1, 0.12 * rain, dt) : approach(wetness, 0, 0.02, dt);
+  cover = snow > 0 ? approach(cover, 0.9, 0.05 * snow, dt) : approach(cover, 0, rain > 0 ? 0.05 : 0.012, dt);
+  renderer.render({ ...frame(), ...atmosphereFrame(timeOfDay(phase), { ...atm, wetness, cover }), time: now / 1000 });
+}
+```
+
+Those rates are the example's choices, not the engine's. A game with seasons, a forecast or a
+scripted storm replaces them; `blendAtmosphere(a, b, t)` mixes two atmospheres directly when you
+drive the blend yourself.
+
+## Finer worlds
+
+The presets are tuned for 10 voxels per metre. In a finer world pass the scale, and the same weather
+comes out in metres: fog per voxel thins, rain and snow fall more voxels per second, and the
+renderer's `effectScale` keeps waves, drops and snowflakes their size.
+
+```ts
+const atm = atmosphereFrame(timeOfDay(0.5), ATMOSPHERES.rain, { voxelsPerMetre: 100 });
+```
+
+## What the renderer draws, and its cost
+
+- `fog`: exponential extinction towards a colour, optionally thinning with height; applied by
+  distance to hits and to the sky, so the horizon dissolves. A few operations per pixel.
+- `clouds`: a drifting noise layer over the sky; `cover` 1 is overcast and hides the sun, moon and
+  stars. A few operations per pixel.
+- `precipitation`: rain streaks or snowflakes as analytic particles along each primary ray, stopped
+  by whatever the ray hit, so roofs and trees keep the rain off. Never uploaded and unlimited in
+  extent; 8 hash samples per pixel.
+- `surface`: `wet` darkens the ground and adds a sheen to upward faces; `cover` blends upward faces
+  towards a snow colour. On medium and high quality one short upward ray per upward pixel keeps
+  snow off ground under canopies and roofs; `low` skips it.
+- `waterWind`: drifts and raises the ripples on [water](/docs/manual/water/).
+
+You can set these fields directly, without the engine's module, for a fixed look: a foggy dungeon
+needs only `fog`.
+
+## Pitfalls
+
+- Weather animates. While it is changing or falling, render continuously
+  (`loop.setContinuous(true)`), and go back to on-demand once `sky.changing()` is false and nothing
+  falls.
+- A still camera in a continuously rendered scene can make an adaptive render scale hunt; see
+  `retryAfterMs` in [Performance](/docs/manual/performance/).
+- The moon disc lights nothing. Night lighting is the dim key light and ambient from `timeOfDay`,
+  plus your point lights.
+
+## See also
+
+- [Engine: atmosphere](/docs/engine/atmosphere/) and [Renderer: atmosphere](/docs/renderer/atmosphere/)
+- [Lighting](/docs/manual/lighting/)
+- API: [`atmosphereFrame`](/docs/engine/api/atmosphere/functions/atmosphereFrame/),
+  [`Atmosphere`](/docs/engine/api/atmosphere/interfaces/Atmosphere/),
+  [`makeAtmosphereTransition`](/docs/engine/api/atmosphere/functions/makeAtmosphereTransition/),
+  [`timeOfDay`](/docs/engine/api/atmosphere/functions/timeOfDay/),
+  [`AtmosphereParams`](/docs/renderer/api/renderer/interfaces/AtmosphereParams/)

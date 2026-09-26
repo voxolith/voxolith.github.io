@@ -1,0 +1,56 @@
+---
+title: Introduction
+description: Voxolith is an open-source WebGPU voxel engine for the browser. What it is, how it is layered, what you need, and how these docs are organised.
+---
+
+Voxolith is an open-source **WebGPU voxel engine** for the browser. It draws voxel worlds by
+raymarching them on the GPU, with no meshes: every pixel walks a brick index until it hits a voxel,
+then shades it with soft shadows, ambient occlusion, point lights, fog and water. On top of the
+renderer sit an engine layer (entities, placement, streaming, input, animation, atmosphere) and a
+set of procedural generators that build trees, rocks, buildings, creatures and terrain from a seed.
+
+Everything is TypeScript and WGSL, MIT licensed, and developed in the open at
+[github.com/voxolith](https://github.com/voxolith).
+
+## How these docs are organised
+
+The switcher at the top of the sidebar moves between four sections.
+
+<Cards>
+  <Card title="Guide" href="/docs/getting-started/" description="Making games: getting started, a step-by-step tutorial, the manual by topic, examples and troubleshooting. Start here." />
+  <Card title="Renderer" href="/docs/renderer/" description="@voxolith/renderer: storage, instances, lighting, atmosphere, quality and file formats, with its full API reference." />
+  <Card title="Engine" href="/docs/engine/" description="@voxolith/engine: entities and roles, the generator contract, worlds, input, animation and atmosphere, with its API reference." />
+  <Card title="Generators" href="/docs/generators/" description="Every generator's parameters, presets and roles, the gen-kit toolkit for writing your own, and their API reference." />
+</Cards>
+
+Inside the Guide:
+
+- **[Getting started](/docs/getting-started/)**: install, and draw a first scene.
+- **[Tutorial](/docs/tutorial/)**: build a small game from an empty folder, one runnable step at a time.
+- **[Manual](/docs/manual/)**: one page per topic (input, cameras, lighting, streaming, performance,
+  deploying, ...), for when you know what you want to do.
+- **[Examples](/docs/examples/)**: the live example pages, what each one shows and where its source is.
+- **[Troubleshooting](/docs/troubleshooting/)**: WebGPU support, slow or blank canvases, phones.
+
+## The layers
+
+| layer | package | does |
+|---|---|---|
+| Renderer | [`@voxolith/renderer`](/docs/renderer/) | draws voxels: storage, instances, lighting, atmosphere, cameras, `.vox` and `.mca` I/O |
+| Engine | [`@voxolith/engine`](/docs/engine/) | entities and colour roles, the generator contract, placement, streaming, input, animation, weather as configuration |
+| Generators | [`@voxolith/gen-*`](/docs/generators/) | bake models: trees, bushes, grass, rocks, buildings, rigged creatures, terrain |
+| Apps | [viewer, editor, examples, demolition-shot](/docs/examples/) | built on the three above |
+
+Each layer knows only the one below it. The renderer knows nothing about weather or entities; the
+engine never authors a model; generators never touch the GPU.
+
+## Requirements
+
+Voxolith is **WebGPU only**, with no WebGL fallback. It needs a browser with `navigator.gpu` in a
+secure context (HTTPS or `localhost`):
+
+- Chrome or Edge, current versions, on desktop and Android
+- Safari 26 or later
+- Firefox with WebGPU enabled
+
+If a page stays blank or is slow, see [troubleshooting](/docs/troubleshooting/).

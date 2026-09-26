@@ -1,0 +1,108 @@
+---
+title: Cameras
+description: Orbit, first-person and chase cameras in Voxolith - the renderer's camera frames, the engine's controllers, and which way yaw turns.
+---
+
+The renderer takes a camera as five fields of `FrameParams`: a position, a right, up and forward
+basis, and the tangent of half the vertical field of view. It has three helpers that build them,
+and the engine's input has two controllers that hold the state they take. The renderer only draws;
+where the camera goes is your game's code.
+
+| view | frame | controller |
+|---|---|---|
+| turntable, strategy map, room | `makeCamera(cfg)` returns `frame(yaw, distance?, target?, pitch?)` | `makeOrbitController` |
+| first person, free fly | `firstPersonFrame(eye, yaw, pitch, fov)` | `makeLookController` |
+| third person behind a vehicle | `chaseFrame(target, { yawDeg, distance, height, lookAhead?, fovDeg })` | your own |
+
+All angles are in degrees. Positions are in world voxels.
+
+## Orbit
+
+```ts
+import { makeCamera } from "@voxolith/renderer";
+import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
+
+const camera = makeCamera({ target: [64, 8, 64], distance: 200, pitchDeg: 30, fovDeg: 40 });
+prepareSurface(canvas, { contextMenu: false });
+const orbit = makeOrbitController(createInput(canvas, { loop }), {
+  target: [64, 8, 64], distance: 200, distanceLimits: [40, 600], pitchLimits: [8, 85],
+  pan: "secondary", fovDeg: 40, panBounds: { minX: 0, maxX: 128, minZ: 0, maxZ: 128 },
+});
+
+// In the frame callback:
+renderer.render({ ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()), ...lighting });
+```
+
+On a desktop, primary drag rotates, right, middle or shift-drag pans (with `pan: "secondary"`), and
+the wheel or a trackpad pinch zooms. On touch, one finger rotates and two fingers pinch and pan.
+The same controller covers other views through its options:
+
+- A strategy map: `rotate: "none", pan: "primary"`, so any one-finger drag pans.
+- A room you only look around in: `yawLimits` and a fixed pitch with `rotate: "yaw"`.
+- Scripted moves: `orbit.set({ target, distance, yaw, pitch })` clamps to the limits and fires
+  `onChange`. `orbit.interacting()` is true during a drag or pinch, for stopping an idle turntable.
+
+Pass the same `fovDeg` to the controller as to `makeCamera`, or a pan will not track the cursor.
+
+## First person
+
+```ts
+import { firstPersonFrame } from "@voxolith/renderer";
+import { makeLookController } from "@voxolith/engine/input";
+
+const look = makeLookController(input, { pitch: -10 });
+
+// In the frame callback, after input.update():
+look.update(dt);
+const yaw = (look.yaw() * Math.PI) / 180;
+const fwd = [Math.sin(yaw), Math.cos(yaw)];
+const right = [-Math.cos(yaw), Math.sin(yaw)]; // cross(forward, up)
+const [sx, wz] = actions.vector("strafe", "walk");
+eye[0] += (fwd[0] * wz + right[0] * sx) * speed * dt;
+eye[2] += (fwd[1] * wz + right[1] * sx) * speed * dt;
+renderer.render({ ...firstPersonFrame(eye, look.yaw(), look.pitch(), 75), ...lighting });
+```
+
+The look controller takes pointer lock on a mouse click, drags on touch, the right stick on a
+gamepad, and optional turn keys (`keys: { left, right, up, down }`). It gathers deltas as they
+arrive and applies them in `update(dt)`, so stick and key turning is frame-rate independent. Keep
+pitch within about ±89° (the default limits are ±85°).
+
+## Chase
+
+`chaseFrame` puts the eye `distance` behind and `height` above a target along its heading and
+looks `lookAhead` past it. A cockpit view is `distance` near 0 with a small `height`.
+
+```ts
+const frame = chaseFrame([car.x, car.y, car.z], { yawDeg: car.heading, distance: 40, height: 14, lookAhead: 20, fovDeg: 60 });
+```
+
+## Yaw conventions
+
+The two styles turn in opposite senses, and mixing them up is the usual cause of inverted controls:
+
+- **First person and chase**: yaw 0 faces +Z. Screen-right is `cross(forward, up)`, so turning
+  right *increases* yaw. Forward on the ground is `(sin yaw, cos yaw)`, right is `(-cos yaw, sin yaw)`.
+- **Orbit**: yaw places the camera around the target at `(sin yaw, cos yaw)` from it. Dragging
+  right *decreases* yaw (the scene turns with the pointer); dragging down raises pitch.
+
+An entity's `yaw` in an instance or a crowd member is in radians, 0 facing +Z.
+
+## Pitfalls
+
+- `makeCamera` returns a function. Call it every frame with the controller's current state; do not
+  cache its result.
+- The raymarcher is fine with a camera inside the grid, so first-person and cockpit views need no
+  special casing. Nothing does collision for you, so keep the eye out of solid voxels yourself.
+- A camera change must invalidate a render-on-demand loop. The controllers do it when the input was
+  created with `{ loop }`; a scripted `orbit.set` does it through `onChange` or the same loop.
+
+## See also
+
+- [Input](/docs/manual/input/)
+- [Picking](/docs/manual/picking/) to turn a screen point into a ray from the same frame
+- API: [`makeCamera`](/docs/renderer/api/renderer/functions/makeCamera/),
+  [`firstPersonFrame`](/docs/renderer/api/renderer/functions/firstPersonFrame/),
+  [`chaseFrame`](/docs/renderer/api/renderer/functions/chaseFrame/),
+  [`makeOrbitController`](/docs/engine/api/input/functions/makeOrbitController/),
+  [`makeLookController`](/docs/engine/api/input/functions/makeLookController/)

@@ -1,0 +1,129 @@
+---
+title: Worlds and storage
+description: How a Voxolith world is stored as 8³ bricks, when to use a dense grid instead, how to edit voxels, and what a world costs in memory.
+---
+
+A world is a box of voxels, each an 8-bit palette slot (0 is empty). You choose its size when you
+create the renderer, and you fill it either from a dense array you keep on the CPU or directly in
+the renderer's brick storage. This page covers both, how to edit a world after it is built, and
+what it costs.
+
+## Bricks and the index
+
+The renderer stores the world as 8³ **bricks** under a two-level index: blocks of 64³ voxels exist
+only where something is, below one top-level entry per block. A brick holding a single value keeps
+it in its index entry with no payload, so solid ground and open air are almost free. Mixed bricks
+store a 4-bit index into their own 15-entry palette, or 8 bits when they hold more values.
+
+What that means in practice:
+
+- An empty world of 12800 x 2048 x 12800 voxels costs its 5 MB top level. What is resident costs
+  its surface, not its volume.
+- Rays skip 64 voxels at a time through missing blocks and 8 at a time through empty bricks, so
+  large stretches of air are cheap to look across.
+- `BRICK_B` (8) and `TOP_B` (64) are exported if you need to align your own edits to bricks.
+
+## A small world: a dense grid
+
+For a level that fits comfortably in memory (a puzzle board, a diorama, a demolition stage), keep a
+dense `Uint8Array` in `x + y*sx + z*sx*sy` order and pass it to `createRenderer`. After a change,
+upload only the box that changed.
+
+```ts
+import { createRenderer } from "@voxolith/renderer";
+
+const size = { x: 128, y: 64, z: 128 };
+const data = new Uint8Array(size.x * size.y * size.z);
+for (let z = 0; z < size.z; z++)
+  for (let x = 0; x < size.x; x++)
+    for (let y = 0; y < 8; y++) data[x + y * size.x + z * size.x * size.y] = 1;
+
+const palette = new Float32Array(256 * 4);
+palette.set([0.36, 0.62, 0.28, 1], 1 * 4); // slot 1: grass
+
+const renderer = await createRenderer(gpu, { size, data, palette });
+
+// Later: change the array, then re-upload only the box that changed.
+data[64 + 8 * size.x + 64 * size.x * size.y] = 1;
+renderer.updateVoxels(data, { x0: 64, y0: 8, z0: 64, x1: 64, y1: 8, z1: 64 });
+```
+
+The dense array stays the source of truth: `updateVoxels` always takes the full-grid array, and the
+box selects which bricks to rebuild. A dense copy is also what CPU hit tests such as `voxelRaycast`
+read (see [Picking](/docs/manual/picking/)).
+
+## A large world: bricks only
+
+Past a few hundred voxels a side, a dense copy costs more than the world itself: the examples'
+forest at 8x8 tiles would need 1.1 GB of `Uint8Array` purely as a staging copy of a world the GPU
+holds in 159 MB of bricks. Leave `data` out, and write through `renderer.edit`, which hands you one
+8³ brick at a time.
+
+```ts
+import { createRenderer } from "@voxolith/renderer";
+import { blitModelToBricks, PaletteAllocator } from "@voxolith/engine";
+
+const size = { x: 4096, y: 256, z: 4096 };
+const palette = new PaletteAllocator(1);
+const { base: stone } = palette.allocate([{ id: "stone", name: "Stone", color: [0.5, 0.5, 0.52] }]);
+
+// No `data`: the world starts empty and lives only in bricks.
+const renderer = await createRenderer(gpu, { size, palette: palette.buildPalette() });
+renderer.setClipBounds([0, 0, 0], [size.x - 1, size.y - 1, size.z - 1]);
+
+// `cells` is one 8³ brick (lx + ly*8 + lz*64) at world origin (ox, oy, oz).
+// Mutate it and return whether you changed anything.
+renderer.edit({ x0: 0, y0: 0, z0: 0, x1: size.x - 1, y1: 15, z1: size.z - 1 }, (cells, ox, oy, oz) => {
+  for (let ly = 0; ly < 8; ly++) {
+    if (oy + ly > 15) break;
+    cells.fill(stone, ly * 64, ly * 64 + 64);
+  }
+  return true;
+});
+
+// Stamp a model: role r of the entity becomes slot base + r - 1.
+const { base } = palette.allocateFor(tree);
+renderer.updatePalette(palette.buildPalette());
+blitModelToBricks(renderer, tree.model, { x: 200, y: 16, z: 200 }, base);
+```
+
+The edit functions:
+
+- `edit(box, fill)`: every brick overlapping `box`; touched bricks upload before it returns.
+- `editMany(boxes, fill)`: many separate boxes with one upload at the end. Use it when a frame
+  touches scattered bricks (movers, a streamed column of ground).
+- `clear(box)`: frees every brick fully inside `box`. Partly covered bricks are edited, so a box
+  that is not brick-aligned never deletes a neighbour's voxels.
+
+To carve, set cells to 0 inside your `fill`. To stamp models, use `blitModelToBricks` from
+`@voxolith/engine` (the brick twin of `blitModel`, which writes into a dense array).
+
+## Costs and budgets
+
+- `renderer.stats()` returns resident `bricks`, `bytes` of GPU memory, and `dense`, what the same
+  grid would cost as one 3D texture. Show it in a debug overlay while you tune a level.
+- Every edit re-encodes the bricks it touches on the CPU and uploads them. A few thousand bricks a
+  frame is fine; a box around the whole world is not, so keep edit boxes tight.
+- The ray-clip box defaults to the occupied bounds scanned at creation. A world that starts empty,
+  or grows, must widen it with `setClipBounds`, or new voxels outside it are never drawn.
+- A renderer holds GPU buffers until you call `destroy()`. An app that builds a fresh renderer per
+  level must destroy the old one first.
+
+<Callout type="warn" title="Pitfalls">
+  `updateCoarse` and `OccupancyGrid` appear in older examples. The brick index is now the
+  empty-space structure, so `updateCoarse` is a no-op; you can drop both from new code.
+
+  Models generated at 50 or 100 voxels per metre come back sparse, with `model.data` empty. `blitModelToBricks` reads `data`, so draw
+  sparse models as [instances](/docs/manual/instances/) instead.
+</Callout>
+
+## See also
+
+- [Renderer: storage](/docs/renderer/storage/) for the brick encoding and index in detail
+- [Streaming](/docs/manual/streaming/) to build a large world in chunks around the camera
+- [Palettes and roles](/docs/manual/palettes-and-roles/) for what the slot values mean
+- API: [`createRenderer`](/docs/renderer/api/renderer/functions/createRenderer/),
+  [`Renderer`](/docs/renderer/api/renderer/classes/Renderer/),
+  [`RenderScene`](/docs/renderer/api/renderer/interfaces/RenderScene/),
+  [`blitModelToBricks`](/docs/engine/api/engine/functions/blitModelToBricks/),
+  [`blitModel`](/docs/engine/api/engine/functions/blitModel/)

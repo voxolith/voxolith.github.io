@@ -1,0 +1,114 @@
+---
+title: Instances
+description: "Drawing entity models by reference with makeInstanceLayer: static and dynamic placements, any yaw, mirroring, and palettes outside the world's 256 slots."
+---
+
+Stamping writes every voxel of a model into the world's bricks. A forest of the same six trees
+then costs six trees' worth of memory per copy, a turned tree has to be resampled into new voxels,
+and a moving thing re-uploads bricks every frame. A renderer that supports instances
+([`Renderer.addModel` and `setInstances`](/docs/renderer/instances/)) keeps one copy of each model
+and draws it wherever it is placed, at any heading, mirrored, at fractional positions.
+
+This is the engine side of that: a library that uploads each `EntityModel` once, a library of
+palettes, and a layer that keeps static placements apart from moving ones.
+
+```ts
+import { makeInstanceLayer, orientationYaw } from "@voxolith/engine";
+
+const layer = makeInstanceLayer(renderer);
+const oakBase = layer.palettes.of("oak", oak.model.roles);
+
+const scenery = points.map((pt) => {
+  const v = oaks.pick(pt.rng);                      // a variant pool: { entity, orientation }
+  const { yaw, mirror } = orientationYaw(v.orientation);
+  return { model: v.entity.model, x: pt.x, y: groundAt(pt.x, pt.z), z: pt.z, yaw, mirror, base: oakBase };
+});
+layer.setStatic(scenery);
+layer.commit();                                     // scenery is sent once; call again after changes
+```
+
+## The layer
+
+[`makeInstanceLayer(target)`](/docs/engine/api/engine/functions/makeInstanceLayer/) returns an
+[`InstanceLayer`](/docs/engine/api/engine/interfaces/InstanceLayer/):
+
+- `models`: a [`ModelLibrary`](/docs/engine/api/engine/interfaces/ModelLibrary/). `id(model)`
+  uploads the model the first time it sees that object (by identity) and returns its id;
+  `release(model)` frees it. Dense and sparse models both upload as they are.
+- `palettes`: a [`PaletteLibrary`](/docs/engine/api/engine/interfaces/PaletteLibrary/), below.
+- `setStatic(list)`: replaces the static placements (scenery), given as
+  [`EntityPlacement`](/docs/engine/api/engine/interfaces/EntityPlacement/)s by model rather than
+  id; the model's own anchor is used.
+- `setDynamic(list)`: replaces the moving placements (a crowd's, every frame), given as
+  [`InstancePlacement`](/docs/engine/api/engine/interfaces/InstancePlacement/)s by model id.
+- `commit()`: sends the static set if it changed and the dynamic set always. Cheap to call every
+  frame: the renderer keeps the two apart, so the scenery is not re-sent with each move.
+
+`target` is an [`InstanceTarget`](/docs/engine/api/engine/interfaces/InstanceTarget/), which
+[`Renderer`](/docs/renderer/api/renderer/classes/Renderer/) implements; the layer and libraries
+can also be built alone with [`makeModelLibrary`](/docs/engine/api/engine/functions/makeModelLibrary/)
+and [`makePaletteLibrary`](/docs/engine/api/engine/functions/makePaletteLibrary/).
+
+A placement puts the model's `anchor` at `x, y, z` in world voxels (fractions are fine), turns it
+by `yaw` radians about +y and optionally mirrors it along the model's x first. `base` is the palette
+slot of role 1.
+
+## Matching stamped orientations
+
+[`orientationYaw(o)`](/docs/engine/api/engine/functions/orientationYaw/) turns an axis-aligned
+[`Orientation`](/docs/engine/api/engine/type-aliases/Orientation/) into the `{ yaw, mirror }` that
+draws exactly the same voxels as stamping with `o`. A layout written for stamping (the examples'
+`world/layout.ts` picks an orientation per placement) can therefore be drawn as instances without
+changing a single choice, which is how `examples/valley` draws the same village as
+`examples/world` at 100 voxels per metre.
+
+## Palettes of their own
+
+World voxels are 8-bit, so the world's palette has 256 slots and the
+[`PaletteAllocator`](/docs/engine/entities-and-roles/#allocating-palettes) rations them.
+Instances do not draw from it. Each instance palette lives after the world's 256 slots on the
+renderer, so a scene of instances has no colour budget.
+
+```ts
+// one palette per species...
+const rockBase = layer.palettes.of("granite", rock.model.roles);
+
+// ...or one per placement, tinted, so no two houses match
+const houseBase = layer.palettes.of(`house#${n}`, house.model.roles, (color, role) =>
+  role.id.startsWith("wall") ? [color[0] * shade, color[1] * shade, color[2] * shade] : color,
+);
+
+// autumn: every instance using the key changes colour in place
+layer.palettes.restyle("oak", autumnRoles);
+```
+
+- `of(key, roles, tint?)` returns the base slot of the palette for `key`, making it from `roles`
+  (and the optional `tint(color, role, index)`) the first time.
+- `restyle(key, roles, tint?)` recolours it in place.
+- `release(key)` frees it; `size` and `slots` report what is held.
+
+Underneath, [`instancePalette(roles, tint?)`](/docs/engine/api/engine/functions/instancePalette/)
+builds the data `Renderer.addPalette` takes: RGBA per role (role `r` at entry `r - 1`) and, when
+any role has a material hint, 8 floats per role.
+
+## Moving and animated instances
+
+The dynamic set is for anything that moves. [`makeCrowd({ instances: layer })`](/docs/engine/stamping-and-crowds/#crowds)
+draws an animated crowd this way: one pose model per variant, clip and frame (no heading buckets,
+since the instance turns it), members at their exact position and yaw, nothing written into the
+world. It calls `layer.commit()` at the end of each update; when a scene has no crowd members,
+call `commit()` yourself.
+
+## Stamp or instance
+
+| | stamp (`blitModel`, `blitModelToBricks`, stamper) | instance (`makeInstanceLayer`) |
+|---|---|---|
+| memory | every copy's voxels | one copy per model |
+| headings | eight axis-aligned orientations | any yaw, mirrored |
+| position | whole voxels | fractional |
+| colours | a range in the world's 256 slots | palettes of their own, unlimited |
+| sparse models | no (dense `data` only) | yes |
+| editable by world edits (digging, explosions) | yes | no, the model is shared |
+
+Stamp what the world should own and be able to change; instance what is repeated, large, fine or
+moving.

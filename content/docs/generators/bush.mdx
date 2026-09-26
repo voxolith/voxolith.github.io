@@ -1,0 +1,103 @@
+---
+title: Bushes
+description: "@voxolith/gen-bush: multi-stemmed shrubs, thickets, brambles, flowering shrubs and hedges, with thorns, berries, blossom and four seasons."
+---
+
+<ImageZoom src="/generators/bush-species.webp" alt="The five bush presets: bush, thicket, bramble, flowering and hedge" width={1560} height={376} />
+
+`@voxolith/gen-bush` grows shrubs. A bush is not a small tree: it has no trunk. Several stems leave
+the ground together and lean outward, which is what gives a shrub its vase silhouette. A thicket
+scatters more clumps of stems around the centre, at unequal sizes, so undergrowth reads as
+undergrowth rather than as a ring of tidy bushes.
+
+```ts
+import { seededRandom } from "@voxolith/renderer/core";
+import { generateBush, PRESETS } from "@voxolith/gen-bush";
+
+const { entity, stats } = generateBush(PRESETS.thicket, seededRandom(42));
+// entity.kind === "bush"; the anchor is the centre of the base, at ground level
+```
+
+Branch growth, clump placement, canopy carving and exposure shading come from
+[gen-kit](/docs/generators/gen-kit/), shared with the tree and grass generators; what differs is the
+base.
+
+## How it works
+
+<Steps>
+<Step>
+**Stems from the ground.** Each clump seeds a ring of level-0 stems within `baseSpreadRatio` of
+its centre, each leaning out by `leanDeg` (plus a random spread) at a random azimuth. With
+`clumps` above 0, satellite clumps are placed around the centre at 55% to 105% of the main
+clump's size, which keeps a thicket from looking like identical bushes in a ring.
+</Step>
+<Step>
+**Skeleton.** `growBranches` grows side shoots on each stem by the preset's branch levels, with a
+little gravity and a little upward bend toward the tip, then `fitHeight` scales it to `height`
+less the room the foliage needs on top.
+</Step>
+<Step>
+**Wood.** Stems of at least a voxel radius are exact capsules; thinner ones are 6-connected DDA
+lines, padded to two voxels when they are nearly one thick. Shrub stems are thin, so most of the
+plant takes a flat per-stem twig colour; only the thicker basal wood gets a bark pattern. Thorns
+are added outward from the surface, so they break the silhouette instead of speckling it.
+</Step>
+<Step>
+**Foliage.** Leaf clumps are placed along the outermost branch level and, larger, at every tip.
+Their density falls with `health`. The mass is hollowed below its hull, carved for sky holes and
+shaded by exposure, with accent and dead leaves chosen per clump.
+</Step>
+<Step>
+**Flowers, fruit and snow.** Blossom (in spring) and berries recolour the outer rim of whole
+clumps, never single voxels, or they read as confetti. In winter, deciduous species drop their
+leaves and take snow wherever a column of sky is clear above; the hedge stays green.
+</Step>
+<Step>
+**Prune** everything not 6-connected to the ground, then crop with the anchor at the base centre.
+</Step>
+</Steps>
+
+Parameters split into `shape` and `foliage` (which voxels exist) and `look` (which role each gets).
+Voxel values are tuned for a 64-tall bush and scale with `shape.height`. Roles are stems (dark, mid,
+light), twigs, thorns, leaves (light, mid, dark, edge, accent, dead), blossom, berries and snow;
+seasons change the palette behind the roles, not the roles themselves.
+
+## Presets
+
+| preset | character |
+|---|---|
+| `bush` | a single rounded shrub |
+| `thicket` | several staggered clumps of unequal size, for undergrowth |
+| `bramble` | long arching canes, thorns and berries |
+| `flowering` | blossom on whole clumps in spring |
+| `hedge` | clipped: dense, low and wide, with almost no visible structure; evergreen, so it keeps its leaves in winter |
+
+## Finer scales
+
+At 50 and 100 voxels per metre, leaves, blossom, berries and snow refine from the coarse voxels
+(leaves as single leaves in the coarse shade, thorns as pairs of short needles); the stems are
+redrawn from the skeleton as thin capsule shells, much slimmer than the coarse bush could draw them,
+with faint streaks along them. Leaves, blossom, berries, snow and thorns are loose roles. See
+[scales and refinement](/docs/generators/scales-and-refinement/).
+
+## Development
+
+```sh
+bun run --cwd generators/bush verify           # connectivity to the ground, budget, determinism
+bun run --cwd generators/bush preview species  # contact sheets into previews/ (also: seeds, seasons)
+bun run --cwd generators/bush gen              # bake .vox files into out/
+```
+
+## Bush
+
+`voxolith/bush` starts from the `bush` preset.
+
+<GeneratorReference id="voxolith/bush" />
+
+## Thicket
+
+`voxolith/thicket` is the same generator starting from the `thicket` preset.
+
+<GeneratorReference id="voxolith/thicket" />
+
+See the [API reference](/docs/generators/api/gen-bush/) for `generateBush` and the parameter types.

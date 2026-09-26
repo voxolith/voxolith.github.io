@@ -1,0 +1,120 @@
+---
+title: world
+description: "A whole generated valley: gen-terrain ground and river, a village laid out on levelled pads, a forest, a lamp to carry, day and night, and weather."
+---
+
+**[Open the live page](/examples/world/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/world/main.ts) ·
+[Layout](https://github.com/voxolith/examples/blob/main/src/world/layout.ts)
+
+<ImageZoom src="/shots/world.webp" alt="The world example: the whole generated valley from above, a village among the woods" width={960} height={540} />
+
+A valley 1280 voxels (128 m) square at the default scale, all of it generated from one seed: the
+ground and a meandering river with animated water, a village of cottages, farmhouses and brick
+houses joined by footpaths, and a forest of oaks, birches and spruces that thins out towards the
+village, with bushes, grass and rocks. A lamp stands in a glade; drag it around to light the
+trunks and watch the shadows move. N runs day into night, W cycles the weather.
+
+## What it shows
+
+- **Terrain as a region, not a model.** [`generateTerrain`](/docs/generators/api/gen-terrain/functions/generateTerrain/)
+  returns an editable height map; the layout levels a pad under every house by editing
+  `terrain.heights` before anything is built, and overrides the top voxel of paths and yards
+  through `fillBrick`'s `top` callback.
+- **Settlement layout as app code.** `layout.ts` picks the village and glade sites, turns each
+  house so its door faces the village centre, joins the doors with a minimum spanning tree of
+  wandering paths, and decides which plant or rock grows where. It is shared with the
+  [valley](/docs/examples/valley/), which runs the same layout at ten times the resolution.
+- **Generators on workers.** [`makeGeneratorPool`](/docs/engine/api/worker/functions/makeGeneratorPool/)
+  runs every tree, bush, rock and house generator off the main thread;
+  [`serveGenerators`](/docs/engine/api/worker/functions/serveGenerators/) in `gen.worker.ts`
+  caches the models in IndexedDB in production builds, so a second visit loads instead of
+  generating.
+- **Variants and scatter.** [`makeVariantPool`](/docs/engine/api/engine/functions/makeVariantPool/)
+  hands out models and orientations; [`scatterRegion`](/docs/engine/api/engine/functions/scatterRegion/)
+  gives the same points in the same order whichever box asks, so chunks agree at their edges.
+- **Streaming.** [`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/) builds
+  64-voxel chunks around the view and keeps following it as you pan, with
+  [`PaletteAllocator`](/docs/engine/api/engine/classes/PaletteAllocator/) handing out slots as
+  species first appear.
+- **Point lights.** The lamp is two lights, one shadowed and one soft unshadowed spill, set with
+  `renderer.setLights`; grabbing it claims the pointer from the orbit camera with `input.claim`.
+- **Time of day and weather.** [`timeOfDay`](/docs/engine/api/atmosphere/functions/timeOfDay/),
+  [`makeAtmosphereTransition`](/docs/engine/api/atmosphere/functions/makeAtmosphereTransition/) and
+  [`atmosphereFrame`](/docs/engine/api/atmosphere/functions/atmosphereFrame/); the page's own rules
+  decide how wet the ground gets and how snow settles and melts.
+- **Adaptive resolution.** [`makePerf`](/docs/renderer/api/renderer/functions/makePerf/) with
+  `retryAfterMs: Infinity` and `perf.reprobe()` on camera moves, since the water keeps the page
+  rendering while the view is still.
+
+## The interesting part
+
+Each chunk writes the terrain, then every house and plant that reaches into it:
+
+```ts
+const world = makeChunkedWorld({
+  target: renderer,
+  size: SIZE,
+  chunk: CHUNK,
+  seed,
+  generate(ctx) {
+    ctx.edit({ ...ctx.box, y1: maxY }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, terrainBase, topOverride));
+
+    for (const hs of houses) {
+      if (hs.x1 < ctx.box.x0 || hs.x0 > ctx.box.x1 || hs.z1 < ctx.box.z0 || hs.z0 > ctx.box.z1) continue;
+      ctx.blit(hs.entity.model, { x: hs.x, y: hs.y, z: hs.z }, allocate(hs.entity, hs.key), hs.orientation);
+      // ...
+    }
+
+    valley.scatter(ctx.box.x0, ctx.box.z0, ctx.box.x1, ctx.box.z1, (pt) => {
+      const v = pt.variant;
+      ctx.blit(v.entity.model, { x: pt.x, y: heightAt(pt.x, pt.z) + 1, z: pt.z }, allocate(v.entity, pt.key), v.orientation);
+      // ...
+    });
+  },
+});
+```
+
+`ctx.blit` clips each model to the chunk, so a tree standing on a chunk edge is written half by
+each chunk, and the result does not depend on the order chunks are built in.
+
+The frame folds time of day, weather and the page's ground state into one call:
+
+```ts
+const sky = weather.update(dt);
+stepGround(dt);
+const atm = atmosphereFrame(timeOfDay(phase), { ...sky, wetness, cover: snowCover });
+renderer.render({ ...frame(), ...atm, time: still ? 0 : now / 1000 });
+```
+
+## Controls
+
+| input | does |
+|---|---|
+| drag, one finger | turn |
+| right-drag, two fingers | pan |
+| wheel, pinch | zoom |
+| drag the lamp's glow | carry the lamp |
+| double-click, double-tap | drop the lamp there |
+| N, the Night/Day button | run to night or back to day |
+| W, the weather menu | next weather |
+
+## URL options
+
+| option | default | effect |
+|---|---|---|
+| `?scale=` | 4 | the valley is `scale` × `scale` tiles of 320 voxels (1 to 8) |
+| `?seed=` | `voxolith` | any string; a different valley |
+| `?season=` | `summer` | `spring`, `summer`, `autumn` or `winter` foliage |
+| `?variants=` | 10 | models generated per species |
+| `?workers=0` | | generate on the main thread instead of workers |
+| `?radius=` | 1.5 × width | streamed radius around the view, in voxels |
+| `?time=night` | | start at midnight, close to the lamp |
+| `?weather=` | `clear` | `clear`, `cloudy`, `rain`, `storm`, `snow`, `fog`; also any other [`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/) name |
+| `?still` | | freeze the water and render on demand |
+| `?selftest=1`, `2`, `3` | | voxel-lookup debug bands |
+
+Plus the [common ones](/docs/examples/#common-url-options).
+
+See also [Worlds and storage](/docs/manual/worlds-and-storage/), [Streaming](/docs/manual/streaming/),
+[Lighting](/docs/manual/lighting/) and [Atmosphere and weather](/docs/manual/atmosphere-and-weather/).

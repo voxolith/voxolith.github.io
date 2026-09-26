@@ -1,0 +1,203 @@
+---
+title: Entry points
+description: Installing @voxolith/renderer, the bundler setup its raw TypeScript and ?raw shaders need, which import to use where, and a first frame.
+---
+
+`@voxolith/renderer` ships raw TypeScript: your bundler compiles it together with your app, under
+your own compiler flags. The renderer module imports its shaders with Vite's `?raw` suffix, which
+is what decides how each part of the package may be imported.
+
+## Install
+
+```sh
+bun add @voxolith/renderer
+```
+
+A consumer needs:
+
+- Vite, or another bundler that understands `import code from "./file.wesl?raw"`.
+- `typescript`, `@webgpu/types` and `vite` as dev dependencies, with
+  `"types": ["@webgpu/types", "vite/client"]` in `tsconfig.json`.
+- In `vite.config.ts`, the package excluded from dependency pre-bundling, so Vite compiles it as
+  source:
+
+```ts title="vite.config.ts"
+import { defineConfig } from "vite";
+import basicSsl from "@vitejs/plugin-basic-ssl";
+
+export default defineConfig({
+  // WebGPU needs a secure context; basic-ssl serves HTTPS on localhost and the LAN.
+  plugins: [basicSsl()],
+  optimizeDeps: { exclude: ["@voxolith/renderer"] },
+});
+```
+
+The HTTPS plugin is optional on `localhost`, which already counts as a secure context, but a phone
+opening the dev server over a LAN address sees no `navigator.gpu` without it.
+
+## Which import, where
+
+| import | use from | contents |
+|---|---|---|
+| `@voxolith/renderer` | browser code | everything: `initGpu`, `createRenderer`, `makeFrameLoop`, `observeResize`, plus all of `core` |
+| `@voxolith/renderer/core` | Node and bun tools | everything that does not touch the GPU: formats, bricks and sparse volumes, cameras, lights, `makePerf`, ray helpers, `seededRandom`, `GridStamper`, effects |
+| `@voxolith/renderer/vox` | Node and bun tools | `parseVox`, `parseVoxScene`, `writeVox`, `decodeVoxRotation` |
+| `@voxolith/renderer/ray` | Node and bun tools | `rayAABB`, `makeRay`, `voxelRaycast` |
+
+<Callout type="warn" title="Never import the barrel outside a bundler">
+The main barrel pulls in the renderer, whose `?raw` shader imports only a bundler can resolve. A
+script run with `bun` or Node, and any module such a script imports transitively, must import from
+`@voxolith/renderer/core` (or `/vox`, `/ray`). The generators follow this rule, which is why they
+run in tools, workers and tests alike.
+</Callout>
+
+```ts
+// In a bun tool: headless only.
+import { parseVox, seededRandom, sparseFromDense } from "@voxolith/renderer/core";
+
+// In browser code: the full barrel.
+import { initGpu, createRenderer } from "@voxolith/renderer";
+```
+
+The headless entries are also typed without the WebGPU and Vite ambient types, so a Node project
+can typecheck against them without `@webgpu/types`.
+
+## Starting the GPU
+
+[`initGpu(canvas, options?)`](/docs/renderer/api/renderer/functions/initGpu/) requests a
+high-performance adapter, negotiates device limits, configures the canvas and returns a
+[`GpuContext`](/docs/renderer/api/renderer/interfaces/GpuContext/). It throws
+[`WebGPUUnsupportedError`](/docs/renderer/api/renderer/classes/WebGPUUnsupportedError/) when
+WebGPU is missing, and says so specifically when the page is not a secure context (the usual cause
+on a phone hitting a dev server over plain HTTP).
+[`showUnsupportedScreen(message, options)`](/docs/renderer/api/renderer/functions/showUnsupportedScreen/)
+renders a card into the `#app` element instead of a blank page; the app styles its
+`.unsupported*` classes.
+
+```ts
+import { initGpu, showUnsupportedScreen, WebGPUUnsupportedError } from "@voxolith/renderer";
+
+let gpu;
+try {
+  gpu = await initGpu(canvas, { maxPixelRatio: 2 });
+} catch (e) {
+  if (e instanceof WebGPUUnsupportedError) showUnsupportedScreen(e.message, { appName: "My game" });
+  throw e;
+}
+```
+
+<TypeTable
+  type={{
+    maxPixelRatio: { description: 'Cap on window.devicePixelRatio. Use 1 on weak GPUs.', type: 'number', default: '2' },
+    renderScale: { description: 'Initial render scale on top of the pixel ratio.', type: 'number', default: '0.8' },
+    powerPreference: { description: 'Passed to requestAdapter.', type: 'GPUPowerPreference', default: '"high-performance"' },
+    log: { description: 'Log the adapter and granted limits to the console.', type: 'boolean', default: 'true' },
+    limits: { description: 'Ceilings to ask the device for, each clamped to what the adapter reports.', type: 'Partial<GrantedLimits>', default: '3D texture 4096, buffer and storage binding 1 GiB' },
+  }}
+/>
+
+The WebGPU default limits are far below what most adapters offer (a 128 MiB storage binding, a
+256 MiB buffer), and a large world's brick pool needs more, so `initGpu` asks for generous limits,
+clamped to the adapter. What was granted is in `gpu.limits`; size scenes against it.
+`gpu.adapterInfo` is what the browser reported and `gpu.software` is true for CPU implementations
+(see [Quality and performance](/docs/renderer/quality-and-performance/#software-adapters)).
+
+## A first frame
+
+[`createRenderer(gpu, scene)`](/docs/renderer/api/renderer/functions/createRenderer/) links the
+WESL modules into WGSL (once, cached for every renderer on the page) and builds the pipeline. A
+[`RenderScene`](/docs/renderer/api/renderer/interfaces/RenderScene/) is the grid size, optionally a
+dense voxel array, a 256-entry RGBA palette and optionally per-slot materials.
+
+```ts
+import { initGpu, createRenderer, makeCamera, makeFrameLoop, observeResize, resizeToDisplay } from "@voxolith/renderer";
+
+const canvas = document.querySelector("canvas")!;
+const gpu = await initGpu(canvas);
+
+// A 32³ grid with one palette slot filled. Slot 0 is always empty.
+const size = { x: 32, y: 32, z: 32 };
+const data = new Uint8Array(size.x * size.y * size.z).fill(1); // index x + y*sx + z*sx*sy
+const palette = new Float32Array(256 * 4);
+palette.set([0.9, 0.5, 0.2, 1], 4); // slot 1, linear RGBA 0..1
+
+const renderer = await createRenderer(gpu, { size, data, palette });
+const camera = makeCamera({ target: [16, 16, 16], distance: 80, pitchDeg: 30, fovDeg: 35 });
+
+const sun: [number, number, number] = [0.5, 0.8, 0.35];
+const LIGHTING = {
+  lightDir: sun, lightColor: [1, 0.98, 0.94], ambientSky: [0.5, 0.53, 0.6], ambientGround: [0.3, 0.29, 0.27],
+  sunDir: sun, moonDir: [0, -1, 0], sunColor: [1, 0.96, 0.85], moonColor: [0, 0, 0],
+  skyTop: [0.35, 0.55, 0.9], skyHorizon: [0.75, 0.82, 0.92],
+  nightFactor: 0, sunIntensity: 1, moonIntensity: 0,
+} as const;
+
+const loop = makeFrameLoop({
+  render() {
+    resizeToDisplay(gpu);
+    renderer.render({ ...camera(35), ...LIGHTING });
+  },
+});
+observeResize(canvas, loop);
+loop.invalidate();
+```
+
+The grid is Y-up: `y` is height. Call `renderer.destroy()` before dropping a renderer (an app that
+builds a new one per file load otherwise leaks its GPU buffers).
+
+[`FrameParams`](/docs/renderer/api/renderer/interfaces/FrameParams/) takes every lighting field
+on every frame; the renderer holds no environment state of its own. Rather than writing them by
+hand, spread [`timeOfDay(phase)`](/docs/engine/api/atmosphere/functions/timeOfDay/) from
+`@voxolith/engine/atmosphere`. The loop and the scale knobs are covered in
+[Quality and performance](/docs/renderer/quality-and-performance/).
+
+## Cameras
+
+The renderer takes a camera as a ray basis, a
+[`CameraFrame`](/docs/renderer/api/renderer/interfaces/CameraFrame/): `camPos`, `camRight`,
+`camUp`, `camFwd` and `tanHalfFov`. Three helpers build one; how they are driven is up to the app,
+normally through the controllers in [`@voxolith/engine/input`](/docs/engine/input/).
+
+| helper | frame |
+|---|---|
+| [`makeCamera(config)`](/docs/renderer/api/renderer/functions/makeCamera/) | an orbit around a target; returns `frame(yawDeg, distance?, target?, pitchDeg?)` |
+| [`firstPersonFrame(eye, yawDeg, pitchDeg, fovDeg)`](/docs/renderer/api/renderer/functions/firstPersonFrame/) | a look from `eye`; yaw 0 faces +Z, positive pitch looks up |
+| [`chaseFrame(target, options)`](/docs/renderer/api/renderer/functions/chaseFrame/) | behind and above a heading, looking past it; `distance` near 0 is a cockpit view |
+
+Screen-right is `cross(forward, up)`, so turning right increases a first-person yaw, while an
+orbit camera's yaw decreases as you drag right. Clamp first-person pitch to about ±89° so the up
+vector does not degenerate.
+
+## Picking
+
+The CPU helpers in `@voxolith/renderer/ray` rebuild the shader's rays on the CPU:
+[`makeRay(canvas, frame, clientX, clientY)`](/docs/renderer/api/ray/functions/makeRay/) gives
+the world ray through a pointer position, [`rayAABB`](/docs/renderer/api/ray/functions/rayAABB/)
+tests it against a box, and [`voxelRaycast`](/docs/renderer/api/ray/functions/voxelRaycast/) walks
+a dense grid with the same DDA the GPU uses, returning the hit cell and face normal. Worlds without
+a dense copy pick against their own data instead (the terrain generator's `pick`, for example).
+
+```ts
+import { makeRay, voxelRaycast } from "@voxolith/renderer/ray";
+
+const frame = camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch());
+const { origin, dir } = makeRay(canvas, frame, e.clientX, e.clientY);
+const hit = voxelRaycast(size, data, origin, dir, 4096);
+if (hit) console.log("cell", hit.cell, "face", hit.normal);
+```
+
+## Effects
+
+[`makeExplosion({ size })`](/docs/renderer/api/renderer/functions/makeExplosion/) (small, medium,
+large: a ground-anchored fire dome with debris streaks) and
+[`makeMuzzleFlash({ type })`](/docs/renderer/api/renderer/functions/makeMuzzleFlash/) (star, cone,
+bloom) are [`VoxEffect`](/docs/renderer/api/renderer/interfaces/VoxEffect/)s: each owns a small
+stage grid and palette and mutates its `data` on `tick(dt)`. The host draws it with a renderer of
+its own and re-uploads `data` every frame with `updateVoxels`.
+
+## Seeded randomness
+
+[`seededRandom(seed)`](/docs/renderer/api/renderer/functions/seededRandom/) returns a
+deterministic `() => number` and [`hashSeed(text)`](/docs/renderer/api/renderer/functions/hashSeed/)
+turns a string into a seed. They are the rng every generator is given, so the same seed rebuilds
+the same model in a tool, a worker or the page.

@@ -1,0 +1,114 @@
+---
+title: Scales and refinement
+description: Why parameters stay at 10 voxels per metre, how a finer world asks for the same design, and how gen-kit refine turns a coarse model into a sparse one.
+---
+
+Every generator's parameters are written in **10 voxels per metre**: a storey is about 24 voxels,
+an oak about 190. A world with finer voxels does not get new parameters; it asks for the same
+design at more voxels per metre, and the generator decides how to add the detail.
+
+```ts
+import { seededRandom } from "@voxolith/renderer/core";
+import { generateTree, PRESETS } from "@voxolith/gen-tree";
+
+const coarse = generateTree(PRESETS.oak, seededRandom(42)).entity;
+const fine = generateTree(PRESETS.oak, seededRandom(42), "oak", { voxelsPerMetre: 100 }).entity;
+
+fine.model.size;   // exactly 10 times coarse.model.size on every axis
+fine.model.sparse; // 8³ bricks; fine.model.data is empty
+```
+
+## The context
+
+`generate(params, rng, ctx?)` takes an optional [`GenerateContext`](/docs/engine/api/engine/interfaces/GenerateContext/)
+whose only field is `voxelsPerMetre`. [`refinement(ctx)`](/docs/engine/api/engine/functions/refinement/)
+turns it into a whole-number factor `k` (1 at the native
+[`DEFAULT_VOXELS_PER_METRE`](/docs/engine/api/engine/variables/DEFAULT_VOXELS_PER_METRE/) of 10). A
+generator lists the finer scales it supports in `scales`; every entity generator lists `[50, 100]`
+except `voxolith/creature`, which is native only (see below).
+
+Two rules keep this invisible to everything that already works:
+
+- A context at 10, or no context, gives the **byte-identical** model it always did. The contract
+  checks it, so share codes and cached models never change meaning.
+- Parameters are not rescaled. A share code describes the design; the world it is built for is
+  the host's business.
+
+## Refine, never generate fine
+
+A generator builds its model at the native scale first, then refines it. Generating a 1 cm-voxel
+tree directly would run every whole-volume pass (hull, carving, sky occlusion, the connectivity
+flood) over a grid a thousand times larger. The coarse model already decides the shape, the shading
+and which voxel is bark and which is leaf; what the finer grid adds is surface: a rounded silhouette
+instead of 10 cm steps, and detail that only exists at the small scale (single leaves, bark furrows,
+mortar joints, roof tiles).
+
+[`refine`](/docs/generators/api/gen-kit/gen-kit/functions/refine/) in gen-kit visits only the
+coarse voxels on the surface and writes their fine blocks into a sparse model, keeping a shell a few
+fine voxels deep, so cost and memory follow the surface, not the volume. The result is k times the
+coarse size with the anchor scaled with it.
+
+### Rules per role
+
+Each role picks a `RoleRule`:
+
+| mode | for | what it writes |
+|---|---|---|
+| `smooth` | organic masses: bark, stone, moss, snow | the 0.5 level of the trilinearly interpolated coarse occupancy, which rounds every step and corner and fills concave notches, displaced by noise (`roughness` in coarse voxels, `roughScale` in fine voxels) |
+| `crisp` | built things: walls, frames, glass | exact cubes, so edges stay sharp; detail comes from the rule's own pattern |
+| `leaves` | foliage, petals, thorns | small discs (or `shape: "needle"`, short lines) at random places and angles inside each coarse leaf voxel, in that voxel's role, so the coarse light and dark shading survives; `tones` and `toneChance` swap in a neighbouring shade |
+| `blades` | grass | thin leaning columns, continuous up a stack of coarse voxels and cut at a random height in the top one |
+| `skip` | anything the generator redraws itself | nothing; the voxels still count as solid for their neighbours |
+
+A rule's `detail(cell)` then decides the final role of each fine voxel, or 0 to carve it. The cell
+says where the fine voxel is, which coarse voxel it came from, its role, the outward axis of the
+nearest open face and how deep it is below it. This is where a generator puts its small-scale
+patterns: hairline cracks, bark furrows, brick bond, roof courses.
+
+`faces: "outside"` refines only faces open to air reachable from outside the model. A building's
+rooms are sealed by walls and glass and are skipped; from outside they are seen at most through a
+window.
+
+### Redrawing from the skeleton
+
+A limb at 10 voxels per metre is a staircase of cubes, and smoothing a staircase gives a lumpy rod.
+The vegetation generators still have the skeleton that drew it, so they mark their wood `skip` and
+draw every segment again at k times the size with
+[`drawSkeletonFine`](/docs/generators/api/gen-kit/gen-kit/functions/drawSkeletonFine/): a thin
+shell of an exact tapered capsule, thinner above the trunk than the coarse minimum of one voxel
+allowed. [`coarseRoleAt`](/docs/generators/api/gen-kit/gen-kit/functions/coarseRoleAt/) gives
+each fine voxel the role of the coarse voxel it falls in, looked up a little off the point by
+noise so tone patches come out organic rather than as k-voxel cubes.
+
+## What each generator does at a finer scale
+
+| generator | refinement |
+|---|---|
+| tree | wood redrawn from the skeleton with a root flare and fine furrows; moss and crevices keep their places; each leaf voxel becomes a few single leaves (needles on a conifer); snow and cones round off |
+| bush | stems redrawn much slimmer than the coarse bush could draw them, with faint streaks; leaves become single leaves; thorns become pairs of short needles |
+| grass | blades redrawn from the skeleton as rods a voxel or two across, shaded base to tip from the coarse blades; flowers become petal discs, seed heads stay compact |
+| rock | rounds off its steps with a grainy surface; the mid tone breaks into speckle; hairline cracks run across the faces; moss and lichen become ragged patches |
+| building | stays crisp, outside faces only; masonry and joinery at their real size: brick in running bond with recessed joints, ashlar courses, tile, slate, shingle or thatch courses, boards on doors and shutters, planks on floors. The coarse building is generated without its relief, since the joints are drawn at their own scale here |
+| creature | none. It is authored near that scale already; [`atScale`](/docs/generators/api/gen-creature/functions/atScale/) sizes a preset for a fixed-unit world |
+
+The terrain has its own refiner, [`refineTerrain`](/docs/generators/terrain/#finer-terrain), which
+answers per brick rather than building a model.
+
+## Sparse models
+
+A refined model is an `EntityModel` with `sparse` set (8³ bricks, the renderer's
+[`SparseVoxels`](/docs/renderer/api/renderer/interfaces/SparseVoxels/)) and `data` empty. Read
+either form with [`modelAt`](/docs/engine/api/engine/functions/modelAt/). Results are a few to a
+few tens of MB of GPU bricks and take 0.1 to 3 seconds each; the contract holds every default to
+20 seconds and 96 MB.
+
+Sparse models are drawn by reference with `renderer.addModel` and `setInstances` rather than
+stamped into the world; see [instances](/docs/renderer/instances/) and
+[engine instances](/docs/engine/instances/).
+
+## Loose roles
+
+At 10 voxels per metre everything is one grounded piece. At finer scales a single leaf, petal or
+seed head may legitimately float free of its twig. A generator names those roles in `looseRoles`;
+the contract ignores them when it floods from the base, and still requires 99% of the rest (the
+structure) to be grounded.

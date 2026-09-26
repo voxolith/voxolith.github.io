@@ -1,0 +1,105 @@
+---
+title: Effects
+description: Explosions and muzzle flashes as voxel effects, flying debris through stampers, permanent damage as brick edits, and flashes as short-lived lights.
+---
+
+Effects in Voxolith are voxels too: a fireball is a small grid that changes every frame, flying
+debris is a model moved through the world, a scorch mark is an edit. This page lists the pieces:
+the renderer's ready-made effects, the two stampers for things that move, permanent edits, and
+lights for flashes. Rain and snow are atmosphere, not effects; see
+[Atmosphere and weather](/docs/manual/atmosphere-and-weather/).
+
+## Explosions and muzzle flashes
+
+The renderer ships two effect makers, each a `VoxEffect`: a small stage grid with its own palette
+(a fire-to-smoke ramp in slots 1 to 7) that `tick(dt)` advances and `reset()` restarts.
+
+- `makeExplosion({ size })`, with `size` `"small"`, `"medium"` or `"large"`: a ground-anchored
+  blast, a billowing fire dome on the floor with debris streaks thrown up and out. Stages are
+  64 x 56 x 64 to 128 x 112 x 128 voxels and last 1 to 2.6 seconds, looping.
+- `makeMuzzleFlash({ type, size })`, with `type` `"star"`, `"cone"` or `"bloom"`: a brief
+  directional gun flash that loops with a gap.
+
+The viewer's Particles mode shows each in a renderer of its own, re-uploading the stage every frame:
+
+```ts
+import { createRenderer, makeCamera, makeExplosion, makeFrameLoop, resizeToDisplay } from "@voxolith/renderer";
+
+const fx = makeExplosion({ size: "medium" });
+const renderer = await createRenderer(gpu, fx); // { size, data, palette }
+renderer.setClipBounds([0, 0, 0], [fx.size.x - 1, fx.size.y - 1, fx.size.z - 1]);
+const camera = makeCamera({ target: [fx.size.x / 2, 20, fx.size.z / 2], distance: 220, pitchDeg: 20, fovDeg: 40 });
+
+makeFrameLoop({
+  continuous: true,
+  render(now, dt) {
+    fx.tick(dt);
+    renderer.updateVoxels(fx.data);
+    resizeToDisplay(gpu);
+    renderer.render({ ...camera(now / 60), ...lighting });
+  },
+});
+```
+
+The stage starts nearly empty, so widen the clip box to the whole stage as above, or the fireball
+is clipped to its first frame's bounds.
+
+To show an effect inside a game world, copy its non-empty voxels into the world each frame through a
+stamper (below), mapping its slots 1 to 7 onto a range you allocated with its colours. No example
+does this yet; the effects were built for the viewer and for games with a dedicated stage.
+
+## Things that move: debris, projectiles, gibs
+
+Moving voxels means putting back what they covered and writing them somewhere else. There are two
+stampers for that, for the two kinds of world:
+
+- `GridStamper` (renderer core) works over a dense grid. It keeps the static "base plate";
+  `stamp(voxels)` restores the previous stamped region, writes this frame's voxels and returns one
+  dirty box for `updateVoxels`. `writeBase(voxels)` makes permanent edits (carving, settled rubble)
+  without a full copy. Demolition Shot moves its ball, flying chunks, debris and dust this way.
+- `makeBrickStamper(renderer, { size })` (engine) works over bricks, with no dense copy. Movers are
+  sprites (a model's surface voxels, from `toSprite`); `put(id, sprite, origin, base)`, `remove(id)`
+  and one `commit()` per frame restore and rewrite only the bricks whose movers changed, in one
+  `editMany`. The creature example throws severed limbs and blood drops this way.
+
+For many movers that do not need to be part of the world's voxels, draw them as dynamic
+[instances](/docs/manual/instances/) instead: nothing is written and nothing is restored.
+
+## Permanent marks
+
+A scorch mark, a blood stain or a crater is an edit. The creature example stains the ground where a
+drop lands by rewriting one voxel:
+
+```ts
+renderer.edit({ x0: x, y0: y, z0: z, x1: x, y1: y, z1: z }, (cells, ox, oy, oz) => {
+  cells[(x - ox) + (y - oy) * 8 + (z - oz) * 64] = bloodSlot;
+  return true;
+});
+```
+
+Keep edit boxes tight; every touched brick is re-encoded and uploaded.
+
+## Flashes that light
+
+Emissive voxels light only themselves. For a muzzle flash or an explosion that lights the walls
+around it, add a point light at it for a few frames and remove it again; `setLights` is cheap to
+call every frame (see [Lighting](/docs/manual/lighting/)).
+
+## Pitfalls
+
+- Effects animate, so render continuously while one plays and return to on-demand after.
+- An effect's palette uses slots 1 to 7. In a shared palette, allocate seven slots for it and offset
+  its values, or it will draw with whatever occupies slots 1 to 7.
+- Both stampers put back what their movers covered from what they saved. An edit of your own to a
+  cell a mover currently covers can be undone when the mover leaves; with `GridStamper`, make
+  permanent changes through `writeBase`, and with the brick stamper, edit cells no mover covers.
+
+## See also
+
+- [Animation](/docs/manual/animation/) for crowds and severed parts
+- [Engine: stamping and crowds](/docs/engine/stamping-and-crowds/)
+- API: [`makeExplosion`](/docs/renderer/api/renderer/functions/makeExplosion/),
+  [`makeMuzzleFlash`](/docs/renderer/api/renderer/functions/makeMuzzleFlash/),
+  [`VoxEffect`](/docs/renderer/api/renderer/interfaces/VoxEffect/),
+  [`GridStamper`](/docs/renderer/api/renderer/classes/GridStamper/),
+  [`makeBrickStamper`](/docs/engine/api/engine/functions/makeBrickStamper/)

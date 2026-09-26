@@ -1,0 +1,137 @@
+---
+title: Lighting and materials
+description: The key light, sky, sun and moon, shadows and AO, up to 32 range-limited point lights with glow, and the emissive, metal, glass and water materials.
+---
+
+The renderer holds no environment state of its own. Every frame, `render(params)` takes the camera
+and every lighting field in [`FrameParams`](/docs/renderer/api/renderer/interfaces/FrameParams/),
+so a static scene passes constants and a day/night cycle passes whatever its clock says. Point
+lights and materials are uploaded separately, because they change rarely.
+
+## The key light and the sky
+
+One directional **key light** lights the scene:
+
+| field | meaning |
+|---|---|
+| `lightDir` | direction towards the key light (unit vector) |
+| `lightColor` | its colour and strength, linear RGB |
+| `ambientSky`, `ambientGround` | hemispheric ambient: sky above, ground bounce below, blended by the normal |
+
+A hit is shaded with the hemispheric ambient, the key light's diffuse term (with a soft fill from
+the camera side, so the shadowed half does not go muddy), face ambient occlusion and the point
+lights. The key light casts one shadow ray per pixel from just outside the hit face, capped by the
+quality preset's `shadowSteps`; `low` turns it off. **Ambient occlusion** is classic voxel face AO:
+the empty cell in front of the hit face is darkened by its solid neighbours along the two tangent
+axes and the corners, 8 lookups per hit (`ao` in the quality preset).
+
+The **sky** is a vertical gradient (`skyTop`, `skyHorizon`) with blocky stars at night
+(`nightFactor`) and world-positioned sun and moon discs (`sunDir`, `moonDir`, `sunColor`,
+`moonColor`, `sunIntensity`, `moonIntensity`). The discs only paint the sky: they light nothing.
+The key light, its colour and the ambient do all the lighting, so a moonlit night is a dim blue
+`lightColor` along `moonDir`, not the moon disc.
+
+Turning a time of day into these values is not the renderer's job.
+[`timeOfDay(phase)`](/docs/engine/api/atmosphere/functions/timeOfDay/) in
+[`@voxolith/engine/atmosphere`](/docs/engine/atmosphere/) returns every lighting field from one
+number (0 midnight, 0.5 noon), so animating a transition is animating `phase`.
+
+```ts
+import { timeOfDay } from "@voxolith/engine/atmosphere";
+
+renderer.render({ ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()), ...timeOfDay(0.42) });
+```
+
+## Point lights
+
+On top of the key light the scene has up to `MAX_LIGHTS` (32) point lights: a lamp, a lantern, a lit
+window that lights what is around it. The list is the app's; upload it with `setLights`.
+
+```ts
+renderer.setLights([
+  { position: [120, 30, 80], color: [1, 0.7, 0.4], intensity: 2.5, range: 90, glow: 3 },
+  { position: [60, 20, 40], color: [0.4, 0.6, 1], range: 40, shadows: false },
+]);
+loop.invalidate();
+```
+
+<TypeTable
+  type={{
+    position: { description: 'Grid-space position, in voxels.', type: '[number, number, number]', required: true },
+    color: { description: 'Linear RGB.', type: '[number, number, number]', required: true },
+    intensity: { description: 'Multiplies color.', type: 'number', default: '1' },
+    range: { description: 'Voxels. The light contributes exactly nothing beyond this.', type: 'number', required: true },
+    shadows: { description: 'Trace a shadow ray towards the light.', type: 'boolean', default: 'true' },
+    glow: { description: 'Radius of the visible halo, in voxels. 0 draws none.', type: 'number', default: '0' },
+  }}
+/>
+
+- **`range` is hard.** Past it a light contributes exactly nothing, and the range test comes first,
+  so a pixel no light reaches costs a loop over the list and nothing else.
+- **Falloff.** Inside the range the light fades smoothly to zero at the edge (a window times a soft
+  inverse square), so it ends without a ring.
+- **Shadows.** `shadows` (on by default) traces one shadow ray per pixel towards the light. The ray
+  stops at the light, so a lamp above the ground is not shadowed by ground far behind it, and it
+  follows the quality preset's `shadowSteps`: `low` keeps the lights and drops their shadows. The
+  cost is one short ray per shadowed light in range, per pixel. An occluded light still contributes
+  a little, so a stair-stepped voxel edge in its shadow does not read as a black hole.
+- **Glow.** `glow` draws a visible halo along the view ray, so the lamp itself shows, including
+  against the sky. A light behind the surface the ray hit shows nothing.
+- **Reflections.** Metal and glass reflections pick up the lights, unshadowed.
+- **Cost of updating.** `setLights` rewrites a 1.5 KB buffer, so moving a lamp every frame is cheap.
+  Invalidate the frame loop afterwards.
+
+<Callout title="Emissive voxels do not light their surroundings">
+An emissive material only lights its own voxel. To make a lamp light the room, put a point light at
+it as well.
+</Callout>
+
+## Materials
+
+Materials are per palette slot. Without them the renderer shades a flat palette, and a scene that
+never uploads materials renders byte-for-byte as it did before they existed. Pass them as
+`RenderScene.materials`, or later with `updateMaterials(materials)`: 256 slots of 8 floats,
+`[kind, rough, metal, emit]` then `[ior, alpha, att, spec]`.
+
+| kind | value | shading |
+|---|---|---|
+| diffuse | 0 | the default |
+| metal | 1 | a single reflection bounce, optionally roughened, tinted by the voxel's colour |
+| glass | 2 | transmitted and refracted past the voxel, tinted, with a Fresnel reflection; `alpha` 0 is clear |
+| emit | 3 | adds `colour × emit` of self-glow |
+| water | 4 | an animated, transparent surface; see below |
+
+Reflections and refraction are one bounce: the pass traces a lit secondary ray and does not recurse.
+
+You rarely pack this buffer by hand. Entities declare a
+[`MaterialHint`](/docs/engine/api/engine/interfaces/MaterialHint/) per colour role, and the
+engine's `PaletteAllocator.buildMaterials()` (world slots) or `instancePalette` (instance palettes)
+packs them. [`packMaterials(scene)`](/docs/renderer/api/renderer/functions/packMaterials/) packs a
+MagicaVoxel scene's `MATL` chunks.
+
+### Water
+
+Water is a material kind, not a separate system. Voxels whose material is `water` stay voxels, so
+water streams, clips and edits like everything else; only its shading differs:
+
+- Top faces get a rippled normal from a few travelling waves, animated by `FrameParams.time`
+  (seconds). Nothing is re-uploaded to make it move; a constant `time` freezes it.
+- From that normal the surface reflects the scene or the sky, refracts down to the bed (found by a
+  second ray walk that treats water as empty), and blends the two by Fresnel.
+- The bed fades into the water's own colour with depth (`att`, per voxel) and catches moving
+  caustics; the sun and point lights leave glints on the ripples.
+- `waterWind` in the [atmosphere](/docs/renderer/atmosphere/) drifts and raises the ripples.
+
+An app with water on screen must render continuously for it to move; see
+[Quality and performance](/docs/renderer/quality-and-performance/#render-on-demand).
+
+## Floor and highlight
+
+Two optional extras are drawn on ray miss and at shading time:
+
+- `setFloor({ enabled, y, colorA, colorB })` draws an infinite blocky ground plane for rays that miss
+  the grid going down, so a model floats over a floor that extends past its box. Games whose ground
+  is real voxels leave it off.
+- `setHighlight({ mode, slotMin, slotMax })` spotlights a selection: with `mode` 1, voxels whose
+  palette slot is in the range keep their colour and get a bright rim on their silhouette, and the
+  rest greys out.

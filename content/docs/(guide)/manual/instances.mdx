@@ -1,0 +1,101 @@
+---
+title: Instances
+description: Upload a model once and draw it many times at any heading and fractional position, for scenery and moving crowds, with palettes of its own.
+---
+
+Stamping writes every voxel of a model into the world, so a forest of the same six trees costs six
+trees' worth of memory per copy, a turned copy has to be resampled into new voxels, and a moving
+thing re-uploads bricks every frame. **Instances** avoid all three: the renderer keeps one copy of
+each model and draws it wherever you place it, at any heading, mirrored, at fractional positions.
+This is how to draw scenery, props and crowds, and the only way to draw models refined to 50 or
+100 voxels per metre.
+
+## The moving parts
+
+- `renderer.addModel({ size, data | sparse })` uploads a model once into the shared brick pool and
+  returns an id. `removeModel(id)` frees it.
+- `renderer.setInstances(list)` places the **static** set (scenery), building its per-cell lists
+  once. `setInstances(list, { dynamic: true })` replaces only the **moving** set, which is what a
+  crowd sends every frame; its cost is the moving instances and the cells they touch, however much
+  scenery there is.
+- `renderer.addPalette(colors, materials?)` gives instances a palette of their own after the
+  world's 256 slots, returning the `base` an instance uses.
+
+The engine wraps these in `makeInstanceLayer`, which uploads each `EntityModel` once by identity
+(`layer.models.id(model)`), keeps palettes by key (`layer.palettes.of`), and holds the static and
+moving placements apart so that `commit()` sends the scenery once and the movers every time.
+
+## Placing scenery
+
+```ts
+import { makeInstanceLayer, orientationYaw } from "@voxolith/engine";
+
+const layer = makeInstanceLayer(renderer);
+const base = layer.palettes.of("oak", oaks[0].model.roles);
+layer.setStatic(spots.map((s, i) => ({
+  model: oaks[i % oaks.length].model, // an EntityModel; uploaded the first time it is seen
+  x: s.x, y: s.y, z: s.z,             // where the model's anchor goes; fractions are fine
+  yaw: rng() * Math.PI * 2,           // radians about +y, any angle
+  base,
+})));
+layer.commit();
+```
+
+`setStatic` uses each model's own anchor. To draw exactly what stamping with an axis-aligned
+`Orientation` would, pass `orientationYaw(o)`, which returns `{ yaw, mirror }`; the valley example
+places the same layout as the stamped world page this way.
+
+## Moving things
+
+Moving placements take a model id and anchor, since they are rebuilt every frame:
+
+```ts
+const cartModel = layer.models.id(cart.model);
+const cartBase = layer.palettes.of("cart", cart.model.roles);
+
+// In the frame callback:
+layer.setDynamic([{ model: cartModel, x: cartX, y: 12, z: cartZ, anchor: cart.model.anchor, yaw: cartYaw, base: cartBase }]);
+layer.commit();
+```
+
+For animated creatures, `makeCrowd({ instances: layer })` does this for you: it uploads one pose
+model per variant, clip and frame, and places members at their exact position and heading (see
+[Animation](/docs/manual/animation/)). Nothing is written into the world as they move.
+
+## How it looks and what it costs
+
+Each 64³ top cell lists the instances whose box touches it. A voxel the world leaves empty is looked
+up in those instances, turned into model space and sampled there. That is resampling at world voxel
+centres, so a turned instance still reads as axis-aligned cubes, and shadows, ambient occlusion,
+point lights and water treat it like any other voxel.
+
+- Memory is one copy per model plus a small record per placement. `renderer.instanceStats()`
+  reports `models`, `instances`, `blocks` and `bytes`; the instances example shows it next to what
+  stamping the same forest would cost (`?stamp`).
+- Instance sampling is compiled out of the shader until the first instance is placed, so a scene
+  that never uses them pays nothing. The first placement builds the instanced pipeline.
+- Static placements cost once. A dynamic set costs its members and the cells they touch every
+  commit, so keep only what actually moves in it.
+
+## Pitfalls
+
+- At most 255 instances can touch one 64³ cell; more are dropped with a console warning. Dense
+  grass or pebbles should be stamped, or merged into larger models.
+- The world wins where it has a voxel: instances only fill cells the world leaves empty.
+- Instances cannot be carved. To damage one, change its model (a new `addModel`) or swap it for a
+  stamped copy.
+- Instances draw from their own palettes. A `base` from the world's `PaletteAllocator` works too,
+  but then you are back to sharing 255 slots.
+- Free what you no longer use: `layer.models.release(model)` and `layer.palettes.release(key)`.
+  An instance still naming a removed palette draws garbage colours.
+
+## See also
+
+- [Renderer: instances](/docs/renderer/instances/) and [Engine: instances](/docs/engine/instances/)
+- [Palettes and roles](/docs/manual/palettes-and-roles/)
+- [Animation](/docs/manual/animation/) for instanced crowds
+- API: [`makeInstanceLayer`](/docs/engine/api/engine/functions/makeInstanceLayer/),
+  [`InstanceLayer`](/docs/engine/api/engine/interfaces/InstanceLayer/),
+  [`orientationYaw`](/docs/engine/api/engine/functions/orientationYaw/),
+  [`Instance`](/docs/renderer/api/renderer/interfaces/Instance/),
+  [`ModelSource`](/docs/renderer/api/renderer/interfaces/ModelSource/)

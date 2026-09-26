@@ -1,0 +1,523 @@
+---
+title: Writing a generator
+description: A new generator package step by step - a mushroom built by copying the rock shape, registered, refined, checked against the contract and previewed.
+---
+
+A new generator starts as a copy of an existing one of the same kind, never as a fork of its
+logic. There are two shapes in the repository:
+
+- **Solid masses** (`generators/rock`): a [`blob`](/docs/generators/api/gen-kit/gen-kit/functions/blob/)
+  per mass, optionally cleaved by [`facet`](/docs/generators/api/gen-kit/gen-kit/functions/facet/),
+  then a surface pass that hands out roles.
+- **Vegetation** (`generators/bush`, `grass`, `tree`): a skeleton from
+  [`growBranches`](/docs/generators/api/gen-kit/gen-kit/functions/growBranches/), wood rasterised
+  with `capsule` and `line3`, clumps from `placeClusters`, then `carveCanopy` and
+  `shadeByExposure`.
+
+Only the parameters, roles and presets differ between generators of one shape. This page builds a
+mushroom from the rock's shape, all the way to the contract; the code on it passes the full
+contract as written. [The vegetation shape](#the-vegetation-shape) is at the end.
+
+<Steps>
+<Step>
+
+### Copy the package
+
+```sh
+cd generators
+cp -r rock mushroom
+rm -rf mushroom/previews mushroom/out
+```
+
+<Files>
+  <Folder name="mushroom" defaultOpen>
+    <File name="package.json" />
+    <File name="tsconfig.json" />
+    <File name="README.md" />
+    <Folder name="src" defaultOpen>
+      <File name="index.ts" />
+      <File name="roles.ts" />
+      <File name="params.ts" />
+      <File name="presets.ts" />
+      <File name="fine.ts" />
+    </Folder>
+    <Folder name="tools" defaultOpen>
+      <File name="verify.ts" />
+      <File name="preview.ts" />
+      <File name="shared.ts" />
+      <File name="gen.ts" />
+    </Folder>
+  </Folder>
+</Files>
+
+In `package.json`, rename the package to `@voxolith/gen-mushroom` and update its description,
+keywords and `repository.directory`; keep the scripts (`typecheck`, `verify`, `preview`, `gen`) and
+the three `workspace:*` dependencies on `@voxolith/engine`, `@voxolith/gen-kit` and
+`@voxolith/renderer`. `tsconfig.json` extends `../tsconfig.base.json` with `"types": ["node"]`, as
+every headless package does. Add `"mushroom"` to the `workspaces` of `generators/package.json` and
+run `bun install` from the workspace root so the symlinks resolve.
+
+</Step>
+<Step>
+
+### Roles
+
+Voxel values are role indices, never colours: role `i + 1` is `roles[i]`. List every role the
+generator can emit, with stable ids a host can key restyling off, and keep them in one order for
+every preset (the contract checks that the model's roles match the generator's, in order).
+
+```ts title="src/roles.ts"
+import type { RGB, Role } from "@voxolith/engine";
+
+export const ROLE = {
+  STEM: 1,
+  STEM_DARK: 2,
+  GILL: 3,
+  CAP: 4,
+  CAP_DARK: 5,
+  CAP_LIGHT: 6,
+  SPOT: 7,
+} as const;
+
+export const ROLE_COUNT = 7;
+
+const ID = ["stem", "stem.dark", "gill", "cap", "cap.dark", "cap.light", "spot"];
+const NAME = ["Stem", "Stem dark", "Gills", "Cap", "Cap dark", "Cap light", "Spot"];
+
+export type ColorSet = Record<number, RGB>;
+
+export function buildRoles(colors: ColorSet): Role[] {
+  const out: Role[] = [];
+  for (let v = 1; v <= ROLE_COUNT; v++) out.push({ id: ID[v - 1], name: NAME[v - 1], color: colors[v] ?? [1, 0, 1] });
+  return out;
+}
+```
+
+</Step>
+<Step>
+
+### Parameters
+
+Split them the way every generator does: `shape` decides which voxels exist, `look` only which role
+each one gets, so a UI can re-run the cheap colour pass. Everything is in voxels at 10 voxels per
+metre: this mushroom's default stem is 1.4 m, a large fairy-tale toadstool beside a 2.4 m storey.
+
+```ts title="src/params.ts"
+export interface ShapeParams {
+  /** Stem height in voxels. */
+  height: number;
+  stemRadius: number;
+  /** Cap radius and half-height, in voxels. */
+  capRadius: number;
+  capHeight: number;
+  /** Superellipsoid exponent of the cap: 2 is a dome, higher is flatter-sided. */
+  exponent: number;
+  roughness: number;
+}
+
+export interface LookParams {
+  /** Share of the cap's upper surface under spots, 0..1. */
+  spots: number;
+  mottle: number;
+}
+
+export interface MushroomParams {
+  species: string;
+  shape: ShapeParams;
+  look: LookParams;
+}
+
+export function cloneParams(p: MushroomParams): MushroomParams {
+  return { species: p.species, shape: { ...p.shape }, look: { ...p.look } };
+}
+```
+
+`cloneParams` matters: generation must never mutate the object it is given, and the contract checks.
+
+</Step>
+<Step>
+
+### Presets and skins
+
+A preset is a complete parameter object; a skin maps role values to default colours per species.
+Colours in a skin are the defaults a host uses when it has no opinion; restyling is the host's job.
+
+```ts title="src/presets.ts"
+import type { RGB } from "@voxolith/engine";
+import { ROLE, type ColorSet } from "./roles";
+import type { MushroomParams } from "./params";
+
+const hex = (h: string): RGB => [parseInt(h.slice(0, 2), 16) / 255, parseInt(h.slice(2, 4), 16) / 255, parseInt(h.slice(4, 6), 16) / 255];
+
+export function skinFor(species: string): ColorSet {
+  const cap = species === "fly agaric" ? ["c8261c", "8f1a14", "e04a36"] : ["a8744a", "7a5234", "c69466"];
+  return {
+    [ROLE.STEM]: hex("e8e0cc"), [ROLE.STEM_DARK]: hex("c2b89e"), [ROLE.GILL]: hex("d8ccb0"),
+    [ROLE.CAP]: hex(cap[0]), [ROLE.CAP_DARK]: hex(cap[1]), [ROLE.CAP_LIGHT]: hex(cap[2]), [ROLE.SPOT]: hex("f4f0e6"),
+  };
+}
+
+export const FLY_AGARIC: MushroomParams = {
+  species: "fly agaric",
+  shape: { height: 14, stemRadius: 2, capRadius: 9, capHeight: 4, exponent: 2.4, roughness: 0.06 },
+  look: { spots: 0.3, mottle: 0.5 },
+};
+
+export const PENNY_BUN: MushroomParams = {
+  species: "penny bun",
+  shape: { height: 10, stemRadius: 3.5, capRadius: 10, capHeight: 5, exponent: 2.2, roughness: 0.08 },
+  look: { spots: 0, mottle: 0.4 },
+};
+
+export const PRESETS: Record<string, MushroomParams> = { "fly agaric": FLY_AGARIC, "penny bun": PENNY_BUN };
+export const PRESET_NAMES = Object.keys(PRESETS);
+```
+
+</Step>
+<Step>
+
+### Generate
+
+The rock's `generateRock` is the template: draw the noise seed from the rng, size a
+[`Volume`](/docs/generators/api/gen-kit/gen-kit/classes/Volume/) with room for the displacement,
+fill the masses, paint the surface from a snapshot, crop with the anchor at the base, and refine if
+asked. Here the stem is a [`capsule`](/docs/generators/api/gen-kit/gen-kit/functions/capsule/) that
+runs up into the cap, so the two overlap and the model stays one piece.
+
+```ts title="src/index.ts"
+import { blob, capsule, hash01, makeNoise, Volume, type Noise } from "@voxolith/gen-kit";
+import {
+  refinement,
+  registerGenerator,
+  type Entity,
+  type EntityGenerator,
+  type GenerateContext,
+  type ParamSpec,
+  type Vec3,
+} from "@voxolith/engine";
+import { fineMushroom } from "./fine";
+import { cloneParams, type MushroomParams } from "./params";
+import { PRESETS, skinFor } from "./presets";
+import { buildRoles, ROLE } from "./roles";
+
+export interface MushroomResult {
+  entity: Entity;
+  stats: { total: number; ms: number };
+}
+
+export function generateMushroom(params: MushroomParams, rng: () => number, id = "mushroom", ctx?: GenerateContext): MushroomResult {
+  const t0 = performance.now();
+  const p = cloneParams(params);
+  const s = p.shape;
+  // All randomness from the injected rng: the noise seed is drawn from it first.
+  const noise = makeNoise(Math.floor(rng() * 0x7fffffff) || 1);
+
+  const reach = s.capRadius * (1 + s.roughness) + 2;
+  const vol = Volume.forShape(reach * 2, s.height + s.capHeight * 2 + 2, reach * 2);
+  const cx = vol.sx / 2, cz = vol.sz / 2;
+
+  // Stem: a tapered capsule from the ground up into the cap, so the two overlap
+  // and the model stays one 6-connected piece.
+  const top: Vec3 = [cx + (rng() * 2 - 1), s.height + s.capHeight * 0.5, cz + (rng() * 2 - 1)];
+  capsule(vol, [cx, 0, cz], top, s.stemRadius, s.stemRadius * 0.8, ROLE.STEM);
+
+  // Cap: a flattened superellipsoid sitting on the stem.
+  blob(vol, { centre: top, radii: [s.capRadius, s.capHeight, s.capRadius], exponent: s.exponent, noise, roughness: s.roughness, detail: 1.4 }, ROLE.CAP);
+
+  paint(vol, p, noise, top[1]);
+
+  const anchor: Vec3 = [cx, 0, cz];
+  let model = vol.crop(anchor, buildRoles(skinFor(p.species)));
+  const k = refinement(ctx);
+  if (k > 1) model = fineMushroom(model, k, Math.floor(rng() * 0x7fffffff));
+
+  return {
+    entity: { id, kind: "mushroom", model, meta: { species: p.species, generator: "voxolith/gen-mushroom" } },
+    stats: { total: vol.count(), ms: performance.now() - t0 },
+  };
+}
+
+/** Surface roles from a snapshot, so no decision reads a neighbour painted this pass. */
+function paint(vol: Volume, p: MushroomParams, noise: Noise, capY: number): void {
+  const out = new Uint8Array(vol.data);
+  for (let z = 0; z < vol.sz; z++)
+    for (let y = 0; y < vol.sy; y++)
+      for (let x = 0; x < vol.sx; x++) {
+        const v = vol.get(x, y, z);
+        if (!v || !vol.isSurface(x, y, z)) continue;
+        const i = vol.index(x, y, z);
+        const up = vol.surfaceNormal(x, y, z)[1];
+        if (v === ROLE.STEM) {
+          out[i] = noise.value3(x * 0.3, y * 0.1, z * 0.3, 1) < 0.35 ? ROLE.STEM_DARK : ROLE.STEM;
+        } else if (up < -0.3 && y <= capY) {
+          out[i] = ROLE.GILL;
+        } else {
+          const m = (noise.value3(x * 0.15, y * 0.15, z * 0.15, 2) - 0.5) * 2 * p.look.mottle;
+          out[i] = m > 0.2 ? ROLE.CAP_LIGHT : m < -0.2 ? ROLE.CAP_DARK : ROLE.CAP;
+          // Spots are chosen per noise cell, never per voxel, so they read as patches.
+          const cell = Math.floor(x / 3) * 73856093 ^ Math.floor(z / 3) * 19349663;
+          if (up > 0.2 && hash01(cell) < p.look.spots) out[i] = ROLE.SPOT;
+        }
+      }
+  vol.data.set(out);
+}
+```
+
+Rules this follows, all of which the contract enforces:
+
+- every random choice comes from `rng` or from noise seeded by it, never `Math.random`;
+- the anchor (`[cx, 0, cz]` in volume space; `crop` moves it into the model's space) is inside the
+  model, at the point that sits on the ground;
+- nothing floats: every voxel is 6-connected to the base. A generator whose parts might separate
+  prunes with `vol.flood6((_x, y) => y <= 1)` before cropping, as the bush does;
+- choices that should read as patches (spots, accents, dry blades) are made per feature with
+  `hash01`, not per voxel.
+
+</Step>
+<Step>
+
+### Register
+
+The `EntityGenerator` object is what the registry, the viewer, workers and share codes see. Its
+`params` are the public, shareable surface; everything else in `defaults` is part of the preset.
+
+```ts title="src/index.ts (continued)"
+const PARAMS: ParamSpec[] = [
+  { path: "shape.height", label: "Stem height", kind: "int", min: 4, max: 40, group: "Shape" },
+  { path: "shape.stemRadius", label: "Stem radius", kind: "number", min: 1, max: 6, step: 0.5, group: "Shape" },
+  { path: "shape.capRadius", label: "Cap radius", kind: "number", min: 3, max: 24, step: 0.5, group: "Shape" },
+  { path: "shape.capHeight", label: "Cap height", kind: "number", min: 1.5, max: 10, step: 0.5, group: "Shape" },
+  { path: "shape.exponent", label: "Cap shape", kind: "number", min: 1.6, max: 6, step: 0.1, group: "Shape" },
+  { path: "shape.roughness", label: "Roughness", kind: "number", min: 0, max: 0.3, step: 0.01, group: "Shape" },
+  { path: "species", label: "Species", kind: "enum", options: ["fly agaric", "penny bun"], group: "Look" },
+  { path: "look.spots", label: "Spots", kind: "number", min: 0, max: 0.6, step: 0.05, group: "Look" },
+  { path: "look.mottle", label: "Mottle", kind: "number", min: 0, max: 1, step: 0.05, group: "Look" },
+];
+
+export const mushroomGenerator: EntityGenerator<MushroomParams> = {
+  id: "voxolith/mushroom",
+  name: "Mushroom",
+  version: "0.1.0",
+  description: "A stem under a displaced superellipsoid cap, with gills and spots.",
+  roles: buildRoles(skinFor("fly agaric")),
+  defaults: PRESETS["fly agaric"],
+  params: PARAMS,
+  generate: (params, rng, ctx) => generateMushroom(params, rng, undefined, ctx).entity,
+  scales: [50, 100],
+};
+
+export function registerMushroomGenerators(): void {
+  registerGenerator(mushroomGenerator);
+}
+
+export { PRESETS, PRESET_NAMES, skinFor } from "./presets";
+export { ROLE, buildRoles } from "./roles";
+export { cloneParams } from "./params";
+export type { MushroomParams, ShapeParams, LookParams } from "./params";
+```
+
+- The id is namespaced (`voxolith/...`) and stable; `version` is semver and is bumped whenever the
+  same input gives different output.
+- Every default must lie inside its spec and **on its step grid**: `capRadius: 9` on a 0.5 step is
+  fine, `9.3` is not. A default off the grid makes a share code of the default rebuild a different
+  model; fix the default, never the step. See [share codes](/docs/generators/share-codes/).
+- Every `min`, `max` and enum option must still generate a valid model: the full contract tries each
+  one. Choose ranges you are prepared to support.
+- A package with more than one generator spreads the first and changes `id`, `name`,
+  `description` and `defaults`, as `outcropGenerator` does.
+
+</Step>
+<Step>
+
+### Finer scales
+
+Declaring `scales: [50, 100]` promises the same design at 5 and 10 times the resolution. Never
+generate it natively; build the coarse model and refine it with gen-kit's
+[`refine`](/docs/generators/api/gen-kit/gen-kit/functions/refine/), choosing a rule per role (see
+[scales and refinement](/docs/generators/scales-and-refinement/)). The `detail` function here carves
+radial gills a voxel deep into the underside.
+
+```ts title="src/fine.ts"
+// A mushroom at a finer scale (see gen-kit refine): every role rounds off,
+// and the gills become thin radial plates under the cap.
+
+import { refine, type RefineCell, type RoleRule } from "@voxolith/gen-kit";
+import type { EntityModel } from "@voxolith/engine";
+import { ROLE } from "./roles";
+
+/** `cx`, `cz`: the stem's axis in fine voxels. */
+export function mushroomRules(k: number, cx: number, cz: number): Record<number, RoleRule> {
+  const gills = (c: RefineCell): number => {
+    const a = (Math.atan2(c.z - cz, c.x - cx) / (2 * Math.PI)) * 96;
+    return c.depth === 0 && Math.abs(a - Math.round(a)) < 0.25 ? 0 : ROLE.GILL;
+  };
+  const cap: RoleRule = { mode: "smooth", roughness: 0.1, roughScale: 1.5 * k };
+  return {
+    [ROLE.STEM]: { mode: "smooth", roughness: 0.04 },
+    [ROLE.STEM_DARK]: { mode: "smooth", roughness: 0.04 },
+    [ROLE.GILL]: { mode: "smooth", roughness: 0, detail: gills },
+    [ROLE.CAP]: cap,
+    [ROLE.CAP_DARK]: cap,
+    [ROLE.CAP_LIGHT]: cap,
+    [ROLE.SPOT]: { mode: "smooth", roughness: 0.2, roughScale: 0.5 * k },
+  };
+}
+
+export function fineMushroom(coarse: EntityModel, k: number, seed: number): EntityModel {
+  const [ax, , az] = coarse.anchor;
+  return refine(coarse, { k, rules: mushroomRules(k, ax * k, az * k), seed }).model;
+}
+```
+
+A context at 10 voxels per metre must return the byte-identical coarse model: `refinement(ctx)` is 1
+there and the refine step is skipped. If some voxels may float at a finer scale (single leaves,
+petals), list their role ids in `looseRoles`.
+
+</Step>
+<Step>
+
+### Check
+
+Each package has its own `verify` for what only it knows: counts, knobs that must respond, special
+structure. Keep it headless and fast; `bun run check` runs it.
+
+```ts title="tools/verify.ts"
+// Headless checks for the mushroom generator. No GPU.  bun tools/verify.ts
+
+import { seededRandom } from "@voxolith/renderer/core";
+import { generateMushroom, PRESETS, PRESET_NAMES, ROLE } from "../src/index";
+
+let failures = 0;
+const ok = (c: boolean, m: string) => {
+  console.log(`  ${c ? "✓" : "✗"} ${m}`);
+  if (!c) failures++;
+};
+const count = (data: Uint8Array, role: number) => data.reduce((n, v) => n + (v === role ? 1 : 0), 0);
+
+for (const name of PRESET_NAMES) {
+  const { entity, stats } = generateMushroom(PRESETS[name], seededRandom(3), name);
+  const { x, y, z } = entity.model.size;
+  ok(stats.total > 100, `${name}: ${stats.total} voxels, ${x}x${y}x${z}, ${stats.ms.toFixed(0)} ms`);
+  ok(count(entity.model.data, ROLE.GILL) > 0, `  ${name} has gills under its cap`);
+}
+
+const p = structuredClone(PRESETS["fly agaric"]);
+p.look.spots = 0;
+const bare = count(generateMushroom(p, seededRandom(5)).entity.model.data, ROLE.SPOT);
+p.look.spots = 0.6;
+const spotty = count(generateMushroom(p, seededRandom(5)).entity.model.data, ROLE.SPOT);
+ok(bare === 0 && spotty > 0, `spots respond to their knob (${bare} vs ${spotty} voxels)`);
+
+console.log(failures ? `\n${failures} check(s) FAILED` : "\nALL CHECKS PASSED");
+process.exit(failures ? 1 : 0);
+```
+
+Then put the generator under [the contract](/docs/generators/the-contract/): add
+`"@voxolith/gen-mushroom": "workspace:*"` to the `devDependencies` of `generators/contract/package.json`,
+and in `generators/contract/tools/contract.ts` import and call `registerMushroomGenerators()` beside
+the others.
+
+```sh
+bun run --cwd generators/mushroom verify
+bun run --cwd generators/contract verify   # quick
+bun run --cwd generators/contract full     # what CI runs: every extreme, every finer scale
+```
+
+</Step>
+<Step>
+
+### Look at it
+
+The contract proves a model is valid, not that it looks right. Render contact sheets with the
+[preview renderer](/docs/generators/gen-kit/preview/) and iterate on those:
+
+```ts title="tools/preview.ts"
+import { mkdirSync, writeFileSync } from "node:fs";
+import { seededRandom } from "@voxolith/renderer/core";
+import { contactSheet, encodePng, renderEntity, type SheetCell } from "@voxolith/gen-kit/preview";
+import { generateMushroom, PRESETS, PRESET_NAMES } from "../src/index";
+
+const OUT = new URL("../previews/", import.meta.url).pathname;
+mkdirSync(OUT, { recursive: true });
+
+const cells: SheetCell[] = [];
+for (const name of PRESET_NAMES)
+  for (const seed of [1, 2, 3]) {
+    const { entity } = generateMushroom(PRESETS[name], seededRandom(seed), name);
+    cells.push({ render: renderEntity(entity, { width: 240, height: 220, yawDeg: 34, pitchDeg: 22 }), label: `${name} #${seed}` });
+  }
+const sheet = contactSheet(cells, { cols: 3, title: "presets" });
+writeFileSync(`${OUT}species.png`, encodePng(sheet.width, sheet.height, sheet.rgb));
+```
+
+`bun run --cwd generators/mushroom preview` writes `previews/species.png`. Copy `tools/gen.ts` from
+the rock unchanged (through `tools/shared.ts`) to bake each preset to `.vox`.
+
+</Step>
+<Step>
+
+### Wire it in
+
+- The viewer: call `registerMushroomGenerators()` in `viewer/src/generate.ts` beside the others.
+- Apps that generate off the main thread: register it in their generator worker.
+- This site: add the package to `PACKAGES` in `tools/generators.ts` (so `<GeneratorReference>` can
+  render it) and its preview rounds to `tools/previews.ts`, then write its page from the pattern of
+  the others.
+- Releases: add a `mushroom-v*` tag pattern to `generators/.github/workflows/publish.yml`.
+
+</Step>
+</Steps>
+
+## The vegetation shape
+
+A plant copies the bush (the simplest of the three) instead. The pipeline, as `generateBush` runs
+it, is:
+
+```ts
+import {
+  buildHull, capsule, carveCanopy, fitHeight, growBranches, line3, makeNoise, placeClusters,
+  shadeByExposure, skyOcclusion, spotsAlong, Volume, type ClusterSpot,
+} from "@voxolith/gen-kit";
+
+const noise = makeNoise(Math.floor(rng() * 0x7fffffff) || 1);
+
+// 1. Skeleton: polylines with radii, before any voxel. `seeds` are the level-0 stems
+//    (a trunk, a ring of leaning stems, a scatter of blades); `levels` grow the children.
+const skel = growBranches({ seeds, base, levels, unit: vs, /* ... */ }, rng, noise);
+fitHeight(skel, targetHeight);
+
+// 2. Wood: capsule where the radius is at least a voxel, the 6-connected line3 below.
+const vol = new Volume(sx, sy, sx);
+for (const s of skel.segments) {
+  if (Math.max(s.ra, s.rb) >= 1) capsule(vol, a, b, s.ra, s.rb, ROLE.STEM_MID, { onFill });
+  else line3(vol, a, b, ROLE.STEM_MID, { onFill, pad: Math.max(s.ra, s.rb) >= 0.72 });
+}
+
+// 3. Foliage on real twigs: spots along the outer stems and at every tip.
+const spots: ClusterSpot[] = [];
+for (const stem of skel.stems) if (stem.level >= minLevel) spotsAlong(stem.points, stem.arc, spacing, radius, spots);
+const cluster = placeClusters(vol, spots, ROLE.LEAF_MID, clusterOptions, noise, rng);
+
+// 4. Shape and shade the mass: hollow it, punch sky holes, tone it by exposure.
+const hull = buildHull(vol, origin[0], origin[2], isLeaf);
+carveCanopy(vol, hull, isLeaf, { shellDepth, macroScale, macroThreshold }, noise);
+shadeByExposure(vol, { isTarget: isLeaf, hull, sky: skyOcclusion(vol), clusterId: cluster.clusterId, noise, tones, edge, accent, accentFraction });
+
+// 5. Prune anything not connected to the ground, crop, refine.
+const { visited } = vol.flood6((_x, y) => y <= 1);
+for (let i = 0; i < vol.data.length; i++) if (vol.data[i] && !visited[i]) vol.data[i] = 0;
+let model = vol.crop(origin, roles);
+if (k > 1) model = fineBush(model, skel, origin, k, Math.floor(rng() * 0x7fffffff));
+```
+
+At a finer scale the wood is not refined but redrawn from the skeleton: mark the wood roles `skip`
+in the refine rules, then draw the segments into the refined model's bricks with
+[`drawSkeletonFine`](/docs/generators/api/gen-kit/gen-kit/functions/drawSkeletonFine/) through a
+[`SparseWriter`](/docs/generators/api/gen-kit/gen-kit/classes/SparseWriter/), taking each fine
+voxel's role from [`coarseRoleAt`](/docs/generators/api/gen-kit/gen-kit/functions/coarseRoleAt/).
+Leaves use the `leaves` rule, which keeps the coarse shading. `generators/bush/src/fine.ts` is the
+shortest complete example.
+
+Everything measured in voxels in a vegetation generator is tuned for a reference height
+(`REFERENCE_HEIGHT`, 64 for the bush, 192 for the tree) and scaled by `vs = height /
+REFERENCE_HEIGHT`, so one parameter set works at any size.

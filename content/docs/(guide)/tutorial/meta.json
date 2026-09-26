@@ -1,0 +1,12 @@
+{
+  "title": "Tutorial: your first game",
+  "pages": [
+    "project-setup",
+    "terrain",
+    "camera-and-input",
+    "trees-and-a-house",
+    "day-and-night",
+    "rats",
+    "performance-and-deploying"
+  ]
+}

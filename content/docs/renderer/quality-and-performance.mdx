@@ -1,0 +1,161 @@
+---
+title: Quality and performance
+description: What a raymarched frame costs and the runtime knobs that trade it, from quality presets and render scale to makePerf, render on demand and adapter checks.
+---
+
+A raymarcher's cost is rays times steps. Every pixel walks a ray through the grid, then shades the
+hit with a shadow ray, ambient occlusion, point lights and materials, and the whole screen is
+redrawn every frame. So the knobs are: how many rays (resolution), how far each may walk (quality),
+and how many frames (render on demand). All of them are runtime settings; nothing needs a rebuild.
+
+The cost knobs live in the renderer and engine, not in apps. Apps only offer UI for them, such as a
+quality select stored under `voxolith-quality`.
+
+## Quality presets
+
+`renderer.setQuality(preset | partial)` sets the per-frame cost knobs, as uniforms: changing them
+is free and takes effect on the next frame. `getQuality()` reads them back.
+
+<TypeTable
+  type={{
+    maxSteps: { description: 'Primary-ray DDA step cap (16 to 4096). Lower is cheaper; too low clips far geometry, which then shades as sky.', type: 'number' },
+    shadowSteps: { description: 'Shadow-ray step cap (0 to 512), for the key light and point lights. 0 disables shadows entirely.', type: 'number' },
+    ao: { description: 'Face ambient occlusion: 8 neighbour lookups per hit.', type: 'boolean' },
+  }}
+/>
+
+| preset | `maxSteps` | `shadowSteps` | `ao` |
+|---|---|---|---|
+| `low` | 256 | 0 | off |
+| `medium` | 512 | 48 | on |
+| `high` (default) | 768 | 90 | on |
+
+`high` is the original look; `low` is roughly 2 to 3 times cheaper per pixel. `low` also drops the
+point lights' shadows (the lights stay) and the snow-shelter ray. With the brick index's
+empty-space skip, typical rays use far fewer steps than the cap, which is only a backstop.
+
+```ts
+renderer.setQuality(gpu.software ? "low" : "high");
+renderer.setQuality({ shadowSteps: 32 }); // partial updates are allowed
+```
+
+The presets are exported as [`QUALITY_PRESETS`](/docs/renderer/api/renderer/variables/QUALITY_PRESETS/)
+for a UI to list.
+
+## Resolution
+
+Rays per frame scale with the square of the resolution. Two numbers set it:
+
+- `gpu.pixelRatio`: `window.devicePixelRatio`, capped by `initGpu(canvas, { maxPixelRatio })`
+  (default 2, so phones do not render at 3× for free). Use 1 on weak GPUs.
+- `gpu.renderScale`: a scale on top of that, 0.1 to 1 (default 0.8). Set it with
+  `setRenderScale(gpu, s)` or directly; `resizeToDisplay(gpu)` then resizes the canvas backing
+  store to its CSS size × pixel ratio × render scale. Call it at the start of each frame.
+
+### Adaptive scale
+
+[`makePerf(options)`](/docs/renderer/api/renderer/functions/makePerf/) is an adaptive render-scale
+controller with an optional overlay (frame time, fps, scale). Call `perf.frame(now)` on every
+rendered frame and apply `perf.scale()`: it climbs towards `maxScale` while frames comfortably hit
+`targetMs` and backs off quickly when they stretch. `perf.setScale(s)` pins a scale (adaptation
+continues from there).
+
+<TypeTable
+  type={{
+    enabled: { description: 'Show the overlay.', type: 'boolean', required: true },
+    scale: { description: 'Starting scale, usually gpu.renderScale.', type: 'number', required: true },
+    minScale: { description: 'Lowest scale the controller goes to.', type: 'number', default: '0.35' },
+    maxScale: { description: 'Highest scale.', type: 'number', default: '1' },
+    targetMs: { description: 'Frame-time target.', type: 'number', default: '16.7 (60 fps)' },
+    adaptEveryMs: { description: 'How often the scale may change.', type: 'number', default: '500' },
+    retryAfterMs: { description: 'How long a scale that proved too slow stays off limits.', type: 'number', default: '30000' },
+    maxSampleMs: { description: 'Frame gaps longer than this are idle time and ignored.', type: 'number', default: '250' },
+    locked: { description: 'Fixed scale: no adaptation.', type: 'boolean', default: 'false' },
+    label: { description: 'Extra overlay text, such as the adapter or preset.', type: 'string' },
+  }}
+/>
+
+`makePerf` **learns a ceiling**. Under vsync, frame times arrive in whole intervals, so a frame
+that fits reads the same as one with room to spare. A naive controller climbs, misses, drops and
+climbs again every second, and each change visibly resamples a still image. So a scale that proved
+too slow is not retried for `retryAfterMs`.
+
+An app that renders continuously with a still camera (water, weather) passes
+`retryAfterMs: Infinity` and calls `perf.reprobe()` when the view moves, when a probe is invisible.
+A scene that is legitimately slower than 250 ms a frame must raise `maxSampleMs`, or every sample is
+discarded as idle and the overlay sits at 60 fps.
+
+## Render on demand
+
+A raymarcher redraws the whole screen every frame, so a static scene should not render at all.
+[`makeFrameLoop({ render })`](/docs/renderer/api/renderer/functions/makeFrameLoop/) schedules
+`requestAnimationFrame` only while there is work, so an idle page costs nothing:
+
+- `loop.invalidate()` requests one frame (coalesced). Call it when the camera, scene or viewport
+  changed. The engine's input takes the loop (`createInput(canvas, { loop })`) and invalidates on
+  every input event.
+- `observeResize(canvas, loop)` invalidates on CSS size changes (window resize, split view,
+  orientation).
+- `loop.setContinuous(true)` renders every frame, capped at `maxFps` (default 60), and is only for
+  while something animates: a crowd, particles, a held key. Water and precipitation animate from
+  `FrameParams.time`, so an app with them on screen renders continuously.
+- `render(now, dt)` receives `performance.now()` and a capped `dt` in seconds.
+
+```ts
+import { initGpu, createRenderer, makeFrameLoop, makePerf, observeResize, resizeToDisplay, makeCamera } from "@voxolith/renderer";
+import { createInput, makeOrbitController } from "@voxolith/engine/input";
+import { timeOfDay } from "@voxolith/engine/atmosphere";
+
+const gpu = await initGpu(canvas);
+const renderer = await createRenderer(gpu, scene);
+if (gpu.software) renderer.setQuality("low"); // and tell the user why it is slow
+
+const perf = makePerf({ enabled: false, scale: gpu.renderScale, minScale: 0.35 });
+const camera = makeCamera({ target: [64, 16, 64], distance: 120, pitchDeg: 30, fovDeg: 35 });
+const loop = makeFrameLoop({
+  render(now) {
+    perf.frame(now);
+    gpu.renderScale = perf.scale();
+    resizeToDisplay(gpu);
+    renderer.render({ ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()), ...timeOfDay(0.45) });
+  },
+});
+observeResize(canvas, loop);
+// Every input event invalidates the loop.
+const orbit = makeOrbitController(createInput(canvas, { loop }), { distance: 120, distanceLimits: [20, 600] });
+loop.invalidate();
+```
+
+## Software adapters
+
+`gpu.adapterInfo` is what the browser reported for the adapter, and `gpu.software` is true for CPU
+implementations (SwiftShader, llvmpipe, lavapipe, or a browser fallback adapter). Expect
+single-digit frame rates there; apps warn and start on the `low` preset. `initGpu` logs the adapter
+and the granted limits to the console. If a capable GPU shows as software, the browser is not using
+it.
+
+### Linux Chrome
+
+Chrome on Linux can be slow despite a hardware adapter. When `chrome://gpu` reports
+`Disabled Features: webgpu_on_vk_via_gl_interop`, the compositor runs on OpenGL and each WebGPU
+frame is copied through the CPU. Enabling `chrome://flags/#enable-vulkan` fixes it, but globally it
+also changes how video frames reach the screen (it can break camera feeds in video calls). The
+Voxolith workspace's `bun run dev` therefore launches a separate Chrome with Vulkan enabled and its
+own `--user-data-dir`, so the flag applies to development only.
+
+## Where the time goes
+
+| cost | scales with | knob |
+|---|---|---|
+| primary rays | pixels × steps to the hit | render scale, pixel ratio, `maxSteps` |
+| key-light shadow | one ray per lit pixel | `shadowSteps` |
+| point lights | lights in range per pixel; one shadow ray each | `range`, `shadows`, `shadowSteps` |
+| ambient occlusion | 8 lookups per hit | `ao` |
+| reflections, glass, water | one secondary ray per such pixel | materials in view |
+| precipitation | 8 hashes per pixel | `density` 0 turns it off |
+| edits | bricks touched | batch with `editMany` |
+| instances | cells their boxes touch | static sets are built once |
+| frames | how often you render | `makeFrameLoop` |
+
+`renderer.stats()` and `instanceStats()` report the memory side; see
+[Storage](/docs/renderer/storage/#growth-and-limits).

@@ -1,0 +1,278 @@
+---
+title: "3. Camera and input"
+description: "Rat Hunt, step 3: walk the valley in first person with keyboard, mouse, gamepad or touch, using makeActions, makeLookController and makeTouchControls."
+---
+
+In this step the circling camera becomes the player's eyes. You will walk with WASD, the arrow
+keys, a gamepad's left stick or an on-screen joystick, and look around with the mouse, a drag,
+the right stick or Q and E.
+
+All of it goes through [`@voxolith/engine/input`](/docs/engine/input/). A game never adds its own
+`keydown` or `pointermove` listeners: one input object owns them, and everything else reads from
+it. That is what lets the same code work on a laptop, a phone and a console controller.
+
+## One input per surface
+
+```ts
+import {
+  axis,
+  button,
+  createInput,
+  makeActions,
+  makeLookController,
+  makeTouchControls,
+  prepareSurface,
+} from "@voxolith/engine/input";
+
+prepareSurface(canvas);
+const input = createInput(canvas);
+```
+
+[`prepareSurface`](/docs/engine/api/input/functions/prepareSurface/) stops the browser from
+scrolling, zooming or selecting text when the canvas is touched.
+[`createInput`](/docs/engine/api/input/functions/createInput/) listens to pointers, keys, the
+wheel, pointer lock and gamepads for that canvas.
+
+## Actions, not keys
+
+The game asks "how hard is the player pushing forward?", not "is W down?".
+[`makeActions`](/docs/engine/api/input/functions/makeActions/) maps named actions to every source
+that can drive them:
+
+```ts
+const actions = makeActions(input, {
+  strafe: axis({ negative: ["key:KeyA", "key:ArrowLeft"], positive: ["key:KeyD", "key:ArrowRight"], analog: ["pad:LeftX", "touch:move.x"] }),
+  walk: axis({
+    negative: ["key:KeyS", "key:ArrowDown", "pad:LeftY+", "touch:move.y+"],
+    positive: ["key:KeyW", "key:ArrowUp", "pad:LeftY-", "touch:move.y-"],
+  }),
+  run: button("key:ShiftLeft", "key:ShiftRight", "pad:LT"),
+});
+```
+
+- `key:KeyW` is a physical key (`KeyboardEvent.code`), so WASD stays in place on an AZERTY
+  keyboard.
+- `pad:LeftX` is a signed stick axis, -1 to 1. Screen and gamepad Y point down, so `pad:LeftY-`
+  is the half of the stick pushed up (0 to 1) and `pad:LeftY+` the half pulled back.
+- `touch:move.x` and `touch:move.y` come from the joystick called `move`, created below.
+
+An axis takes whichever source is pushed hardest, so a half-tilted stick is not overridden by a
+key. `actions.vector("strafe", "walk")` reads two axes as one vector clamped to length 1, so
+walking diagonally is not faster.
+
+## Looking around
+
+```ts
+const look = makeLookController(input, { yaw: 180, pitch: -8, keys: { left: ["KeyQ"], right: ["KeyE"] } });
+makeTouchControls(input, { joysticks: [{ id: "move", side: "left" }] });
+```
+
+[`makeLookController`](/docs/engine/api/input/functions/makeLookController/) keeps a yaw and a
+pitch in degrees:
+
+- with a mouse, the first click captures the pointer (Esc releases it) and movement turns the
+  view; before that, dragging turns it;
+- on a touch screen, dragging anywhere that is not a control turns it;
+- the right stick and the Q and E keys turn it at a steady rate.
+
+[`makeTouchControls`](/docs/engine/api/input/functions/makeTouchControls/) adds a floating
+joystick on the left of the screen. It appears as soon as the page is touched and hides again
+when a mouse or keyboard is used, so desktop players never see it.
+
+## The player
+
+The player is a position on the ground and an eye 17 voxels (1.7 m) above it:
+
+```ts
+const EYE = 17; // 1.7 m
+const player = { x: SIZE.x / 2, z: SIZE.z / 2, eyeY: 0 };
+player.eyeY = terrain.heightAt(player.x, player.z) + EYE;
+const view = () => firstPersonFrame([player.x, player.eyeY, player.z], look.yaw(), look.pitch(), 70);
+```
+
+[`firstPersonFrame(eye, yaw, pitch, fov)`](/docs/renderer/api/renderer/functions/firstPersonFrame/)
+gives the camera fields for an eye position. Yaw 0 looks along +Z and turning right increases
+the yaw. `terrain.heightAt` clamps and rounds its arguments, so it is safe to call with any
+position.
+
+Moving means turning the action vector into world directions. With `firstPersonFrame`'s
+convention, forward is `(sin yaw, cos yaw)` on the ground and screen-right is
+`cross(forward, up)`, which is `(-cos yaw, sin yaw)`:
+
+```ts
+function movePlayer(dt: number): boolean {
+  const [sx, wz] = actions.vector("strafe", "walk");
+  if (!sx && !wz) return false;
+  const speed = (actions.down("run") ? 80 : 40) * dt;
+  const yaw = (look.yaw() * Math.PI) / 180;
+  // firstPersonFrame: forward is (sin, cos), screen-right is cross(forward, up).
+  const nx = player.x + (Math.sin(yaw) * wz - Math.cos(yaw) * sx) * speed;
+  const nz = player.z + (Math.cos(yaw) * wz + Math.sin(yaw) * sx) * speed;
+  if (nx < 4 || nz < 4 || nx > SIZE.x - 5 || nz > SIZE.z - 5) return false;
+  player.x = nx;
+  player.z = nz;
+  return true;
+}
+```
+
+Walking is 40 voxels a second (4 m/s) and Shift or the left trigger doubles it. The function
+returns whether the player moved, which step 7 uses.
+
+## The frame
+
+Every frame reads the input in a fixed order: `input.update()` first, so this frame's key
+presses and gamepad state are current, then `look.update(dt)`, then the actions.
+
+```ts
+const loop = makeFrameLoop({
+  continuous: true,
+  render(now, dt) {
+    input.update();
+    look.update(dt);
+    movePlayer(dt);
+    const ground = terrain.heightAt(player.x, player.z) + EYE;
+    player.eyeY += (ground - player.eyeY) * Math.min(1, dt * 10);
+
+    resizeToDisplay(gpu);
+    renderer.render({ ...view(), ...sky, time: now / 1000 });
+  },
+});
+observeResize(canvas, loop);
+```
+
+The ground rises in one-voxel steps, so the eye follows it with a little smoothing instead of
+jumping. The old `makeCamera` line goes; `sky` stays.
+
+## Run it
+
+Click the page to capture the mouse, then walk about. On a phone, touch the lower left for the
+joystick and drag elsewhere to look. Walking into a pond is allowed: you wade.
+
+<Accordions>
+<Accordion title="src/main.ts after step 3">
+
+```ts title="src/main.ts"
+// Rat Hunt: catch the giant rats in the valley before night falls.
+import {
+  createRenderer,
+  firstPersonFrame,
+  hashSeed,
+  initGpu,
+  makeFrameLoop,
+  observeResize,
+  resizeToDisplay,
+  showUnsupportedScreen,
+  WebGPUUnsupportedError,
+} from "@voxolith/renderer";
+import { PaletteAllocator } from "@voxolith/engine";
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import {
+  axis,
+  button,
+  createInput,
+  makeActions,
+  makeLookController,
+  makeTouchControls,
+  prepareSurface,
+} from "@voxolith/engine/input";
+import { generateTerrain } from "@voxolith/gen-terrain";
+import "./style.css";
+
+const canvas = document.getElementById("scene") as HTMLCanvasElement;
+const params = new URLSearchParams(location.search);
+
+// --- WebGPU -------------------------------------------------------------------
+const gpu = await initGpu(canvas).catch((err: unknown) => {
+  if (err instanceof WebGPUUnsupportedError) showUnsupportedScreen(err.message, { appName: "Rat Hunt" });
+  throw err;
+});
+
+// --- the valley -----------------------------------------------------------------
+const SIZE = { x: 384, y: 128, z: 384 };
+const seed = hashSeed(params.get("seed") ?? "rat-hunt");
+
+const terrain = generateTerrain(
+  {
+    width: SIZE.x, depth: SIZE.z, height: SIZE.y,
+    baseY: 18, relief: 20, featureSize: 100, waterLevel: 13,
+    river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 },
+  },
+  seed,
+);
+
+// --- palette and renderer ----------------------------------------------------------
+const palette = new PaletteAllocator(1);
+const groundBase = palette.allocate(terrain.roles, "terrain").base;
+
+const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
+renderer.setQuality(gpu.software ? "low" : "medium");
+
+renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) =>
+  terrain.fillBrick(cells, ox, oy, oz, groundBase),
+);
+
+const sky = atmosphereFrame(timeOfDay(0.35), ATMOSPHERES.clear);
+
+// --- input --------------------------------------------------------------------------
+prepareSurface(canvas);
+const input = createInput(canvas);
+const actions = makeActions(input, {
+  strafe: axis({ negative: ["key:KeyA", "key:ArrowLeft"], positive: ["key:KeyD", "key:ArrowRight"], analog: ["pad:LeftX", "touch:move.x"] }),
+  walk: axis({
+    negative: ["key:KeyS", "key:ArrowDown", "pad:LeftY+", "touch:move.y+"],
+    positive: ["key:KeyW", "key:ArrowUp", "pad:LeftY-", "touch:move.y-"],
+  }),
+  run: button("key:ShiftLeft", "key:ShiftRight", "pad:LT"),
+});
+const look = makeLookController(input, { yaw: 180, pitch: -8, keys: { left: ["KeyQ"], right: ["KeyE"] } });
+makeTouchControls(input, { joysticks: [{ id: "move", side: "left" }] });
+
+// --- the player ---------------------------------------------------------------------
+const EYE = 17; // 1.7 m
+const player = { x: SIZE.x / 2, z: SIZE.z / 2, eyeY: 0 };
+player.eyeY = terrain.heightAt(player.x, player.z) + EYE;
+const view = () => firstPersonFrame([player.x, player.eyeY, player.z], look.yaw(), look.pitch(), 70);
+
+function movePlayer(dt: number): boolean {
+  const [sx, wz] = actions.vector("strafe", "walk");
+  if (!sx && !wz) return false;
+  const speed = (actions.down("run") ? 80 : 40) * dt;
+  const yaw = (look.yaw() * Math.PI) / 180;
+  // firstPersonFrame: forward is (sin, cos), screen-right is cross(forward, up).
+  const nx = player.x + (Math.sin(yaw) * wz - Math.cos(yaw) * sx) * speed;
+  const nz = player.z + (Math.cos(yaw) * wz + Math.sin(yaw) * sx) * speed;
+  if (nx < 4 || nz < 4 || nx > SIZE.x - 5 || nz > SIZE.z - 5) return false;
+  player.x = nx;
+  player.z = nz;
+  return true;
+}
+
+// --- the loop ------------------------------------------------------------------------------
+const loop = makeFrameLoop({
+  continuous: true,
+  render(now, dt) {
+    input.update();
+    look.update(dt);
+    movePlayer(dt);
+    const ground = terrain.heightAt(player.x, player.z) + EYE;
+    player.eyeY += (ground - player.eyeY) * Math.min(1, dt * 10);
+
+    resizeToDisplay(gpu);
+    renderer.render({ ...view(), ...sky, time: now / 1000 });
+  },
+});
+observeResize(canvas, loop);
+```
+
+</Accordion>
+</Accordions>
+
+<Callout title="An orbit camera instead">
+  For a view from above, [`makeOrbitController`](/docs/engine/api/input/functions/makeOrbitController/)
+  gives drag to turn, wheel or pinch to zoom and right-drag or two fingers to pan, and feeds
+  `makeCamera` directly. The [orbit example](/docs/examples/orbit/) is the smallest program that
+  uses it; [Cameras](/docs/manual/cameras/) compares the two.
+</Callout>
+
+**Next:** [trees and a house](/docs/tutorial/trees-and-a-house/).

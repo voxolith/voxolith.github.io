@@ -1,0 +1,215 @@
+---
+title: Troubleshooting
+description: Fixes for WebGPU missing or slow, software adapters, lost devices, HTTPS on phones, blank canvases, share codes and big worlds on phones.
+---
+
+Most problems with a Voxolith page come down to WebGPU: whether the browser offers it, on which
+adapter, and in what context. The examples append `?diag` to show what the page got (adapter,
+3D texture limit, storage binding size), and they print GPU errors in the page, since a phone
+has no console to read them in.
+
+<Accordions type="multiple">
+
+<Accordion id="webgpu-unsupported" title="&quot;WebGPU is not available in this browser&quot;">
+
+`initGpu` throws a `WebGPUUnsupportedError` when `navigator.gpu` is missing, and
+`showUnsupportedScreen` shows its message. Check the browser:
+
+| browser | WebGPU |
+|---|---|
+| Chrome, Edge | on by default on Windows, macOS, ChromeOS and Android |
+| Chrome on Linux | may need `chrome://flags/#enable-unsafe-webgpu`; see the next entry for speed |
+| Safari | Safari 26 or newer, on macOS, iOS and iPadOS |
+| Firefox | only where your version enables WebGPU (`dom.webgpu.enabled` in `about:config`) |
+
+"No suitable GPU adapter was found" means the API exists but the browser would not give out an
+adapter: the GPU is blocklisted, or hardware acceleration is off in the browser's settings.
+`chrome://gpu` shows what Chrome decided and why.
+
+If the message instead says the page "isn't a secure context", see
+[HTTPS on phones](#https-on-phones) below.
+
+</Accordion>
+
+<Accordion id="linux-chrome-slow" title="Chrome on Linux is slow">
+
+On Linux, Chrome's WebGPU runs much faster with Vulkan. The obvious fix, turning on
+`chrome://flags/#enable-vulkan`, has a cost: it changes how video frames reach the screen for
+the whole browser, and camera feeds in video calls (Meet, for one) can go white.
+
+Instead, run a second Chrome just for development, with Vulkan enabled and its own profile
+directory:
+
+```sh
+google-chrome --user-data-dir="$HOME/.cache/voxolith/chrome-dev" --enable-features=Vulkan https://localhost:5173/
+```
+
+It must be `--user-data-dir`, not `--profile-directory`: a second profile of the same user data
+directory shares the running browser process and its GPU setup, so the flag would not apply. A
+separate directory is a separate browser, and your everyday Chrome is untouched.
+
+Add `--ozone-platform-hint=auto` to run natively on Wayland rather than through XWayland. The dev
+server's certificate is self-signed, so this browser shows a warning for it once, like any other.
+
+</Accordion>
+
+<Accordion id="software-adapter" title="Very low frame rate, and the adapter is SwiftShader or llvmpipe">
+
+The browser has fallen back to a CPU implementation of WebGPU. It works, but at a few frames a
+second. `initGpu` detects this and sets `gpu.software` (it matches SwiftShader, llvmpipe,
+lavapipe, softpipe and fallback adapters), and logs it to the console.
+
+In your app, react to it:
+
+```ts
+renderer.setQuality(gpu.software ? "low" : "medium");
+const perf = makePerf({ enabled: false, scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4 });
+if (gpu.software) console.warn("Software WebGPU adapter: expect a low frame rate.");
+```
+
+and tell the player too, in the page.
+
+The Low preset turns off shadows and ambient occlusion and halves the ray steps; a lower
+`minScale` lets the adaptive resolution go further down. To get the real GPU back, check
+`chrome://gpu` for why it was not used (often a blocklisted driver, or hardware acceleration
+turned off).
+
+</Accordion>
+
+<Accordion id="device-lost" title="The picture freezes, or &quot;device lost&quot; appears">
+
+The GPU device was lost: the driver reset after a frame took too long, the GPU ran out of
+memory, the driver crashed, or a phone reclaimed the GPU from a background tab. The renderer
+does not recover by itself; everything on that device is gone.
+
+- Listen for it and tell the player, rather than showing a frozen image:
+
+  ```ts
+  gpu.device.lost.then((info) => {
+    if (info.reason === "destroyed") return; // you called destroy() yourself
+    document.getElementById("status")!.textContent = `GPU device lost: ${info.message || info.reason}. Reload to continue.`;
+  });
+  ```
+
+  To recover without a reload, call `initGpu` again and rebuild the renderer and the world.
+- If it happens on every load, the page is asking too much of the GPU. Lower the quality preset
+  (fewer `maxSteps` and `shadowSteps`), the render scale, or the size of the world; a single
+  very long frame is what triggers a driver reset.
+- A lost device right after `createRenderer` or a large `edit` usually means memory. `?diag` in
+  the examples shows the storage binding limit the device was granted.
+
+</Accordion>
+
+<Accordion id="https-on-phones" title="Works on the laptop, &quot;not a secure context&quot; on the phone">
+
+WebGPU exists only in a secure context: HTTPS, or `http://localhost`. A phone opening the dev
+server at `http://192.168.1.20:5173` is neither, so `navigator.gpu` is simply absent and
+`initGpu` says the page "isn't a secure context".
+
+Serve the dev server over HTTPS with `@vitejs/plugin-basic-ssl` and listen on the LAN:
+
+```ts title="vite.config.ts"
+import basicSsl from "@vitejs/plugin-basic-ssl";
+
+export default defineConfig({
+  plugins: [basicSsl()],
+  server: { host: true },
+});
+```
+
+Open the `https://192.168...` network URL Vite prints and accept the certificate warning once.
+A deployed site on GitHub Pages is HTTPS already. `vite preview` on `localhost` is a secure
+context without HTTPS, but not from another device.
+
+</Accordion>
+
+<Accordion id="blank-canvas" title="The page loads but the canvas is blank">
+
+In rough order of likelihood:
+
+1. **No frame was requested.** With `makeFrameLoop` not in continuous mode, nothing renders
+   until you call `loop.invalidate()`. Call it once after setup, pass the loop to
+   `createInput(canvas, { loop })`, and use `observeResize(canvas, loop)`.
+2. **The canvas has no size.** It needs a CSS size (for example `position: fixed; inset: 0` or
+   `width: 100%; height: 100%`), and `resizeToDisplay(gpu)` in the render callback to match its
+   backing store to it.
+3. **The world is outside the clip bounds.** A renderer made from dense `data` clips rays to the
+   occupied box it found at construction. If you add voxels outside that box later, or start
+   from no `data` and fill the world with `edit`, call
+   `renderer.setClipBounds([0, 0, 0], [size.x - 1, size.y - 1, size.z - 1])`.
+4. **The camera sees nothing.** It is inside the ground, below the world, or facing away. Log
+   `camPos` and try a camera well above the middle of the world looking down.
+5. **Lighting is missing.** Every frame needs the lighting and sky fields as well as the camera;
+   spread `timeOfDay(...)` (or `atmosphereFrame(...)`) into `render`.
+6. **A GPU error.** Look in the console for validation errors, or use the pattern in the
+   examples' `src/shared/boot.ts`: listen for `uncapturederror` on `gpu.device` and show it.
+
+The examples' `?selftest=1`, `2` and `3` (on orbit and world) draw debug bands that show which
+stage of the voxel lookup works on the current GPU.
+
+A CDP screenshot, not an in-page `drawImage`, is the way to check a WebGPU canvas from a test:
+the canvas does not survive `drawImage` outside the frame that drew it, so an in-page readback
+reports every page as blank.
+
+</Accordion>
+
+<Accordion id="minecraft-region" title="The minecraft-region example shows nothing">
+
+That is expected until you give it a file: it bundles no world. Drop a region file
+(`r.X.Z.mca`, from the `region/` folder of any Minecraft Java world) onto the page. The info line
+says "building…" while it parses and reports the chunks and voxels when it is done. A region with
+nothing near its middle 256 × 256 blocks shows little; try another one.
+
+</Accordion>
+
+<Accordion id="share-codes" title="A share code will not load, or builds a different model">
+
+A share code is a generator id, its version, a seed and the values of its declared parameters,
+packed into a short string. `decodeState` refuses a code rather than guess:
+
+- **"Generator … is not registered"**: register the generators before decoding, for example
+  `registerTreeGenerators()` from `@voxolith/gen-tree`, once at startup.
+- **"Share code was made with different parameters"**: the generator's parameter list changed
+  since the code was made (a parameter added, removed or re-stepped), so the same numbers would
+  now mean something else. Rebuild the model in the build that made the code, or make a new code.
+- **"Unsupported share code version"**: the string is not a share code, or was cut short when it
+  was pasted.
+
+A code carries only the parameters a generator declares, and values snap to each parameter's
+step grid; anything else comes from the generator's defaults. A code decoded at the default 10
+voxels per metre always rebuilds the same voxels; asking for a finer scale
+(`{ voxelsPerMetre: 100 }`) builds the same design in more detail. See
+[Share codes](/docs/generators/share-codes/).
+
+</Accordion>
+
+<Accordion id="big-worlds-on-phones" title="Big worlds on phones: the valley will not start, or crashes">
+
+Phones have less GPU memory and smaller storage buffer bindings than desktops, and the valley
+example at 100 voxels per metre uses a few hundred MB. It therefore picks a lighter profile when
+it sees a touch-only pointer, or a GPU whose largest storage binding is under 512 MiB:
+
+| setting | desktop | phone |
+|---|---|---|
+| voxels per metre | 100 | 50 |
+| valley size (`?scale=`) | 4 × 4 tiles | 2 × 2 tiles |
+| models per species (`?variants=`) | 3 | 1 |
+| rats (`?rats=`) | 60 | 20 |
+| streamed radius (`?radius=`) | 24 m | 16 m |
+| quality preset | Medium | Low |
+
+`?full` asks for the desktop settings anyway, and each setting can be given on its own. If the
+phone profile still fails, lower `?scale=`, `?radius=` and `?rats=` further.
+
+The same approach works in your own app: read `gpu.limits.maxStorageBufferBindingSize` and
+`matchMedia("(pointer: coarse)")` once at startup and size the world from them. See
+[Mobile and PWA](/docs/manual/mobile-and-pwa/) and [Performance](/docs/manual/performance/).
+
+</Accordion>
+
+</Accordions>
+
+Still stuck? Open an issue on the repository concerned, with the browser, the operating system
+and what `?diag` reports: [renderer](https://github.com/voxolith/renderer/issues),
+[engine](https://github.com/voxolith/engine/issues),
+[examples](https://github.com/voxolith/examples/issues).

@@ -1,0 +1,108 @@
+---
+title: The contract
+description: Every check generators/contract runs against each registered entity generator, the quick, full and fine modes, and how to read a failure.
+---
+
+The engine and its hosts rely on a handful of promises from every `EntityGenerator`: stable
+identity, honest roles, deterministic output, a model that stands on its base. The private
+`generators/contract` package checks all of them for every registered generator in the repository.
+It is not published; it exists so that a new generator, or a change to an old one, cannot quietly
+break a host. The interface itself is documented with the engine under
+[generator contract](/docs/engine/generator-contract/).
+
+```sh
+bun run --cwd generators/contract verify   # quick: defaults only (part of `bun run check`)
+bun run --cwd generators/contract full     # every parameter extreme and every finer scale (CI)
+bun run --cwd generators/contract fine     # defaults at the finer scales only
+```
+
+Each failure prints as `✗ what failed — detail`, and the run ends with a count and a list of every
+problem. A generator is covered once its package is a dev dependency of the contract package and its
+`register...Generators()` is called at the top of `tools/contract.ts`.
+
+## What is checked
+
+<Accordions type="multiple">
+<Accordion title="Identity and roles">
+
+- The id is namespaced: `voxolith/` followed by lower-case letters, digits, dots and dashes.
+- The version is semver (`1.2.3`).
+- It declares between 1 and 255 roles, with unique ids and colours in 0..1.
+
+</Accordion>
+<Accordion title="Defaults inside their own specs">
+
+- Every `ParamSpec.path` exists in `defaults`, and the paths are unique.
+- Every default equals `clampToSpec(spec, default)`: inside the range and on the step grid. A
+  default off its grid would make a [share code](/docs/generators/share-codes/) of the default
+  rebuild a different model. Fix the default, never the step.
+
+</Accordion>
+<Accordion title="Purity and determinism">
+
+- The same seed gives the same voxels, even after another call with a different seed (no state
+  leaks between calls).
+- A different seed gives a different model.
+- `generate` mutates neither the parameters it is passed nor the generator's `defaults`.
+
+</Accordion>
+<Accordion title="The model">
+
+- `data` matches `size` and there are voxels at all.
+- Every voxel value is a declared role, and the model's roles are the generator's roles in the
+  declared order.
+- The anchor lies inside the model's box.
+- Nothing floats: at least 99.9% of voxels at the defaults (99% at a parameter extreme) are
+  6-connected to the model's base, its two lowest layers. Several pieces that each stand on the
+  ground, like the blades of a tuft or the stones of an outcrop, are fine.
+
+</Accordion>
+<Accordion title="Rigs and clips (rigged generators only)">
+
+- 1..255 bones, ordered parents first, with unique ids; `model.bones` binds every voxel to a real
+  bone.
+- Every clip's tracks name real bones, their times ascend from 0, and their rotations are unit
+  quaternions.
+- A looping clip closes: its last key equals its first.
+- A pose baked 40% into each clip stays in one piece (the largest part holds 98% of the voxels; a
+  jump need not touch the ground).
+
+</Accordion>
+<Accordion title="Share codes and the native context">
+
+- `encodeState` then `decodeState` then `generateFromState` rebuilds exactly the model a direct
+  call makes.
+- A context of `{ voxelsPerMetre: 10 }` gives the byte-identical model a call without one does.
+
+</Accordion>
+<Accordion title="Every finer scale (full and fine)">
+
+For each value in `scales`, at the defaults:
+- the model is sparse (`sparse` set, `data` empty) and exactly k times the native model's size on
+  every axis;
+- every voxel value is a declared role, and the anchor is scaled with the model;
+- it generates within 20 s and fits 96 MB of GPU bricks;
+- at least 99% of the structure is grounded, with `looseRoles` (single leaves, petals, seed
+  heads) neither counted nor carrying the flood;
+- in `full`, a second run gives the same bricks.
+
+</Accordion>
+<Accordion title="Every parameter extreme (full only)">
+
+Each spec is set, one at a time, to its `min` and `max` (both values of a `bool`, every option of an
+`enum`) on top of the defaults. Each must still generate without throwing and pass the model checks
+above, with the 99% grounding threshold.
+
+</Accordion>
+</Accordions>
+
+## Not covered
+
+`@voxolith/gen-terrain` is not an entity generator: it describes a region (a heightfield and
+water), takes a seed rather than an rng, and has its own checks in `bun run --cwd generators/terrain
+verify` (shape, river continuity, `fillBrick` against `roleAt`, determinism, picking).
+
+The contract says nothing about whether a model looks right. Each package's own `verify` adds
+generator-specific checks (budgets, knobs that must respond, a building's hollowness and openings, a
+creature's hidden interior and footfalls), and the [preview renderer](/docs/generators/gen-kit/preview/)
+is how a person judges the look.

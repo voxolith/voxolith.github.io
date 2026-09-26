@@ -1,0 +1,83 @@
+name: Deploy to GitHub Pages
+
+# Builds the site (a static Next.js export in out/) and publishes it at
+# https://voxolith.github.io/ on every push to main. Pull requests run the same
+# build, as their check, and deploy nothing. The apps under /viewer/,
+# /editor/, /examples/ and /demolition-shot/ deploy from their own repos.
+#
+# The API reference and the generator pages are generated from the package
+# sources at build time, so renderer, engine and generators are checked out
+# alongside and a throwaway workspace root is assembled, the same way the app
+# repos build. The site must sit in a folder named voxolith.github.io for
+# next.config.mjs to recognise the workspace. A nightly run keeps the
+# reference in step with the packages.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: voxolith.github.io
+      - uses: actions/checkout@v4
+        with:
+          repository: voxolith/renderer
+          path: renderer
+      - uses: actions/checkout@v4
+        with:
+          repository: voxolith/engine
+          path: engine
+      - uses: actions/checkout@v4
+        with:
+          repository: voxolith/generators
+          path: generators
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Assemble a workspace root
+        run: |
+          cat > package.json <<'JSON'
+          { "name": "pages-workspace", "private": true, "workspaces": ["voxolith.github.io", "renderer", "engine", "generators/*"] }
+          JSON
+      - run: bun install
+      - working-directory: voxolith.github.io
+        run: bun run typecheck
+      - name: Build (generates the API reference and generator pages first)
+        working-directory: voxolith.github.io
+        run: bun run build
+      - name: Check internal links
+        working-directory: voxolith.github.io
+        run: bun run links
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: voxolith.github.io/out
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

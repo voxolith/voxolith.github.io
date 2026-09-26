@@ -1,0 +1,17 @@
+{
+  "root": true,
+  "title": "Renderer",
+  "description": "@voxolith/renderer: the WebGPU raymarcher",
+  "icon": "Box",
+  "pages": [
+    "index",
+    "entry-points",
+    "storage",
+    "instances",
+    "lighting",
+    "atmosphere",
+    "quality-and-performance",
+    "formats",
+    "api"
+  ]
+}

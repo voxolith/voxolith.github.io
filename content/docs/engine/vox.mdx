@@ -1,0 +1,52 @@
+---
+title: MagicaVoxel
+description: "@voxolith/engine/vox: .vox files into entities with one role per colour and entities back into .vox, with the Z-up to Y-up swizzle and size limits."
+---
+
+`@voxolith/engine/vox` is how models that already exist become entities, and how generated
+entities leave the engine for the [viewer](/viewer/), the [editor](/editor/) or MagicaVoxel itself.
+It wraps the renderer's `.vox` reader and writer
+([`parseVox`](/docs/renderer/api/vox/functions/parseVox/),
+[`writeVox`](/docs/renderer/api/vox/functions/writeVox/); see [Formats](/docs/renderer/formats/)).
+
+```ts
+import { entityFromVox, entityToVox } from "@voxolith/engine/vox";
+
+const lamp = entityFromVox(await (await fetch("lamp.vox")).arrayBuffer(), { kind: "prop.lamp", rolePrefix: "lamp" });
+
+const bytes = entityToVox(generatedTree);
+download(new Blob([bytes]), "oak.vox");
+```
+
+## Import
+
+[`entityFromVox(buffer, options?)`](/docs/engine/api/vox/functions/entityFromVox/) parses a `.vox`
+buffer into an entity; [`entityFromVoxModel(model, options?)`](/docs/engine/api/vox/functions/entityFromVoxModel/)
+does the same from an already parsed model.
+
+- The model is **cropped** to its occupied box.
+- **One role per distinct colour** it uses, numbered in first-seen order, with ids
+  `${rolePrefix}.0`, `.1`, ... (`rolePrefix` defaults to `"color"`) and the file's colour as the
+  default. A host can then restyle a `.vox` model like a generated one, by role.
+- The **anchor** ([`FromVoxOptions`](/docs/engine/api/vox/interfaces/FromVoxOptions/)`.anchor`) is
+  `"base"` by default: horizontal centre, `y = 0`, which is what anything standing on the ground
+  wants. `"centre"` or an explicit `[x, y, z]` inside the cropped box also work.
+- `id`, `kind` and `meta` are passed through; `meta` also records `source: "vox"` and the file's
+  original size.
+
+Only the voxels and palette of one model are read. Scene graphs, rotations and animation frames are
+the renderer's [`parseVoxScene`](/docs/renderer/api/vox/functions/parseVoxScene/) territory.
+
+## Export
+
+[`entityToVox(entity)`](/docs/engine/api/vox/functions/entityToVox/) serialises an entity: each
+role becomes a palette entry with the role's colour, and each voxel keeps its role value.
+MagicaVoxel stores coordinates in single bytes, so no axis may exceed 255 and no model may have more
+than 255 roles; larger models throw rather than silently wrapping. The model must be dense, so export
+the design generated at 10 voxels per metre rather than a sparse, refined one.
+
+## Axes
+
+`.vox` is Z-up; entities are Y-up. Both directions swizzle model `(x, y, z)` to entity
+`(x, z, y)`, the same mapping the viewer uses, so a model exported and re-imported comes back the
+same way up.

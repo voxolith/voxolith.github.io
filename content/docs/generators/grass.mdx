@@ -1,0 +1,103 @@
+---
+title: Grass
+description: "@voxolith/gen-grass: ground cover (grass, meadow with flowers, reeds with seed heads, arching ferns, dry grass) as blades that each reach the ground."
+---
+
+<ImageZoom src="/generators/grass-species.webp" alt="The five grass presets: grass, meadow, reeds, fern and dry" width={1560} height={376} />
+
+`@voxolith/gen-grass` makes patches of ground cover. A patch is many independent blades, not one
+connected object: tufts scatter over a disc, each tuft fans a handful of blades out of the ground,
+and every blade is a single stem one voxel thick that bends under its own weight.
+
+```ts
+import { seededRandom } from "@voxolith/renderer/core";
+import { generateGrass, PRESETS } from "@voxolith/gen-grass";
+
+const { entity, stats } = generateGrass(PRESETS.meadow, seededRandom(42));
+// entity.kind === "groundcover"; stats.blades, stats.flowers, stats.seedHeads
+```
+
+Unlike a tree, the result is deliberately many pieces. The guarantee is that every blade reaches the
+ground, which is what the contract's grounding check asks.
+
+## How it works
+
+<Steps>
+<Step>
+**Tufts.** Tuft centres scatter over a disc of radius `footprint`, with a square-rooted radius so
+the scatter is even rather than bunched at the centre. Each tuft fans its blades out of a small base
+at `fanDeg` from vertical, at lengths between `lengthMin` and 1 of `height`.
+</Step>
+<Step>
+**Blades.** Every blade is a level-0 stem grown by `growBranches` with no trunk rigidity: gravity
+(`arc`) is the whole silhouette, from standing straight up to arching right over. A fern adds one
+level of children in pairs down both sides of the midrib: its leaflets.
+</Step>
+<Step>
+**Rasterise**, recording which blade wrote each voxel. Blades under a voxel radius are DDA lines,
+6-connected by construction.
+</Step>
+<Step>
+**Colour** along each blade, dark at the base to light at the tip, per blade rather than per patch.
+Whole blades dry off, never individual voxels: speckling reads as noise rather than as a dry
+season.
+</Step>
+<Step>
+**Heads** on the tips of whole blades: flower heads in three colours (`flowers`) or elongated seed
+heads (`seedHeads`). In winter, snow dusts the top faces.
+</Step>
+<Step>
+**Prune** whatever does not reach the ground, flooding from the whole ground plane rather than from
+one point, since the blades are independent.
+</Step>
+</Steps>
+
+The look comes almost entirely from three things: how far blades splay from vertical (`fanDeg`), how
+hard they arc over (`arc`), and the gradient along each blade. Voxel values are tuned for a 24-tall
+patch and scale with `shape.height`.
+
+## Presets
+
+| preset | character |
+|---|---|
+| `grass` | a patch of lawn-like tufts |
+| `meadow` | taller, more tufts, with flower heads and a few dry blades |
+| `reeds` | tall, upright, barely fanned, with seed heads |
+| `fern` | arching fronds carrying leaflets down both sides of a midrib |
+| `dry` | short, heavily arched, mostly dried off, with small seed heads |
+
+## Finer scales
+
+At 50 and 100 voxels per metre the blades are redrawn from the skeleton as thin rods a voxel or two
+across, rooted and arching like the coarse ones and shaded base to tip from them; flowers become
+small petal discs and seed heads stay compact. Flowers, seed heads and snow are loose roles. See
+[scales and refinement](/docs/generators/scales-and-refinement/).
+
+## Development
+
+```sh
+bun run --cwd generators/grass verify           # every blade reaches the ground, budget, determinism
+bun run --cwd generators/grass preview species  # contact sheets into previews/ (also: seeds, seasons)
+bun run --cwd generators/grass gen              # bake .vox files into out/
+```
+
+## Grass
+
+`voxolith/grass` starts from the `grass` preset.
+
+<GeneratorReference id="voxolith/grass" />
+
+## Meadow
+
+`voxolith/meadow` starts from the `meadow` preset.
+
+<GeneratorReference id="voxolith/meadow" />
+
+## Fern
+
+`voxolith/fern` starts from the `fern` preset. Its leaflets are a branch level in the preset, not a
+parameter, so a share code carries the fern's shape by its generator id.
+
+<GeneratorReference id="voxolith/fern" />
+
+See the [API reference](/docs/generators/api/gen-grass/) for `generateGrass` and the parameter types.

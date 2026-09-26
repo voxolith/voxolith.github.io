@@ -1,0 +1,143 @@
+---
+title: The toolkit
+description: "@voxolith/gen-kit: the Volume, capsule and line rasterisers, seeded noise, branch growth, clusters, canopy carving, rock masses, rigging and refinement."
+---
+
+`@voxolith/gen-kit` is what Voxolith's generators are written with. It is headless and
+dependency-free apart from the engine's types and the renderer's sparse bricks, so it runs in a bun
+script or a worker. A host that only loads baked models never needs it.
+
+| import | contents |
+|---|---|
+| `@voxolith/gen-kit` | `Volume`, voxel primitives, vectors, seeded noise, branch growth, clusters, canopy carving and shading, rock masses, `RiggedVolume`, refinement |
+| `@voxolith/gen-kit/preview` | the [CPU preview renderer](/docs/generators/gen-kit/preview/), contact sheets, a PNG writer. Imports `node:zlib`, so it is for tools, not browser bundles |
+
+Everything in it is deterministic: it takes an rng or a `Noise` from the caller and never reaches
+for `Math.random`. The pieces were extracted because more than one generator needed them; the
+[walkthrough](/docs/generators/gen-kit/writing-a-generator/) shows how they combine.
+
+## Volume
+
+[`Volume`](/docs/generators/api/gen-kit/gen-kit/classes/Volume/) is a dense `Uint8Array` working
+grid. Generators allocate one a little larger than the result, draw into it and crop at the end.
+Dense beats sparse while authoring: occupancy tests and the 6-neighbour queries that surface, flood
+and snow passes need are O(1), and at a few hundred thousand live voxels a map costs about ten times
+the memory.
+
+- `new Volume(sx, sy, sz)`, or `Volume.forShape(w, h, d, margin = 4)` for a shape plus margin.
+- `get` and `set` are bounds-checked (out of range reads 0, writes are dropped); `setIfEmpty` writes
+  only into empty space, so foliage never eats branches.
+- `isSurface`, `surfaceNormal` (from which 6-neighbours are empty) and `neighbourhood27` (a cheap
+  baked occlusion).
+- `flood6(seed)` floods 6-connected from every solid voxel the predicate accepts and returns the
+  visited mask: the check that a model is one piece. Generators prune what it did not reach.
+- `crop(anchor, roles)` crops to the occupied box and returns an `EntityModel`, with the anchor
+  moved into the cropped space.
+
+## Primitives
+
+All write a role `value` and return how many voxels they filled. `FillOptions` add an `onFill`
+callback (to record which segment or cluster wrote a voxel), `overwrite: false`, and a per-voxel
+radius `scale`.
+
+- [`capsule(vol, a, b, ra, rb, value)`](/docs/generators/api/gen-kit/gen-kit/functions/capsule/):
+  an exact tapered capsule. Use it when the radius is at least one voxel.
+- [`line3(vol, a, b, value, { pad })`](/docs/generators/api/gen-kit/gen-kit/functions/line3/): a
+  3D DDA along the axis. Below one voxel of radius the capsule's centre test starts missing cells;
+  the DDA crosses voxel faces, so consecutive voxels share a face and a thin limb is 6-connected by
+  construction. Sphere-stamping thin segments instead produces diagonal-only twigs that a
+  connectivity check treats as detached. `pad` widens it to about two voxels.
+- `ellipsoid(vol, c, r, value, keep?)` (with an optional carve predicate that receives the
+  normalised radius), `sphere`, `boxFill`.
+- Vector helpers on `[x, y, z]` tuples: `v3`, `add`, `sub`, `scale`, `dot`, `cross`, `length`,
+  `normalize`, `perpendicular`, `frame`, `rotateAround`.
+
+## Noise
+
+[`makeNoise(seed)`](/docs/generators/api/gen-kit/gen-kit/functions/makeNoise/) returns seeded
+value noise: `value3`, `value2`, `fbm3`, `fbm2` (octaves double in frequency and halve in
+amplitude), all in 0..1, and `signed3` in -1..1 for direction wobble. Each is a pure function of
+coordinates and seed, so a generator stays deterministic whatever order it samples in. Generators
+draw the noise seed from their rng first: `makeNoise(Math.floor(rng() * 0x7fffffff) || 1)`.
+
+`hash01(n)` and `hash4(a, b, c, d)` are stable integer hashes to [0, 1), for choices that must be
+made per feature (per cluster, per stem, per brick) rather than per voxel. Randomising per voxel
+reads as television static. `clamp`, `mix` and `smoothstep` round it out.
+
+## Vegetation
+
+Trees, bushes, roots, corals and grass are all a recursive structure of tapering segments, so these
+live here rather than in any generator.
+
+- [`growBranches(params, rng, noise)`](/docs/generators/api/gen-kit/gen-kit/functions/growBranches/)
+  grows a `Skeleton` of polylines with radii before any voxel exists: `stems`, flat `segments`
+  (`a`, `b`, `ra`, `rb`, level), `tips`, `topY` and `spread`. Three rules carry most of the
+  quality. Children start on the parent's axis, so the first voxel a child writes is inside solid
+  parent material and the result stays connected. Child radius follows a pipe model (`pipeExp`), so
+  a fork conserves visual mass. Direction wobble is coherent noise sampled in space, not per-step
+  random numbers. `seeds` give the level-0 stems (a tree passes one, a bush several, grass
+  hundreds), `levels` the rules for each level of children, and `unit` scales every segment length
+  so one parameter set works at any size.
+- `fitHeight(skel, top)` scales a skeleton to reach a height exactly; `segmentFrames` gives each
+  segment an orthonormal frame, for patterns along a limb.
+- [`placeClusters(vol, spots, value, opts, noise, rng)`](/docs/generators/api/gen-kit/gen-kit/functions/placeClusters/)
+  writes a noise-carved ellipsoid clump at every spot, never over existing voxels, and records
+  which cluster wrote each voxel. `spotsAlong(points, arc, spacing, radius, out)` samples spots
+  along a stem. Placement follows real geometry, never a global envelope: where the structure ends
+  the mass ends, which is what stops a crown reading as a lollipop.
+- [`buildHull`](/docs/generators/api/gen-kit/gen-kit/functions/buildHull/) samples the outer
+  envelope of the foliage in cylindrical bins; [`carveCanopy`](/docs/generators/api/gen-kit/gen-kit/functions/carveCanopy/)
+  then drops everything deeper than `shellDepth` below it (halving the count and letting structure
+  show through) and removes noise pockets (`macroThreshold`) to put sky holes in the silhouette.
+- [`shadeByExposure`](/docs/generators/api/gen-kit/gen-kit/functions/shadeByExposure/) assigns
+  light, mid and dark tones from how far out, how high and how exposed (`skyOcclusion`) each voxel
+  is, a backlit edge role on the rim, and accent and dead roles chosen per cluster.
+
+## Masses
+
+- [`blob(vol, opts, value)`](/docs/generators/api/gen-kit/gen-kit/functions/blob/) fills a
+  noise-displaced superellipsoid: the shape a rock, a mushroom cap, a termite mound and a coral head
+  start from. `exponent` sets the silhouette family (2 an ellipsoid, 3 to 4 a rounded box, 6 and up
+  a slab), `roughness` and `detail` the bumps, which are sampled on the direction from the centre so
+  they ride the surface without seams. `grit` adds a voxel or so of fine displacement in world
+  space, which breaks the contour-line terraces low-frequency bumps leave on shallow slopes.
+  `floorY` keeps it above the ground.
+- [`facet(vol, opts)`](/docs/generators/api/gen-kit/gen-kit/functions/facet/) cleaves a solid
+  along random planes. Noise alone makes a potato; rock breaks along planes, and a handful of flat
+  facets meeting at hard edges is most of what makes a boulder read as one. The first plane tends to
+  cap the top and some stay steep; each sits on the surface along its normal, pulled in by a random
+  fraction skewed toward shallow cuts. It returns the planes, so a generator can tone each fracture
+  face evenly.
+
+## Rigged volumes
+
+[`RiggedVolume`](/docs/generators/api/gen-kit/gen-kit/classes/RiggedVolume/) is a volume whose
+voxels know which bone owns them, for [animated entities](/docs/engine/animation/). Declare bones
+parents first with `bone(id, parent, head, tail)`, then fill with `capsule`, `ellipsoid`, `line` and
+`set`, each naming a bone. A later fill takes ownership of what it overwrites, which is how joints
+work: fill the parent's mass, then the child's with a ball at its head, and the joint turns with the
+child about its own pivot without opening a gap. Thin capsules fall back to a 6-connected line.
+
+`layerInterior(layers, replace?)` re-roles the mass by depth below the surface (fur, then fat, then
+flesh), leaving painted details alone; bone cores and organs are stamped afterwards, so they only
+show where damage cuts the model open. `crop(anchor, roles)` returns the model with its `bones`
+binding and the rig, in the same space.
+
+## Refinement
+
+- [`refine(model, opts)`](/docs/generators/api/gen-kit/gen-kit/functions/refine/) re-voxelises a
+  coarse model k times finer into a sparse model, visiting only the coarse surface. Each role picks
+  a `RoleRule` (`smooth`, `crisp`, `leaves`, `blades` or `skip`) and an optional `detail` function;
+  `faces: "outside"` skips enclosed rooms. The modes are described in
+  [scales and refinement](/docs/generators/scales-and-refinement/#rules-per-role).
+- [`drawSkeletonFine(writer, segments, opts)`](/docs/generators/api/gen-kit/gen-kit/functions/drawSkeletonFine/)
+  redraws a branch skeleton as thin capsule shells at k times the size, slimmer than the coarse
+  minimum (default factors 1, 0.75 and 0.5 for levels 0, 1 and 2 and up), with an optional trunk
+  flare. `shellCapsule` is the single-limb version.
+- `coarseRoleAt(coarse, k, noise, accept, fallback)` returns a function from a fine point to the
+  coarse role there, jittered by noise so tone patches are organic.
+- [`SparseWriter`](/docs/generators/api/gen-kit/gen-kit/classes/SparseWriter/) writes into sparse
+  bricks with the last brick cached, since writes come in runs; wrap a refined model's `sparse` to
+  draw into it.
+
+The full list is in the [gen-kit API reference](/docs/generators/api/gen-kit/gen-kit/).

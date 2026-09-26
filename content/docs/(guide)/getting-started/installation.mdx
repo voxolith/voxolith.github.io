@@ -1,0 +1,175 @@
+---
+title: Installation
+description: Set up a Vite and TypeScript app with the Voxolith packages from a bun workspace checkout, WebGPU types, optimizeDeps and an HTTPS dev server.
+---
+
+Voxolith apps are ordinary [Vite](https://vite.dev) projects. The packages ship raw TypeScript,
+which Vite compiles together with your own code, so there is no build step of theirs to run.
+
+<Callout type="warn" title="Not on npm yet">
+  `@voxolith/renderer`, `@voxolith/engine` and the generators are not published yet. Until they
+  are, clone the repos next to your app and link them with a bun workspace, as below. Your app
+  depends on them as `"workspace:*"`; once they are on npm you change that to a version range and
+  delete the checkouts, and nothing else changes.
+</Callout>
+
+## 1. Get the packages
+
+<Tabs items={["Workspace checkout (today)", "npm (once published)"]}>
+<Tab value="Workspace checkout (today)">
+
+Make a folder for the workspace, clone the three library repos into it, and create your app
+next to them:
+
+```sh
+mkdir voxolith && cd voxolith
+git clone https://github.com/voxolith/renderer
+git clone https://github.com/voxolith/engine
+git clone https://github.com/voxolith/generators
+mkdir my-game
+```
+
+The workspace root is a `package.json` that lists every folder:
+
+```json title="package.json"
+{
+  "name": "my-workspace",
+  "private": true,
+  "workspaces": ["renderer", "engine", "generators/*", "my-game"]
+}
+```
+
+`generators/*` picks up every generator package (`gen-kit`, `gen-terrain`, `gen-tree`, ...). Always
+run `bun install` from this root, so the `workspace:*` links resolve.
+
+</Tab>
+<Tab value="npm (once published)">
+
+```sh
+bun add @voxolith/renderer @voxolith/engine @voxolith/gen-terrain
+bun add -d vite typescript @webgpu/types @vitejs/plugin-basic-ssl
+```
+
+Add whichever `@voxolith/gen-*` packages you use.
+
+</Tab>
+</Tabs>
+
+## 2. The app's package.json
+
+```json title="my-game/package.json"
+{
+  "name": "my-game",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@voxolith/renderer": "workspace:*",
+    "@voxolith/engine": "workspace:*",
+    "@voxolith/gen-terrain": "workspace:*"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "@webgpu/types": "^0.1.74",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}
+```
+
+Then, from the workspace root:
+
+```sh
+bun install
+```
+
+## 3. vite.config.ts
+
+```ts title="my-game/vite.config.ts"
+import { defineConfig } from "vite";
+import basicSsl from "@vitejs/plugin-basic-ssl";
+
+export default defineConfig({
+  // GitHub Pages serves a project under /<repo>/; the deploy build sets BASE_PATH.
+  base: process.env.BASE_PATH ?? "/",
+  // WebGPU needs a secure context: serve HTTPS, on localhost and on the LAN.
+  plugins: [basicSsl()],
+  server: { host: true },
+  // The renderer ships raw TypeScript and imports its shaders with `?raw`,
+  // so it must be compiled with the app rather than pre-bundled.
+  optimizeDeps: { exclude: ["@voxolith/renderer"] },
+});
+```
+
+Each line is there for a reason:
+
+- **`optimizeDeps.exclude`** is required. Vite pre-bundles dependencies with esbuild, which does
+  not understand the renderer's `import code from "./shaders/x.wesl?raw"` imports. Excluding the
+  package makes Vite treat it as source.
+- **`basicSsl()`** serves the dev server over HTTPS with a self-signed certificate. `localhost`
+  counts as a secure context without it, but a phone opening `http://192.168.x.y:5173` does not,
+  and there `navigator.gpu` is simply absent. Accept the certificate warning once on each device.
+- **`server.host: true`** listens on the LAN so a phone can reach the dev server.
+- **`base`** is for deploying under a sub-path; see
+  [Project structure](/docs/getting-started/project-structure/#deploying-under-a-sub-path).
+
+## 4. tsconfig.json
+
+```json title="my-game/tsconfig.json"
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["@webgpu/types", "vite/client"],
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true,
+    "noEmit": true
+  },
+  "include": ["src"]
+}
+```
+
+`@webgpu/types` declares `navigator.gpu`, `GPUDevice` and the rest; `vite/client` declares
+`import.meta.env` and the `?raw` imports. Because the packages are TypeScript sources rather
+than compiled `.d.ts` files, `tsc` checks them under **your** compiler options: keep `strict` on
+and `target` at ES2022 or later, as they are written for that. The Voxolith repos themselves also
+use `noUnusedLocals`, `noUnusedParameters`, `noFallthroughCasesInSwitch` and
+`noImplicitOverride`, so those are safe to turn on too.
+
+## 5. Browser code and script code
+
+The main entry point, `@voxolith/renderer`, pulls in the renderer and its `?raw` shader imports,
+which only a bundler can resolve. Bun or Node scripts (a level baker, a test, a tool that writes
+`.vox` files) import the GPU-free entry points instead:
+
+| import | for |
+|---|---|
+| `@voxolith/renderer` | browser code: everything |
+| `@voxolith/renderer/core` | scripts: everything that does not touch the GPU (`.vox`, `.mca`, cameras, rays, seeded random) |
+| `@voxolith/renderer/vox` | scripts: `.vox` parse and write only |
+| `@voxolith/renderer/ray` | scripts: ray and box helpers only |
+
+The engine's main entry, `@voxolith/engine`, is safe everywhere. Its `/input` subpath needs the
+DOM, and the generators are plain TypeScript that run in the browser, in workers and in bun
+alike. See [Entry points](/docs/renderer/entry-points/) for the full list.
+
+## Check it works
+
+Put an `index.html` and a `src/main.ts` in the app (the [next page](/docs/getting-started/first-scene/)
+has both), then:
+
+```sh
+bun run --cwd my-game dev
+```
+
+Open the `https://localhost:5173` URL Vite prints and accept the certificate. If the page says
+WebGPU is unavailable, see [Troubleshooting](/docs/troubleshooting/).

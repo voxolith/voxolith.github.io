@@ -1,0 +1,104 @@
+---
+title: Picking
+description: Turn a tap or click into a world ray with makeRay, then hit the terrain, a dense voxel grid, an entity's box or an animated creature's voxels.
+---
+
+Picking answers "what is under the cursor": where to drop a lamp, which rat was clicked, which
+voxel to dig out. Voxolith does it on the CPU, against data your game already has, with a ray built
+from the same camera frame the renderer drew. The renderer's brick storage is not read back, so
+choose what to test against by what you are picking.
+
+## A ray from a screen point
+
+```ts
+import { makeRay } from "@voxolith/renderer";
+
+recogniseGestures(input, {
+  tap: (t) => {
+    const { origin, dir } = makeRay(canvas, frame(), t.x, t.y); // client pixels
+    // ...test origin + dir * t against something
+  },
+});
+```
+
+`makeRay(canvas, cameraFrame, clientX, clientY)` matches the shader's per-pixel ray exactly. `dir`
+is not normalised; the helpers below accept that. Pass the same `CameraFrame` you rendered with
+(the result of `camera(...)` or `firstPersonFrame(...)`), and take the point from a gesture's `tap`
+rather than a raw listener, so a drag is never a click (see [Input](/docs/manual/input/)).
+
+## What to test against
+
+**The ground.** A generated terrain answers rays itself, on land or, with `water: true`, on the
+water surface. It returns the hit point or `null`; the refined terrain from `refineTerrain` has the
+same `pick`.
+
+```ts
+const hit = terrain.pick(origin, dir, { water: true }); // [x, y, z] or null
+if (hit) moveLampTo(hit);
+```
+
+**A dense grid.** If you keep a dense copy of a small world (a building game, a demolition stage),
+`voxelRaycast` walks it with the same DDA the GPU uses. It returns the cell hit, the face normal and
+the distance, which together give "the voxel to remove" and "the empty cell to build into":
+
+```ts
+import { makeRay, voxelRaycast } from "@voxolith/renderer";
+
+const { origin, dir } = makeRay(canvas, frame(), clientX, clientY);
+const hit = voxelRaycast(world.size, world.data, origin, dir, 2000);
+if (hit) {
+  const [x, y, z] = hit.cell;                                              // dig here
+  const place = [x + hit.normal[0], y + hit.normal[1], z + hit.normal[2]]; // or build here
+}
+```
+
+A sixth argument, `solid(value, x, y, z)`, decides what counts as a hit, for example to see through
+water or glass.
+
+**Entities and instances.** Keep a list of what you placed with its box, and test boxes with
+`rayAABB(origin, dir, min, max)`, which returns the entry distance or `null`. That is enough for
+selecting a house or a tree. For an exact answer, march the ray through the model's own voxels with
+`modelAt` once the box test passes.
+
+**Animated creatures.** A crowd can keep each member's posed model: create it with
+`makeCrowd({ ..., keepModels: true })` and read `crowd.last(id)`, which holds the posed `model`, the
+bone `matrices` and the `yaw`. The creature example, which keeps posed models in a pose cache of
+its own, marches the ray through each rat's posed box in half-voxel steps, reads
+the bone of the voxel it hits from `model.bones`, and maps the point back to rest space to place a
+wound where the click landed.
+
+## World to screen
+
+The inverse, for placing a label or a hit-radius over something in the world, comes from the same
+frame. The examples use this to test whether a pointer is near the lamp:
+
+```ts
+const f = frame();
+const v = [p[0] - f.camPos[0], p[1] - f.camPos[1], p[2] - f.camPos[2]];
+const z = v[0] * f.camFwd[0] + v[1] * f.camFwd[1] + v[2] * f.camFwd[2];
+if (z > 0) {
+  const x = (v[0] * f.camRight[0] + v[1] * f.camRight[1] + v[2] * f.camRight[2]) / z;
+  const y = (v[0] * f.camUp[0] + v[1] * f.camUp[1] + v[2] * f.camUp[2]) / z;
+  const rect = canvas.getBoundingClientRect(), aspect = canvas.width / canvas.height;
+  const sx = rect.left + ((x / (aspect * f.tanHalfFov) + 1) / 2) * rect.width;
+  const sy = rect.top + ((1 - y / f.tanHalfFov) / 2) * rect.height;
+}
+```
+
+## Pitfalls
+
+- A large world stored only in bricks has no CPU copy to raycast. Pick against what describes it
+  (the terrain, your placement lists), or keep a coarse collision grid of your own.
+- `voxelRaycast` has no empty-space skip. Keep `maxT` to what the player can reach.
+- The canvas size used by `makeRay` is the drawing buffer's aspect, so call it after
+  `resizeToDisplay` has run for the current frame.
+
+## See also
+
+- [Cameras](/docs/manual/cameras/)
+- [Animation](/docs/manual/animation/) for crowds and damage
+- API: [`makeRay`](/docs/renderer/api/ray/functions/makeRay/),
+  [`voxelRaycast`](/docs/renderer/api/ray/functions/voxelRaycast/),
+  [`rayAABB`](/docs/renderer/api/ray/functions/rayAABB/),
+  [`VoxelHit`](/docs/renderer/api/ray/interfaces/VoxelHit/),
+  [`Terrain`](/docs/generators/api/gen-terrain/interfaces/Terrain/)

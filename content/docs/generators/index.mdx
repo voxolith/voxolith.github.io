@@ -1,0 +1,93 @@
+---
+title: Generators
+description: Pure, deterministic procedural generators for trees, bushes, grass, rocks, buildings, rigged creatures and terrain, and the gen-kit toolkit they share.
+---
+
+Generators bake models from parameters and a seed. The engine only places, streams and restyles
+what they make, and the renderer only draws it: nothing downstream of a generator authors voxels.
+Every generator lives in one repository, [voxolith/generators](https://github.com/voxolith/generators),
+as separate npm packages that share an authoring toolkit and are usually changed together.
+
+| package | generator ids | makes |
+|---|---|---|
+| [`@voxolith/gen-tree`](/docs/generators/tree/) | `voxolith/tree.broadleaf`, `voxolith/tree.conifer` | broadleaf and conifer trees |
+| [`@voxolith/gen-bush`](/docs/generators/bush/) | `voxolith/bush`, `voxolith/thicket` | shrubs, thickets, brambles, hedges |
+| [`@voxolith/gen-grass`](/docs/generators/grass/) | `voxolith/grass`, `voxolith/meadow`, `voxolith/fern` | grass, meadow, reeds, ferns |
+| [`@voxolith/gen-rock`](/docs/generators/rock/) | `voxolith/rock`, `voxolith/outcrop` | boulders, outcrops, pebbles |
+| [`@voxolith/gen-building`](/docs/generators/building/) | `voxolith/house`, `voxolith/townhouse` | cottages, farmhouses, townhouses, towers, barns |
+| [`@voxolith/gen-creature`](/docs/generators/creature/) | `voxolith/creature` | rigged, animated rats with layered internals |
+| [`@voxolith/gen-terrain`](/docs/generators/terrain/) | none (not an entity generator) | hills, a meandering river and lakes, streamed a brick at a time |
+| [`@voxolith/gen-kit`](/docs/generators/gen-kit/) | none | the toolkit they are written with, and a headless CPU preview renderer |
+
+```ts
+import { seededRandom } from "@voxolith/renderer/core";
+import { generateTree, PRESETS } from "@voxolith/gen-tree";
+
+const { entity } = generateTree(PRESETS.oak, seededRandom(42));
+
+// The same design at 100 voxels per metre, as a sparse model:
+const fine = generateTree(PRESETS.oak, seededRandom(42), "oak", { voxelsPerMetre: 100 }).entity;
+```
+
+## What every generator shares
+
+- **Pure and deterministic.** All randomness comes from the injected `rng`, never `Math.random`,
+  and nothing touches the filesystem, the DOM or the GPU. The same parameters and seed always
+  rebuild the same voxels, which makes generated content safe for gameplay, tests, caches and
+  [share codes](/docs/generators/share-codes/).
+- **Roles, not colours.** Voxel values are indices into the generator's named colour roles
+  (`bark.dark`, `leaf.edge`, `snow`). A host maps them to palette slots, so one model restyles for
+  a season, a biome or a faction without regenerating, and many models share one palette. See
+  [entities and roles](/docs/engine/entities-and-roles/).
+- **One piece.** A model is a single 6-connected component standing on its base; thin limbs are
+  drawn with a face-crossing line so they never come apart. Grass is the deliberate exception:
+  many blades, each of which reaches the ground.
+- **Two entry points.** Each package exports a direct function (`generateTree(params, rng, id?, ctx?)`
+  returning `{ entity, stats }`) and one or more `EntityGenerator` objects for the engine's
+  registry, which UIs, workers and share codes use. See
+  [using generators](/docs/generators/using-generators/).
+- **Parameters split by cost.** `shape` (and `foliage` or `openings`) decide which voxels exist;
+  `look` only decides which role each voxel gets, so a UI can re-run the cheap colour pass while
+  caching geometry.
+- **Finer scales.** Parameters are written in 10 voxels per metre. Every entity generator except
+  the creature also builds at 50 and 100, as a refined sparse model. See
+  [scales and refinement](/docs/generators/scales-and-refinement/).
+- **Checked.** Every registered generator is run against [the contract](/docs/generators/the-contract/)
+  in CI, at every parameter extreme and every finer scale.
+
+## Where to start
+
+<Cards>
+  <Card title="Using generators" href="/docs/generators/using-generators/" description="Direct calls, the registry, presets, parameter specs, workers and variant pools." />
+  <Card title="Scales and refinement" href="/docs/generators/scales-and-refinement/" description="How a 10 voxels-per-metre design becomes a sparse model at 50 or 100." />
+  <Card title="The toolkit" href="/docs/generators/gen-kit/" description="gen-kit: volumes, rasterisers, noise, branch growth, canopies, masses, refinement." />
+  <Card title="Writing a generator" href="/docs/generators/gen-kit/writing-a-generator/" description="A new package, step by step, from the rock and bush shapes." />
+</Cards>
+
+Try every generator and its parameters in the [viewer](/viewer/), which also makes and reads share
+codes.
+
+## Working on the generators
+
+Clone the repository alongside `voxolith/renderer` and `voxolith/engine` and run `bun install` from
+a workspace root that lists all three (the Voxolith workspace does this for you). From
+`generators/`:
+
+```sh
+bun run typecheck                      # every package
+bun run verify                         # every package's headless checks
+bun run --cwd tree preview species     # contact sheets into tree/previews/
+bun run --cwd contract full            # the full contract, as CI runs it
+```
+
+Releases are tagged per package: `tree-v0.2.0` publishes `@voxolith/gen-tree`, `kit-v0.1.0`
+publishes `@voxolith/gen-kit`, and the version in the tag must match that package's
+`package.json`. Separate cadences avoid releasing every package whenever one changes. Publish `kit`
+before a generator release that needs a new kit.
+
+The generated API reference has a page per package:
+[gen-kit](/docs/generators/api/gen-kit/gen-kit/) and [gen-kit/preview](/docs/generators/api/gen-kit/preview/),
+[gen-tree](/docs/generators/api/gen-tree/), [gen-bush](/docs/generators/api/gen-bush/),
+[gen-grass](/docs/generators/api/gen-grass/), [gen-rock](/docs/generators/api/gen-rock/),
+[gen-building](/docs/generators/api/gen-building/), [gen-creature](/docs/generators/api/gen-creature/)
+and [gen-terrain](/docs/generators/api/gen-terrain/).

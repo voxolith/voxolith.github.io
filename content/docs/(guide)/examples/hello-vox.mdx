@@ -1,0 +1,49 @@
+---
+title: hello-vox
+description: "The smallest useful Voxolith program: fetch a MagicaVoxel .vox file, convert it to a Y-up grid, and render it with a slowly turning camera."
+---
+
+**[Open the live page](/examples/hello-vox/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/hello-vox/main.ts)
+
+A sitting cat from a MagicaVoxel file, on a checkered floor, turning slowly. About 35 lines, and
+the program [Your first scene](/docs/getting-started/first-scene/) walks through line by line.
+
+## What it shows
+
+- Loading a `.vox` file with [`parseVox`](/docs/renderer/api/vox/functions/parseVox/), fetched
+  through `import.meta.env.BASE_URL` so it works under the `/examples/` sub-path.
+- Converting it to the dense grid the renderer takes: MagicaVoxel is Z-up and the renderer Y-up,
+  and the model is cropped to its occupied box (`src/shared/voxGrid.ts`).
+- [`createRenderer`](/docs/renderer/api/renderer/functions/createRenderer/) for a fixed grid,
+  [`setFloor`](/docs/renderer/api/renderer/classes/Renderer/) for an infinite checkered ground
+  plane, and [`makeCamera`](/docs/renderer/api/renderer/functions/makeCamera/) as an orbit camera
+  driven by the clock.
+- Fixed studio lighting from `src/shared/env.ts`: every `FrameParams` field set by hand, no
+  engine needed.
+
+## The interesting part
+
+```ts
+// 1. Load and convert the model.
+const model = parseVox(await (await fetch(`${import.meta.env.BASE_URL}models/cat-sit.vox`)).arrayBuffer());
+const grid = modelToGrid(model);
+
+// 2. Create the renderer for this grid and give it the coarse occupancy
+//    grid so rays skip empty space.
+const renderer = await createRenderer(gpu, grid);
+renderer.updateCoarse(new OccupancyGrid(grid.size, grid.data).data);
+renderer.setFloor({ enabled: true, y: 0, colorA: [0.22, 0.23, 0.27], colorB: [0.17, 0.18, 0.21] });
+
+// 3. A camera factory: call it with a yaw each frame to get camera vectors.
+const { target, distance } = frameGrid(grid.size);
+const camera = makeCamera({ target, distance, pitchDeg: 28, fovDeg: 32 });
+```
+
+The `updateCoarse` call is left over from an older renderer that needed a separate occupancy
+grid; the brick index now does that job itself, and the call does nothing. New code can leave it
+out.
+
+## URL options
+
+None besides the [common ones](/docs/examples/#common-url-options).

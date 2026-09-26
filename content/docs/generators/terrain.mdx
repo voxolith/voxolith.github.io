@@ -1,0 +1,145 @@
+---
+title: Terrain
+description: "@voxolith/gen-terrain: hills, a meandering river and lakes as an editable heightfield, filled a brick at a time, with a finer refinement that streams."
+---
+
+<ImageZoom src="/generators/terrain-map.webp" alt="A shaded map of a generated region: hills, a river meandering through its valley, and lakes" width={640} height={640} />
+
+`@voxolith/gen-terrain` makes the ground a world stands on: rolling hills from layered noise, a
+river that meanders along a noise contour and carves its own valley with sloping banks, widening
+into deep pools and pinching into shallow narrows along its course, lakes wherever the ground dips
+below the water level, and a surface chosen per column: grass (drier up high), rock on steep slopes,
+sand on the banks, gravel and mud on the beds. Water fills every flooded column with the `water`
+material the renderer animates.
+
+It describes a region rather than a model, so it is not an `EntityGenerator`. It returns a
+heightfield and answers everything else on demand, which is what a chunked world wants:
+
+```ts
+import { generateTerrain } from "@voxolith/gen-terrain";
+import { makeChunkedWorld, PaletteAllocator } from "@voxolith/engine";
+
+const terrain = generateTerrain({ width: 1280, depth: 1280, height: 192 }, seed);
+const palette = new PaletteAllocator();
+const { base } = palette.allocate(terrain.roles, "terrain");
+
+const world = makeChunkedWorld({
+  target: renderer,
+  size: { x: 1280, y: 192, z: 1280 },
+  chunk: 128,
+  seed,
+  generate(ctx) {
+    ctx.edit({ ...ctx.box, y1: terrain.maxY() }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, base));
+  },
+});
+```
+
+See [placement and worlds](/docs/engine/placement-and-worlds/) for chunked worlds and streaming.
+
+## Generating
+
+[`generateTerrain(params?, seed?)`](/docs/generators/api/gen-terrain/functions/generateTerrain/)
+takes overrides of [`DEFAULT_TERRAIN`](/docs/generators/api/gen-terrain/variables/DEFAULT_TERRAIN/)
+(`river` merges field by field) and a seed rather than an rng. Everything is a pure function of
+params, seed and position.
+
+| parameter | default | meaning |
+|---|---|---|
+| `width`, `depth` | 320, 320 | region size in voxels |
+| `height` | 176 | grid height; the ground stays well below it so trees fit |
+| `baseY` | 18 | mean ground level |
+| `relief` | 11 | hill amplitude: ground ranges about `baseY` plus or minus this |
+| `featureSize` | 110 | typical hill size, in voxels |
+| `detail` | 1.5 | small bumps, in voxels |
+| `waterLevel` | 13 | absolute Y of the water surface; columns below it flood |
+| `river.enabled` | true | carve a river |
+| `river.width`, `river.depth`, `river.banks` | 16, 5, 18 | channel width, depth below the water at its centre, and the width of the sloping banks either side |
+| `river.meander` | 380 | distance over which the river swings from one side to the other |
+| `river.widthVariation`, `river.widthScale` | 0.6, 120 | how much the width varies along the river, 0 (constant) to 1 (from a trickle to about twice as wide, deeper where wide), and over what distance |
+| `rockSlope` | 3 | height step to a neighbour at which ground turns to rock |
+| `sandBand` | 2 | voxels above the water that are sand, near water |
+| `dryAbove` | 5 | ground this far above `baseY` turns to dry grass |
+| `colors` | `SUMMER` | the default colour of each role |
+
+Like the entity generators, the terrain works in 10 voxels per metre.
+
+## The region
+
+The returned [`Terrain`](/docs/generators/api/gen-terrain/interfaces/Terrain/):
+
+- **`heights`**: the ground height per column (`x + z * width`), sampled once. It is yours to edit: a
+  settlement levels pads into it before the world is built, and everything below reads the edited
+  map.
+- **`fillBrick(cells, ox, oy, oz, base, top?)`**: writes one 8³ brick at `(ox, oy, oz)` into `cells`
+  (`x + y * 8 + z * 64`), mapping role r to `base + r - 1`, and returns whether it wrote anything.
+  `top(x, z)` can override a column's top voxel with an absolute palette slot (a path, a yard);
+  return 0 to keep it.
+- **Queries for placement rules**: `heightAt`, `waterAt`, `waterDepth`, `topRole` (the role of a
+  column's top voxel) and `roleAt(x, y, z)`; `maxY()` is the highest Y anything is written at.
+- **`pick(origin, dir, { water?, maxT? })`**: the first point where a ray meets the ground, or with
+  `water` the water surface, for putting a cursor or a lamp on the ground.
+
+[`terrainHeight(params, seed)`](/docs/generators/api/gen-terrain/functions/terrainHeight/) is the
+height function on its own, pure in `(x, z)` and exactly what `generateTerrain` samples before any
+editing, for a world that streams columns without ever sampling the whole map.
+
+The roles are grass, light grass, dry grass, soil, rock, dark rock, sand, gravel, mud and water. As
+with entities, voxel values are role indices, so the ground restyles (a season, a biome) by palette.
+The `WATER` role carries the `water` material hint, so an app with water on screen renders
+continuously.
+
+Settlement layout (house sites, levelled pads, paths) is app code on top of this; the examples keep
+theirs in `examples/src/world/layout.ts`, shared by the world and valley pages.
+
+## Finer terrain
+
+[`refineTerrain(terrain, k, opts?)`](/docs/generators/api/gen-terrain/functions/refineTerrain/)
+is the same terrain k times finer, answered per brick like the coarse one, so a valley of 1 cm
+voxels can stream. A region cannot be refined like a model (it is too big to exist at once), so it
+wraps the coarse terrain. The coarse heightfield stays the source of truth: levelled pads stay flat,
+and the river, lakes, banks and slopes stay exactly where they were. What the finer grid adds:
+
+- a smooth surface, bicubic (Catmull-Rom) through the coarse column tops, so terraces of 10 cm
+  steps become slopes, with a little micro relief;
+- organic boundaries between surface roles and paths, looked up a little off each column by noise;
+- grass blades one voxel across and a few to fifteen tall, in clumps with bare patches, on grassy
+  ground (`grass`, the blades per grassy column, default 0.22; `bladeHeight`, default 1.4k);
+- pebbles on beds, banks and paths;
+- only a skin of ground below the surface (`skin`, default 6 fine voxels), since it is seen from
+  above: a 128 m valley at 1 cm voxels costs its surface, not its volume.
+
+Edit a box per 8x8 brick column, sized by `columnSpan(ox, oz)`: each column is computed once for its
+whole stack of bricks, about 40 ms per 256² chunk. This is how the valley example streams its ground:
+
+```ts
+import { refineTerrain } from "@voxolith/gen-terrain";
+
+const ground = refineTerrain(terrain, 10, { seed });
+
+// in the chunked world's generate(ctx):
+const boxes = [];
+for (let oz = ctx.box.z0; oz <= ctx.box.z1; oz += 8)
+  for (let ox = ctx.box.x0; ox <= ctx.box.x1; ox += 8) {
+    const [y0, y1] = ground.columnSpan(ox, oz);
+    boxes.push({ x0: ox, y0, z0: oz, x1: ox + 7, y1, z1: oz + 7 });
+  }
+renderer.editMany(boxes, (cells, ox, oy, oz) => ground.fillBrick(cells, ox, oy, oz, base, top));
+```
+
+On a [`FineTerrain`](/docs/generators/api/gen-terrain/interfaces/FineTerrain/), `top` is looked up
+on coarse columns (the settlement's paths and yards) and applies to the top two fine voxels, with no
+blades. `heightAt`, `waterAt`, `waterTop`, `maxY`, `spanOf` and `pick` work in fine voxels. Its GPU
+cost is a few hundred MB for a whole valley, which is why the valley example drops to 50 voxels per
+metre on phones.
+
+## Development
+
+```sh
+bun run --cwd generators/terrain verify    # shape, river continuity, fillBrick vs roleAt, determinism, picking
+bun run --cwd generators/terrain preview   # a shaded map into previews/map.png
+```
+
+The terrain is not covered by [the contract](/docs/generators/the-contract/): its checks are its
+own `verify`.
+
+See the [API reference](/docs/generators/api/gen-terrain/) for every type.

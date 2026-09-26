@@ -1,0 +1,41 @@
+---
+title: Getting started
+description: What you need to build with Voxolith, how its packages fit together, and the shortest path from an empty folder to a voxel scene in the browser.
+---
+
+Voxolith is a set of TypeScript packages that you compile into your own web app. There is no
+editor to install and no runtime to download: you add the packages to a [Vite](https://vite.dev)
+project, create a canvas, and draw voxels into it with WebGPU.
+
+<Callout type="warn" title="Not on npm yet">
+  The packages are not published yet, so for now you work from a checkout of the repos inside a
+  bun workspace. [Installation](/docs/getting-started/installation/) shows how; nothing else in
+  these pages changes once they are on npm.
+</Callout>
+
+## What you need
+
+- [bun](https://bun.sh) 1.4 or newer. Voxolith's own tooling is bun only.
+- A browser with WebGPU: Chrome or Edge 113+, Safari 26+, or Firefox with WebGPU enabled.
+  [Troubleshooting](/docs/troubleshooting/) covers the cases where it is missing or slow.
+- Some TypeScript. The APIs are small functions and plain objects; there are few classes.
+
+## The packages
+
+| package | what you use it for |
+|---|---|
+| [`@voxolith/renderer`](/docs/renderer/) | the GPU: `initGpu`, `createRenderer`, cameras, lights, the frame loop, `.vox` files |
+| [`@voxolith/engine`](/docs/engine/) | everything above the GPU: entities and palettes, placing models, streaming worlds, input, animation, time of day and weather |
+| [`@voxolith/gen-*`](/docs/generators/) | procedural models from a seed: terrain, trees, bushes, grass, rocks, buildings, creatures |
+
+You always need the renderer. The engine and the generators are optional, but most games use
+both: the engine's input layer alone saves a lot of work on phones.
+
+## Where to go next
+
+<Cards>
+  <Card title="Installation" href="/docs/getting-started/installation/" description="A Vite project with the packages linked, TypeScript set up, and an HTTPS dev server." />
+  <Card title="Your first scene" href="/docs/getting-started/first-scene/" description="Load a MagicaVoxel model and draw it, walked through line by line." />
+  <Card title="Project structure" href="/docs/getting-started/project-structure/" description="The files of a small app, rendering on demand, where assets go, and deploying under a sub-path." />
+  <Card title="Tutorial: your first game" href="/docs/tutorial/" description="Build a small game in seven steps, each of which runs." />
+</Cards>

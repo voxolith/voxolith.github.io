@@ -1,0 +1,117 @@
+---
+title: Mobile and PWA
+description: Make a Voxolith game work on phones - detect one, pick a lighter profile, add touch controls, test over HTTPS and ship an installable offline app.
+---
+
+Phones run WebGPU, but with a fraction of a desktop GPU's memory and fill rate, a screen of three
+device pixels per CSS pixel, and a thumb instead of a mouse. This page covers how the examples
+adapt to that, how to add touch controls, and how Demolition Shot, the engine's showcase, ships as
+an installable app that plays offline. Which settings a phone gets is your game's decision; the
+values below are the valley example's.
+
+## Knowing it is a phone
+
+There is no single signal. The valley example treats a device as a phone when it has a touch-only
+pointer or the small storage bindings mobile GPUs offer, and lets `?full` override:
+
+```ts
+const params = new URLSearchParams(location.search);
+const touchOnly = matchMedia("(pointer: coarse)").matches && !matchMedia("(pointer: fine)").matches;
+const smallGpu = gpu.limits.maxStorageBufferBindingSize < 512 * 1048576;
+const phone = !params.has("full") && (touchOnly || smallGpu);
+```
+
+A tablet with a keyboard and trackpad reports a fine pointer and gets the desktop settings, which is
+usually right.
+
+## A lighter profile
+
+On a phone the valley drops to 50 voxels per metre (a quarter of the surface voxels to generate and
+draw), a smaller map, one model per species, 20 rats instead of 60, the `low` preset with a shorter
+`maxSteps`, and a starting render scale of 0.6. Each setting can still be forced from the URL
+(`?vpm=`, `?scale=`, `?variants=`, `?rats=`). The general levers, in the order they help:
+
+- Resolution: cap `maxPixelRatio` in `initGpu`, start `gpu.renderScale` low, and let `makePerf`
+  climb from there.
+- Quality: `renderer.setQuality("low")` removes shadow rays, point-light shadows and ambient
+  occlusion.
+- Content: fewer model variants, a smaller streamed radius, fewer animated members.
+- Memory: keep an eye on `renderer.stats().bytes` against `gpu.limits.maxStorageBufferBindingSize`.
+  Exceeding a binding makes rendering stop silently rather than fail loudly, so show GPU errors in
+  the page: on a phone there is no console to find them in. The examples' `boot.ts` listens to the
+  device's `uncapturederror` and `lost` for this.
+
+## Touch controls and gestures
+
+The camera controllers already handle touch: one finger rotates, two pinch and pan. For game
+controls, bind `touch:` sources beside keys and pad, and put the controls on screen with
+`makeTouchControls`. They appear once a touch is seen and hide on mouse, keyboard or gamepad use:
+
+```ts
+const input = createInput(canvas);
+makeTouchControls(input, {
+  joysticks: [{ id: "move", side: "left" }],
+  buttons: [{ id: "fire", label: "Fire" }],
+});
+// in the action map: analog: ["pad:LeftX", "touch:move.x"], fire: button("key:Space", "touch:fire")
+```
+
+Call `prepareSurface(canvas)` so the browser does not pan, zoom, select text or flash on taps over
+the canvas. Tap versus drag is decided on total travel with a 10 px slop for touch, so a finger that
+wanders a little still taps. Demolition Shot uses a single pull-back gesture over the whole screen
+for aiming, two fingers for the camera, and no on-screen buttons at all; that is a game decision
+too. See [Input](/docs/manual/input/).
+
+## Testing on a phone
+
+WebGPU needs a secure context, so a phone on your network cannot use a plain `http://` dev server.
+Serve HTTPS with `@vitejs/plugin-basic-ssl` and `server: { host: true }` in `vite.config.ts`, open
+the LAN `https://` address on the phone and accept the self-signed certificate once.
+
+## Installable and offline
+
+Demolition Shot is a small PWA: a web manifest, icons, and a service worker registered under the
+deploy base with a build id, so every deploy installs a fresh worker whose cache name derives from
+it and stale assets never outlive a release:
+
+```ts
+declare const __BUILD_ID__: string; // set by `define` in vite.config.ts
+
+export function registerPwa(): void {
+  if (!("serviceWorker" in navigator)) return;
+  const base = import.meta.env.BASE_URL;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker
+      .register(`${base}sw.js?v=${encodeURIComponent(__BUILD_ID__)}`, { scope: base })
+      .catch((e) => console.warn("[pwa] register failed", e));
+  });
+}
+```
+
+Its `sw.js` precaches the app shell on install, goes network-first for navigations (so a new deploy
+shows up), cache-first for hashed `/assets/`, and stale-while-revalidate for everything else on its
+origin. After the first visit the game plays offline. The manifest uses `"start_url": "."` and
+`"scope": "."` so it works under any base path. Copy `public/sw.js`, `public/manifest.webmanifest`
+and `src/pwa.ts` from [demolition-shot](https://github.com/voxolith/demolition-shot) as a starting
+point.
+
+Generated models are a separate cache: the generator worker's IndexedDB cache (see
+[Workers and caching](/docs/manual/workers-and-caching/)) survives between visits on its own.
+
+## Pitfalls
+
+- Mobile browsers pause a hidden tab. Render on demand, and expect a long frame gap on return;
+  `makePerf` ignores gaps over `maxSampleMs`.
+- The viewport meta tag matters: Demolition Shot disables user scaling and uses `viewport-fit=cover`
+  so the canvas owns the whole screen.
+- Test on a real device. Desktop device emulation does not reproduce the GPU's limits.
+
+## See also
+
+- [Performance](/docs/manual/performance/)
+- [Deploying](/docs/manual/deploying/)
+- [Input](/docs/manual/input/)
+- API: [`makeTouchControls`](/docs/engine/api/input/functions/makeTouchControls/),
+  [`prepareSurface`](/docs/engine/api/input/functions/prepareSurface/),
+  [`GpuContext`](/docs/renderer/api/renderer/interfaces/GpuContext/),
+  [`initGpu`](/docs/renderer/api/renderer/functions/initGpu/)

@@ -1,0 +1,121 @@
+---
+title: Instances
+description: Drawing models by reference with addModel and setInstances, at any yaw, mirrored and at fractional positions, with palettes beyond the world's 256.
+---
+
+Stamping writes every voxel of a model into the world's bricks. A forest of six distinct trees then
+costs six trees' worth of memory per copy, a turned tree has to be resampled into new voxels, and
+a moving thing re-uploads bricks every frame. **Instances** keep one copy of each model on the GPU
+and draw it wherever it is placed.
+
+## Models and placements
+
+[`renderer.addModel(source)`](/docs/renderer/api/renderer/classes/Renderer/) uploads a model once
+into the shared brick pool and returns its id. A
+[`ModelSource`](/docs/renderer/api/renderer/interfaces/ModelSource/) is a size plus either dense
+`data` or a [`sparse`](/docs/renderer/storage/#sparse-models) volume. Its voxel values are **role
+values** (1 and up), not palette slots: each placement maps them.
+
+`setInstances(list)` places them. Each
+[`Instance`](/docs/renderer/api/renderer/interfaces/Instance/) is:
+
+<TypeTable
+  type={{
+    model: { description: 'Model id from addModel.', type: 'number', required: true },
+    'x, y, z': { description: 'World position of the model\'s anchor, in voxels. Fractions are allowed.', type: 'number', required: true },
+    anchor: { description: 'The anchor in model voxels.', type: '[number, number, number]', default: 'base centre: size.x / 2, 0, size.z / 2' },
+    yaw: { description: 'Radians about +y, any angle. Turns pivot on the anchor voxel\'s centre.', type: 'number', default: '0' },
+    mirror: { description: 'Mirror along the model\'s x before turning. anchor stays the unmirrored model\'s.', type: 'boolean', default: 'false' },
+    base: { description: 'Palette slot of role 1: a voxel of role r draws slot base + r - 1.', type: 'number', required: true },
+  }}
+/>
+
+```ts
+const oak = renderer.addModel({ size: tree.model.size, data: tree.model.data });
+const oakPalette = renderer.addPalette(colours); // RGBA per role, role r at entry r - 1
+
+renderer.setInstances([
+  { model: oak, x: 120, y: 14, z: 88, yaw: 0.4, anchor: tree.model.anchor, base: oakPalette },
+  { model: oak, x: 170.5, y: 16, z: 60, yaw: 2.1, mirror: true, anchor: tree.model.anchor, base: oakPalette },
+]);
+```
+
+`removeModel(id)` frees a model's bricks; replace the instances naming it first.
+`instanceStats()` reports models, instances, index blocks and bytes for overlays and budgets.
+
+## How an instance is drawn
+
+Each 64³ top cell of the world lists the instances whose box touches it. A voxel the world leaves
+empty is looked up in each of them: the world point is turned into the model's space, pivoting on
+the anchor voxel's centre, so a quarter turn is exact. That is resampling at world voxel centres,
+so a turned instance still reads as axis-aligned cubes, the same as a baked pose. Shadows, ambient
+occlusion, point lights and water need nothing special.
+
+World voxels win where both are solid: an instance only shows where the world is empty. Empty model
+bricks next to content are flagged (`NEAR_BIT`), because a ray through a rotated model cannot trust
+"empty" at one brick, so it skips only where the neighbourhood is empty too.
+
+A cell lists at most 255 instances; entries beyond that are dropped with a console warning.
+
+### Matching stamped orientations
+
+The engine stamps models in eight axis-aligned orientations (four quarter turns, optionally
+mirrored). An instance with `yaw = -(o & 3) * π / 2` and `mirror = (o & 4) !== 0` draws exactly
+what stamping with orientation `o` would; the engine's
+[`orientationYaw(o)`](/docs/engine/api/engine/functions/orientationYaw/) returns that pair.
+
+## Static and dynamic sets
+
+There are two sets of instances, sent separately:
+
+- **Static** (the default), for scenery: `setInstances(list)` replaces the static set and builds its
+  per-cell lists once.
+- **Dynamic**, for a crowd: `setInstances(list, { dynamic: true })` replaces only the moving set,
+  every frame. Its cost is the moving instances and the cells they touch, however much scenery
+  there is: moving instances go after the static ones, each cell they touch gets a fresh list (its
+  static entries, then the moving ones), and cells they left get their static entry back.
+
+Instance sampling is a pipeline constant. A scene that never places an instance runs a shader with
+that code compiled away (it costs even when never taken: several times the frame on SwiftShader),
+and the instanced pipeline is built the first time one is placed.
+
+## Instance palettes
+
+Instances draw from palettes of their own, stored after the world's 256 slots (`WORLD_SLOTS`) in
+the same buffer. World voxels are 8-bit, so they can only name the first 256; instances name a
+`base` of any size.
+
+| method | does |
+|---|---|
+| `addPalette(colors, materials?)` | a new palette; `colors` is RGBA per entry, `materials` optionally 8 floats per entry. Returns the base slot |
+| `setPaletteColors(base, colors, materials?)` | recolour in place: every instance using it changes |
+| `removePalette(base, entries)` | free it; instances still naming it draw garbage colours |
+
+The buffer grows as needed, so a scene is not limited to 255 colours: every species, or every
+placement, can have its own palette, and restyling one (a season, a faction, damage) is one
+`setPaletteColors` call. An instance may also use the world's palette by passing a world `base`.
+
+## From the engine
+
+The engine drives all of this for entities:
+
+- [`makeInstanceLayer(renderer)`](/docs/engine/api/engine/functions/makeInstanceLayer/) uploads
+  each `EntityModel` once (by identity), keeps static placements apart from moving ones and sends
+  both, and its `palettes.of(key, roles, tint?)` makes and caches instance palettes from colour
+  roles.
+- [`makeCrowd({ instances })`](/docs/engine/api/animation/functions/makeCrowd/) places animated
+  members as pose models, with a pose cache and distance LOD.
+
+```ts
+import { makeInstanceLayer } from "@voxolith/engine";
+
+const layer = makeInstanceLayer(renderer);
+const base = layer.palettes.of("oak", tree.model.roles);
+layer.setStatic([{ model: tree.model, x: 120, y: 14, z: 88, yaw: 0.4, base }]);
+layer.commit(); // sends the static and moving sets; cheap to call every frame
+```
+
+`setStatic` takes entity models rather than ids and places each on the model's own anchor.
+
+See [Instances](/docs/engine/instances/) in the engine section for the layer, and
+[Stamping and crowds](/docs/engine/stamping-and-crowds/) for when to stamp instead.

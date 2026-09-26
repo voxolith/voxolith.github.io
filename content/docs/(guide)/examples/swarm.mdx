@@ -1,0 +1,63 @@
+---
+title: swarm
+description: "Hundreds of animated rats through one makeCrowd: a shared pose cache, a bake budget, distance levels of detail, and a live overlay of what it costs."
+---
+
+**[Open the live page](/examples/swarm/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/swarm/main.ts)
+
+<ImageZoom src="/shots/swarm.webp" alt="The swarm example: dozens of rats scattered over a wide meadow" width={960} height={540} />
+
+Three hundred rats on a broad meadow with a few ponds, walking, sniffing and idling. Move the
+cursor over the field, or tap it, and the rats nearby scatter. The overlay reports frames per
+second, CPU time per frame, bakes per frame, the pose cache's hit rate, and how many bricks (and
+kilobytes) are re-uploaded each frame.
+
+## What it shows
+
+- [`makeCrowd`](/docs/engine/api/animation/functions/makeCrowd/) over a
+  [`makeBrickStamper`](/docs/engine/api/engine/functions/makeBrickStamper/): every member is
+  posed from its animator, baked through a shared cache (four variants, the clips' 12 fps, 16
+  headings), stamped, and only the bricks whose rats changed are touched.
+- **A bake budget.** `budgetMs: 5` caps the time spent baking new poses per frame; a rat whose
+  pose did not fit keeps last frame's.
+- **Distance levels of detail.** Within `near` (140 voxels) rats animate at full rate; further
+  out at `farFps` (6) and moved in steps like sprite animation; beyond `freeze` (700) their pose
+  stops changing, though they still move.
+- [`CrowdStats`](/docs/engine/api/animation/interfaces/CrowdStats/) from each `crowd.update`,
+  which feeds the overlay.
+- Picking the ground with `terrain.pick` for the scare point.
+
+## The interesting part
+
+```ts
+const crowd = makeCrowd({ stamper: makeBrickStamper(renderer, { size: SIZE }), near: 140, farFps: 6, freeze: 700, budgetMs: 5 });
+// ...
+const loop = runLoop((now) => {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  for (const r of rats) think(r, dt);
+  const f = frame();
+  stats = crowd.update(rats, f.camPos as [number, number, number]);
+  // ...
+  renderer.render({ ...f, ...sky, time: now / 1000 });
+}, true);
+```
+
+The behaviour (`think`) is the page's own: wander, turn away from water and the edges, run when
+scared. The crowd only animates and stamps.
+
+`bun run --cwd generators/creature bench` in a workspace measures the same costs headlessly.
+
+## URL options
+
+| option | default | effect |
+|---|---|---|
+| `?count=` | 300 | number of rats, 1 to 2000 |
+| `?seed=` | `swarm` | a different meadow and rats |
+
+Plus the [common ones](/docs/examples/#common-url-options), including `?perf`.
+
+Compare with [instances](/docs/examples/instances/), which draws a crowd without writing into
+the world at all. See also [Animation](/docs/manual/animation/) and
+[Performance](/docs/manual/performance/).

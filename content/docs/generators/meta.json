@@ -1,0 +1,23 @@
+{
+  "root": true,
+  "title": "Generators",
+  "description": "Procedural models and the gen-kit toolkit",
+  "icon": "TreePine",
+  "pages": [
+    "index",
+    "using-generators",
+    "scales-and-refinement",
+    "share-codes",
+    "the-contract",
+    "gen-kit",
+    "---Generators---",
+    "tree",
+    "bush",
+    "grass",
+    "rock",
+    "building",
+    "creature",
+    "terrain",
+    "api"
+  ]
+}

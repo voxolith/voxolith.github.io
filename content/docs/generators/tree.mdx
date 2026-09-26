@@ -1,0 +1,83 @@
+---
+title: Trees
+description: "@voxolith/gen-tree: procedural broadleaf and conifer trees, from one pipeline, with bark, twigs and seasonal foliage."
+---
+
+<ImageZoom src="/generators/tree-species.webp" alt="The five tree presets: oak, maple, birch, spruce and pine" width={1560} height={466} />
+
+`@voxolith/gen-tree` grows broadleaf and conifer trees from one pipeline, tuned for tall, detailed
+models (about 192 voxels) where bark texture and single twigs are visible.
+
+```ts
+import { seededRandom } from "@voxolith/renderer/core";
+import { generateTree, PRESETS } from "@voxolith/gen-tree";
+
+const { entity, stats } = generateTree(PRESETS.oak, seededRandom(42));
+// entity.model: a dense, Y-up grid of role indices, anchored at the trunk base
+```
+
+## How it works
+
+<Steps>
+<Step>
+**Skeleton.** Branch polylines with radii are grown before any voxel exists. Children start on
+the parent's axis, so the tree is one connected piece; child radius follows a pipe model, so forks
+conserve visual mass; direction wobble is coherent noise sampled in space.
+</Step>
+<Step>
+**Wood.** Limbs of at least one voxel radius are rasterised as tapered capsules. Thinner twigs walk
+their axis with a 3D DDA, which crosses voxel faces and so stays 6-connected.
+</Step>
+<Step>
+**Bark**, surface only. Furrow frequency scales with the local radius, so the wavelength stays
+constant in voxels as the trunk tapers.
+</Step>
+<Step>
+**Foliage.** Clusters hang off real twigs, not a global envelope, so the crown inherits the
+irregularity of the branching. A shell hollow throws away buried leaves and a macro carve punches
+sky holes.
+</Step>
+<Step>
+**Colour**, scored from how far out, how high and how exposed each leaf is, with accents chosen per
+cluster; then a **prune** keeps the result a single 6-connected component.
+</Step>
+</Steps>
+
+Parameters split into `shape` and `foliage` (which voxels exist) and `look` (which role each voxel
+gets), so a UI can re-run the cheap colour pass while caching the geometry. Everything measured in
+voxels is tuned for a 192-tall tree and scales with `shape.height`.
+
+<ImageZoom src="/generators/tree-seasons.webp" alt="One tree through the four seasons" width={1250} height={897} />
+
+Voxel values are role indices (`bark.dark`, `leaf.edge`, `snow`, ...), so one tree is restyled for a
+season or a biome by palette, without regenerating it. Presets: `oak`, `maple` and `birch` for the
+broadleaf generator, `spruce` and `pine` for the conifer.
+
+## Finer scales
+
+At 50 and 100 voxels per metre the leaves, snow and cones refine from the coarse voxels (each leaf
+voxel becomes a few single leaves, or needles on a conifer, in its own shade), and the wood is
+redrawn from the skeleton: every segment and root as a thin shell of an exact tapered capsule,
+flared at the base and thinner above the trunk than the coarse tree could draw it, taking the role
+of the coarse voxel it falls in (so moss and crevices keep their places) and then fine furrows
+running up the stem. Leaves, blossom, snow and cones are loose roles. See
+[scales and refinement](/docs/generators/scales-and-refinement/).
+
+## Development
+
+```sh
+bun run --cwd generators/tree verify             # connectivity, budget, determinism
+bun run --cwd generators/tree preview species    # also: skeleton, foliage, bark, shell, resolution, seasons
+bun run --cwd generators/tree gen                # bake .vox files into out/
+bun generators/tree/tools/debug.ts oak 100       # per-level skeleton report for tuning
+```
+
+## Broadleaf
+
+<GeneratorReference id="voxolith/tree.broadleaf" />
+
+## Conifer
+
+<GeneratorReference id="voxolith/tree.conifer" />
+
+See the [API reference](/docs/generators/api/gen-tree/) for `generateTree` and the parameter types.

@@ -1,0 +1,103 @@
+---
+title: valley
+description: "The world valley at 100 voxels per metre: refined models drawn as instances, ground streamed in chunks, real-size rats and a lighter phone profile."
+---
+
+**[Open the live page](/examples/valley/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/valley/main.ts)
+
+<ImageZoom src="/shots/valley.webp" alt="The valley example: cottages and houses with tiled and thatched roofs among trees, at 1 cm voxels" width={960} height={540} />
+
+The same valley as the [world](/docs/examples/world/) (terrain, river, village, footpaths,
+forest, from the same `world/layout.ts`), at ten times the resolution: 1 cm voxels, so single
+leaves and needles, bark furrows, bricks, roof tiles and mortar at their real size. At the
+default scale that is a 128 m valley of 12,800 × 1,920 × 12,800 voxels, which does not fit in
+memory at once, so the ground streams in around the view. Rats at their real size roam the
+village.
+
+## What it shows
+
+- **Finer models from the same designs.** Every model is generated with
+  `ctx: { voxelsPerMetre: 100 }` on the generator workers; the generators refine their coarse
+  design rather than generating natively at 1 cm. The results are sparse models (8³ bricks).
+  See [Scales and refinement](/docs/generators/scales-and-refinement/).
+- **Instances.** [`makeInstanceLayer`](/docs/engine/api/engine/functions/makeInstanceLayer/)
+  uploads each model once and places it by reference, at the layout's exact orientation
+  ([`orientationYaw`](/docs/engine/api/engine/functions/orientationYaw/)) and at fractional
+  positions. Nothing is written into the world, and each species, even each house, has a palette
+  of its own (`layer.palettes.of`), outside the world's 256 slots.
+- **Streamed fine terrain.** [`refineTerrain`](/docs/generators/api/gen-terrain/functions/refineTerrain/)
+  turns the coarse terrain into a smooth 1 cm surface with grass blades and pebbles, filled per
+  brick column ([`FineTerrain.columnSpan`](/docs/generators/api/gen-terrain/interfaces/FineTerrain/)) through
+  `renderer.editMany` inside a [`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/)
+  of 256-voxel chunks.
+- **An instanced crowd.** [`makeCrowd({ instances })`](/docs/engine/api/animation/functions/makeCrowd/)
+  draws each rat pose as an instance, so rats glide and turn smoothly.
+- **A phone profile.** A touch-only pointer, or a GPU whose storage bindings are under 512 MiB,
+  gets a lighter valley: 50 voxels per metre, a 2 × 2 tile map, one model per species, 20 rats and
+  the Low quality preset.
+- **A model cache.** Production builds keep the generated models in IndexedDB, keyed by the
+  worker's hashed URL, so a second visit loads in seconds and a new build never reads an old
+  model.
+
+## The interesting part
+
+Scenery is one static list of instances, built from the shared layout and scaled by `K`, the
+factor over the world page's 10 voxels per metre:
+
+```ts
+valley.scatter(0, 0, COARSE.x - 1, COARSE.z - 1, (pt) => {
+  const list = fine.get(pt.key)!;
+  const e = list[pt.variant.index % list.length];
+  const { yaw, mirror } = orientationYaw(pt.variant.orientation);
+  const x = pt.x * K, z = pt.z * K;
+  statics.push({ model: e.model, x, y: ground.heightAt(x + K / 2, z + K / 2) + 1, z, yaw, mirror, base: baseOf(pt.key) });
+  // ...
+}, false);
+layer.setStatic(statics);
+```
+
+and the ground is streamed a brick column at a time, each box only as tall as that column needs:
+
+```ts
+generate(ctx) {
+  const boxes = [];
+  for (let oz = ctx.box.z0; oz <= ctx.box.z1; oz += 8)
+    for (let ox = ctx.box.x0; ox <= ctx.box.x1; ox += 8) {
+      const [y0, y1] = ground.columnSpan(ox, oz);
+      boxes.push({ x0: ox, y0, z0: oz, x1: ox + 7, y1, z1: oz + 7 });
+    }
+  renderer.editMany(boxes, (cells, ox, oy, oz) => ground.fillBrick(cells, ox, oy, oz, terrainBase, topOverride));
+},
+```
+
+A light haze whatever the weather hides the streamed edge at the horizon, and the zoom limit
+keeps the camera inside it.
+
+## Controls
+
+As on the [world](/docs/examples/world/#controls): drag to turn, right-drag or two fingers to
+pan, wheel or pinch to zoom, drag the lamp, double-tap to drop it, N for night and day, W for the
+weather.
+
+## URL options
+
+| option | default (phone) | effect |
+|---|---|---|
+| `?full` | | desktop settings on a phone |
+| `?vpm=` | 100 (50) | voxels per metre: 50 or 100 |
+| `?scale=` | 4 (2) | valley size in 320-voxel tiles of the world page, 1 to 8 |
+| `?variants=` | 3 (1) | models per species, 1 to 10; 10 matches the world page exactly but needs over a gigabyte of GPU memory |
+| `?rats=` | 60 (20) | rats in the crowd, 0 to 400 |
+| `?radius=` | 24 (16) | streamed radius, in metres (at least 8) |
+| `?seed=` | `voxolith` | a different valley |
+| `?season=` | `summer` | `spring`, `summer`, `autumn`, `winter` |
+| `?time=night` | | start at midnight by the lamp |
+| `?weather=` | `clear` | any [`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/) name |
+
+Plus the [common ones](/docs/examples/#common-url-options). The GPU cost is a few hundred MB at
+the defaults; see [Big worlds on phones](/docs/troubleshooting/#big-worlds-on-phones) if it will
+not start.
+
+See also [Instances](/docs/manual/instances/), [Streaming](/docs/manual/streaming/) and
+[Mobile and PWA](/docs/manual/mobile-and-pwa/).

@@ -1,0 +1,127 @@
+---
+title: Deploying
+description: Ship a Voxolith game - HTTPS for WebGPU, the Vite settings the renderer needs, base paths with import.meta.env.BASE_URL, and a GitHub Pages workflow.
+---
+
+A Voxolith game is a static site: HTML, JavaScript and any models you fetch. It can be hosted
+anywhere that serves files over HTTPS. This page covers what the build needs, how to keep URLs
+working under a sub-path, and the GitHub Pages workflow the Voxolith apps use.
+
+## HTTPS
+
+WebGPU only exists in a secure context: HTTPS, or `localhost`. Any real host must serve HTTPS
+(GitHub Pages does), and a dev server you open from another device must too. The Voxolith apps use
+`@vitejs/plugin-basic-ssl`, which serves a self-signed certificate on localhost and the LAN. Without
+WebGPU, `initGpu` throws `WebGPUUnsupportedError`; catch it and call `showUnsupportedScreen` rather
+than leave a blank page.
+
+## Build settings
+
+`@voxolith/renderer` ships raw TypeScript and imports its shaders with Vite's `?raw`, so it is
+compiled with your app:
+
+```ts
+// vite.config.ts
+import { defineConfig } from "vite";
+import basicSsl from "@vitejs/plugin-basic-ssl";
+
+export default defineConfig({
+  // GitHub Pages serves project sites under /<repo>/; the deploy workflow sets BASE_PATH.
+  base: process.env.BASE_PATH ?? "/",
+  plugins: [basicSsl()],
+  // The renderer must be compiled with the app, not pre-bundled.
+  optimizeDeps: { exclude: ["@voxolith/renderer"] },
+  server: { host: true },
+});
+```
+
+In `tsconfig.json`, include `"types": ["@webgpu/types", "vite/client"]`. A multi-page app lists its
+pages in `build.rollupOptions.input`, as the examples do.
+
+## Base paths
+
+A project site on GitHub Pages lives under `/<repo>/`, not at the root, so never hard-code absolute
+URLs. Fetch assets through `import.meta.env.BASE_URL`, which Vite sets from `base`, and link
+between your own pages relatively:
+
+```ts
+const buf = await (await fetch(`${import.meta.env.BASE_URL}models/cat-sit.vox`)).arrayBuffer();
+```
+
+```html
+<a href="../world/">World</a>
+```
+
+Files in `public/` are copied as they are. Service workers and web manifests need the same care:
+register the worker under `import.meta.env.BASE_URL` with that scope, and write the manifest's
+`start_url` and `scope` as `"."` (see [Mobile and PWA](/docs/manual/mobile-and-pwa/)).
+
+## GitHub Pages
+
+The Voxolith apps (viewer, editor, examples, demolition-shot) deploy on every push to `main` with a
+`.github/workflows/pages.yml` that builds with `BASE_PATH=/<repo>/` and publishes `dist/`. The core of
+it, for an app that installs its Voxolith dependencies from npm:
+
+```yaml
+name: Deploy to GitHub Pages
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run build
+        env:
+          BASE_PATH: /${{ github.event.repository.name }}/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+```
+
+Enable Pages for the repository with "GitHub Actions" as the source. Until the packages are on npm,
+the Voxolith apps' workflow also checks out `voxolith/renderer`, `voxolith/engine` and
+`voxolith/generators` next to the app and installs them from a temporary bun workspace root, so
+their `workspace:*` dependencies resolve; copy it from any of the app repositories.
+
+## Caches after a deploy
+
+- Vite hashes asset file names, so browsers pick up new code on the next load.
+- A generator worker's IndexedDB cache is salted with the worker's hashed URL, so a new build never
+  reads a model the old one generated.
+- A service worker should version its cache per build, as Demolition Shot's does with a build id.
+
+## Pitfalls
+
+- A page that works on `localhost` and is blank on Pages almost always fetched `/models/...` from
+  the domain root. Use `import.meta.env.BASE_URL`.
+- Opening the built `dist/index.html` from disk does not work: module scripts and workers do not
+  load from `file://`, and the base path would be wrong anyway. Serve it (`vite preview`).
+- Check `navigator.gpu` support on your players' browsers; there is no WebGL fallback.
+
+## See also
+
+- [Getting started](/docs/getting-started/)
+- [Mobile and PWA](/docs/manual/mobile-and-pwa/)
+- [Renderer: entry points](/docs/renderer/entry-points/)
+- API: [`initGpu`](/docs/renderer/api/renderer/functions/initGpu/),
+  [`showUnsupportedScreen`](/docs/renderer/api/renderer/functions/showUnsupportedScreen/),
+  [`WebGPUUnsupportedError`](/docs/renderer/api/renderer/classes/WebGPUUnsupportedError/)

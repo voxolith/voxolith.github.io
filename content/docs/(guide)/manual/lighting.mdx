@@ -1,0 +1,105 @@
+---
+title: Lighting
+description: Light a Voxolith scene with one directional key light and up to 32 point lights - ranges, shadow rays, glow, emissive voxels and what each costs.
+---
+
+A scene has one directional **key light** (the sun or the moon) plus up to 32 **point lights**
+(lamps, torches, lit windows). The key light and the ambient come in every frame as part of
+`FrameParams`; point lights are a list you upload when they change. This page covers both, how to
+make a lamp glow, and what emissive voxels do and do not do.
+
+## The key light and ambient
+
+`FrameParams` needs these lighting fields on every frame, alongside the camera:
+
+- `lightDir`, `lightColor`: the directional key light, which casts the shadows.
+- `ambientSky`, `ambientGround`: the fill from above and below.
+- `sunDir`, `moonDir`, `sunColor`, `moonColor`, `sunIntensity`, `moonIntensity`, `nightFactor`,
+  `skyTop`, `skyHorizon`: how the sky is painted.
+
+The sun and moon discs only paint the sky; they light nothing. The key light, its colour and the
+ambient do the lighting. Most games do not fill these by hand: `timeOfDay(phase)` from
+`@voxolith/engine/atmosphere` returns all of them for a time of day (0 midnight, 0.5 noon). By day
+the key light follows the sun; at night it becomes a dim blue moonlight and the ambient drops low
+enough for point lights to carry the scene.
+
+```ts
+import { timeOfDay } from "@voxolith/engine/atmosphere";
+
+renderer.render({ ...frame(), ...timeOfDay(0.9) }); // late evening
+```
+
+A game with its own camera-specific day and night can pass its own values instead; the fields are
+plain numbers and vectors. See [Atmosphere and weather](/docs/manual/atmosphere-and-weather/).
+
+## Point lights
+
+```ts
+import type { PointLight } from "@voxolith/renderer";
+
+const lamp: PointLight = { position: [120, 30, 80], color: [1, 0.7, 0.38], intensity: 2.6, range: 90, glow: 3.5 };
+// A soft unshadowed spill, so some light still reaches round a trunk.
+const spill: PointLight = { position: [120, 30, 80], color: [1, 0.75, 0.45], intensity: 0.25, range: 50, shadows: false };
+renderer.setLights([lamp, spill]);
+loop.invalidate();
+```
+
+- `range` is hard, in voxels: past it a light contributes exactly nothing, and the range test comes
+  first, so a pixel no light reaches costs a loop over the list and nothing else. Inside it the
+  light fades smoothly to zero at the edge, with a soft inverse square.
+- `shadows` (default on) traces one shadow ray per pixel towards the light. The ray stops at the
+  light and is capped by the quality preset's `shadowSteps`, so the `low` preset keeps the lights
+  but drops their shadows.
+- `glow` is the radius of a visible halo in voxels, so the lamp itself shows, including against the
+  sky. 0 (the default) draws none.
+- `intensity` multiplies `color` (linear RGB). Metal and glass reflections pick up point lights,
+  unshadowed.
+
+`setLights` replaces the whole list and rewrites a 1.5 KB buffer, so moving a lamp every frame is
+cheap. Lights past `MAX_LIGHTS` (32) are ignored. The renderer does not cull or prioritise: choosing
+the 32 that matter (the nearest to the camera, the ones on screen) is your game's job.
+
+## Emissive voxels
+
+A role or slot with material `{ kind: "emit", emit }` makes a voxel glow in its own colour, whatever
+the lighting. It does **not** light its neighbours. To make a lamp, a lit window or a campfire light
+its surroundings, put a point light at it as well:
+
+```ts
+// litWindows: positions your game recorded when it placed the houses.
+renderer.setLights(litWindows.slice(0, MAX_LIGHTS).map((p): PointLight =>
+  ({ position: p, color: [1, 0.8, 0.5], range: 30, shadows: false })));
+```
+
+Buildings from `@voxolith/gen-building` have an emissive lit-glass role for exactly this, and the
+world example's lamp is a glowing point light with no voxel behind it at all.
+
+## Costs
+
+| what | cost per pixel |
+|---|---|
+| a light out of range | a range test |
+| a light in range, `shadows: false` | a few arithmetic operations |
+| a light in range with shadows | one shadow ray, at most `shadowSteps` long |
+| glow | the closest point of the primary ray to the light |
+
+Big ranges with shadows are what get expensive: every pixel inside the range pays for a ray. Use
+shadowed lights for the few that matter and unshadowed fill lights for the rest.
+
+## Pitfalls
+
+- A render-on-demand app must `loop.invalidate()` after `setLights`.
+- Positions are world voxels. In a world at 100 voxels per metre, a 9 m lamp range is 900 voxels;
+  scale ranges and glow with the world, as the valley example does.
+- At night, point lights carry the scene only if the ambient is low; `timeOfDay`'s
+  `nightAmbient` option sets how dark the night is.
+
+## See also
+
+- [Renderer: lighting](/docs/renderer/lighting/)
+- [Performance](/docs/manual/performance/) for quality presets and `shadowSteps`
+- [Palettes and roles](/docs/manual/palettes-and-roles/) for material hints
+- API: [`PointLight`](/docs/renderer/api/renderer/interfaces/PointLight/),
+  [`FrameParams`](/docs/renderer/api/renderer/interfaces/FrameParams/),
+  [`MAX_LIGHTS`](/docs/renderer/api/renderer/variables/MAX_LIGHTS/),
+  [`timeOfDay`](/docs/engine/api/atmosphere/functions/timeOfDay/)

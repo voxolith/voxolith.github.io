@@ -1,0 +1,131 @@
+---
+title: Animation
+description: Play clips on rigged voxel creatures, bake poses, draw hundreds of them as a crowd on a budget, and wound or sever them.
+---
+
+A rigged entity carries a skeleton and clips. `@voxolith/engine/animation` plays the clips, turns a
+pose into bone matrices, bakes the posed voxel model, and damages the rest model. It is headless and
+pure: getting the posed models into the world is done by a crowd (as instances or stamped into
+bricks), and what the creatures do is your game's behaviour code.
+
+## What a rigged entity has
+
+- `entity.model.bones`: a bone index per voxel, in the rest pose.
+- `entity.rig`: bones (parent, head, tail in model voxels) and a `cover` table that draws flesh a
+  pose uncovers (under a swinging haunch) as fur, so only damage ever shows the inside.
+- `entity.clips`: quaternion tracks per bone at 12 fps, an optional root offset (a bob, a crouch)
+  and events such as footfalls.
+
+`@voxolith/gen-creature` makes rats with a 26-bone rig and the clips `walk`, `turn-left`,
+`turn-right`, `run`, `idle`, `sniff` and `death`, with fat, flesh, bone and organs under the fur.
+For your own generator, gen-kit's `RiggedVolume` binds voxels to bones as you fill them.
+
+## Playing clips
+
+```ts
+import { makeAnimator } from "@voxolith/engine/animation";
+import { generateCreature, PRESETS } from "@voxolith/gen-creature";
+
+const rat = generateCreature(PRESETS.rat, seededRandom(1)).entity;
+const anim = makeAnimator(rat, "walk");
+
+// Each frame:
+for (const ev of anim.update(dt)) if (ev.name.startsWith("foot.")) playPatter();
+if (scared) anim.play("run", { fade: 0.1 }); // crossfade over 0.1 s
+```
+
+`update` returns the events crossed since the last call. `clip()`, `time()` and `finished()` (for
+a non-looping clip such as `death`) tell you where it is.
+
+To get voxels for one pose yourself: `poseMatrices(rig, anim.pose())` gives one rigid matrix per
+bone, and `bakePose(model, rig, matrices, { yaw })` produces the posed model by inverse mapping, so
+rotated limbs stay solid at any angle. It takes under 2 ms for the 3.5k-voxel rat.
+
+## Crowds
+
+For more than a handful, use `makeCrowd`. Each update it picks every member's pose frame (12 fps
+near the camera, `farFps` further out, frozen beyond `freeze`), looks the pose up in a shared cache
+or bakes it within `budgetMs`, and draws the result. It has two ways to draw:
+
+- `instances: layer`: each pose is uploaded once as a model and members are placed at their exact
+  position and heading. Nothing is written into the world, and members glide and turn smoothly.
+  This is the default choice.
+- `stamper: makeBrickStamper(renderer, { size })`: poses are baked per heading bucket and stamped
+  into the world's bricks, restoring what they covered. Use it when members must be part of the
+  world's voxels.
+
+```ts
+import { makeInstanceLayer } from "@voxolith/engine";
+import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
+
+const layer = makeInstanceLayer(renderer);
+const base = layer.palettes.of("rat", rat.model.roles);
+const crowd = makeCrowd({ instances: layer, near: 160, farFps: 6, freeze: 900, budgetMs: 4 });
+
+const members: CrowdMember[] = Array.from({ length: 50 }, (_, i) => ({
+  id: i + 1, entity: rat, variant: "rat", anim: makeAnimator(rat, "walk"), base,
+  x: 100 + i * 6, y: 13, z: 100, yaw: 0, // yaw in radians, 0 facing +z
+}));
+
+// Each frame, after moving members and calling m.anim.update(dt):
+crowd.update(members, camera.camPos); // poses, caches, and commits the layer
+```
+
+A member that falls outside the bake budget keeps last frame's pose, so a burst of new poses never
+stalls a frame. `crowd.cache.stats()` reports hits and misses; the swarm example shows them live.
+
+## Damage
+
+`wound` and `sever` are pure functions on the rest model, so damage follows the creature through
+every pose baked afterwards:
+
+```ts
+import { sever, wound } from "@voxolith/engine/animation";
+import { ROLE } from "@voxolith/gen-creature";
+
+m.rest = wound(m.rest ?? m.entity.model, restPoint, 2.2, { rim: ROLE.BLOOD });
+const { body, piece } = sever(m.rest, m.entity.rig!, bone, { rim: ROLE.BLOOD });
+m.rest = body;
+m.damage = (m.damage ?? 0) + 1;   // so cached poses of the old body are not reused
+m.variant = `rat#${m.id}`;        // this rat no longer looks like the others
+```
+
+`piece` is the cut-off part as its own model and sub-rig, anchored at the cut, for your game to
+throw. What happens next (physics, blood on the ground, death) is game code; the creature example
+shows one way.
+
+## Costs
+
+Measured headless (`bun run --cwd generators/creature bench`: CPU per frame for the crowd update
+and brick edits, not the upload or the draw), stamped rats on a 512 x 512 field at 60 Hz:
+
+| rats | ms/frame | bakes/frame | bricks/frame | upload KB/frame |
+|---|---|---|---|---|
+| 10 | 0.4 | 0.1 | 52 | 15 |
+| 100 | 2.8 | 0.6 | 515 | 145 |
+| 500 | 15.5 | 1.0 | 2347 | 660 |
+| 1000 | 37.9 | 1.2 | 4293 | 1207 |
+
+Past a few hundred stamped members, brick re-encoding dominates; that cost is what instanced crowds
+remove.
+
+## Pitfalls
+
+- The pose cache key is `variant` plus `damage`. Members sharing a variant must look identical;
+  give a damaged member a variant of its own, or two rats with one wound each share poses.
+- Creature presets are stylised: 75 voxels nose to tail at size 1.2, right beside a 10 voxels per
+  metre house. In a world with a real unit, size them with `atScale(PRESETS.rat, voxelsPerMetre)`.
+- If you author creatures: nothing animated thinner than 2 voxels (the tail tip aside), at least 4
+  voxels between joints, and spend the detail on the head. See
+  [Generators: creature](/docs/generators/creature/).
+
+## See also
+
+- [Engine: animation](/docs/engine/animation/) and [stamping and crowds](/docs/engine/stamping-and-crowds/)
+- [Instances](/docs/manual/instances/) and [Picking](/docs/manual/picking/)
+- API: [`makeAnimator`](/docs/engine/api/animation/functions/makeAnimator/),
+  [`makeCrowd`](/docs/engine/api/animation/functions/makeCrowd/),
+  [`CrowdMember`](/docs/engine/api/animation/interfaces/CrowdMember/),
+  [`bakePose`](/docs/engine/api/animation/functions/bakePose/),
+  [`wound`](/docs/engine/api/animation/functions/wound/),
+  [`sever`](/docs/engine/api/animation/functions/sever/)

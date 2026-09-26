@@ -1,0 +1,62 @@
+---
+title: "Tutorial: your first game"
+description: Build Rat Hunt, a small first-person Voxolith game, in seven steps from an empty folder to GitHub Pages. Every step ends in something that runs.
+---
+
+In this tutorial you build **Rat Hunt**: giant rats have got loose in a valley, and you have one
+day to catch them. You walk around in first person, and a tap or a click on a rat catches it.
+The sun crosses the sky while you play; when it sets, the game is over.
+
+The game is small (about 330 lines in one file) but it is a real one: a generated world, keyboard,
+mouse, gamepad and touch controls, lights, animated creatures that react to you, a win and a lose
+condition, and a deployed build. Each step adds one idea and ends with something you can run.
+
+<Steps>
+<Step>
+**[Project setup](/docs/tutorial/project-setup/)**: the workspace, Vite, TypeScript and an HTTPS
+dev server; an empty sky.
+</Step>
+<Step>
+**[A generated valley](/docs/tutorial/terrain/)**: `gen-terrain` ground and ponds, colour roles
+and the palette.
+</Step>
+<Step>
+**[Camera and input](/docs/tutorial/camera-and-input/)**: walk around in first person with
+`makeActions`, `makeLookController` and an on-screen joystick.
+</Step>
+<Step>
+**[Trees and a house](/docs/tutorial/trees-and-a-house/)**: generated models placed into the
+world, on levelled ground.
+</Step>
+<Step>
+**[Day and night](/docs/tutorial/day-and-night/)**: a clock that drives `timeOfDay`, and point
+lights that come on at dusk.
+</Step>
+<Step>
+**[Rats](/docs/tutorial/rats/)**: rigged creatures that wander and flee, a crowd that animates
+them, and picking them with a tap.
+</Step>
+<Step>
+**[Performance and deploying](/docs/tutorial/performance-and-deploying/)**: quality presets,
+adaptive resolution, and a GitHub Actions workflow that publishes to GitHub Pages.
+</Step>
+</Steps>
+
+## Before you start
+
+You need [bun](https://bun.sh) and a browser with WebGPU (see
+[Troubleshooting](/docs/troubleshooting/) if you are not sure). The tutorial assumes you can read
+TypeScript; it does not assume you know anything about voxels or WebGPU.
+
+Everything is measured in voxels. The generators work at **10 voxels per metre**, so the valley
+is 384 voxels (38 m) square, a door is about 20 voxels tall and the player's eye is 17 voxels above
+the ground.
+
+<Callout title="The code">
+  Each step shows what changes and ends with the whole of `src/main.ts` as it stands, folded
+  away. If something does not work, compare yours with that listing. Every listing was
+  type-checked against the current packages.
+</Callout>
+
+If you would rather read finished programs first, the [examples](/docs/examples/) do most of
+what this tutorial does, at larger scale.

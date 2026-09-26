@@ -1,0 +1,173 @@
+---
+title: Storage
+description: "How the renderer stores voxels: 8³ bricks with per-brick palettes, uniform bricks, a two-level index in one buffer, and editing a brick at a time."
+---
+
+A dense grid pays for air. A forest scene is about a tenth solid, so nine tenths of a dense 3D
+texture of it would hold nothing, and at fine voxel sizes a dense valley does not fit in memory at
+all. The renderer therefore keeps the world as **bricks**: 8³ blocks of voxels, stored only where
+something is. This is the standard GPU voxel layout (the leaf size of both GVDB and NanoVDB).
+
+## Voxel values
+
+A world voxel is 8 bits: 0 is empty and 1 to 255 are palette slots. The world's palette is 256
+RGBA entries (`WORLD_SLOTS`), passed as a `Float32Array` of 1024 floats in `RenderScene.palette`
+and replaced with `renderer.updatePalette(palette)`. Instances draw from palettes of their own
+after these 256 (see [Instances](/docs/renderer/instances/)).
+
+Dense arrays, where they exist, are indexed `x + y * sx + z * sx * sy`, Y-up.
+
+## Bricks
+
+<Steps>
+<Step>
+**4-bit bricks.** Each brick carries its own small palette of 15 entries, and each voxel is a
+4-bit index into it (nibble 0 means empty). Measured over a 4 × 4 forest, no 8³ brick anywhere held
+more than 16 distinct values and 98% held 8 or fewer, so 4 bits is almost always enough, and
+halving the voxel payload is worth more than the palette costs. A brick is 64 words of voxels
+plus 8 words of palette.
+</Step>
+<Step>
+**8-bit bricks.** Content that needs more than 15 values in one brick (a detailed `.vox` model, a
+Minecraft region) falls back to a second tier that stores 8 bits per voxel and no palette, 128
+words a brick. This is the same idea as Minecraft's chunk sections, which grow bits per block as a
+section's palette fills. `stats().wide` counts them.
+</Step>
+<Step>
+**Uniform bricks.** A brick holding one value throughout (solid ground, the inside of a wall) is
+kept in its index entry alone, with no payload at all.
+</Step>
+</Steps>
+
+A voxel read on the GPU is: top level, index block, brick entry, 4-bit local index, the brick's
+palette, a global palette slot. A uniform brick answers at the entry.
+
+## The two-level index
+
+A flat per-brick index costs 4 bytes per 512 voxels whether they hold anything or not, which at
+centimetre voxels is gigabytes for a valley. So bricks are grouped into **blocks** of 8³ brick
+entries (64³ voxels, `TOP_B`), and a **top level** holds one entry per block. Only blocks with
+something in them exist.
+
+An empty world of 12800 × 2048 × 12800 voxels costs its top level, about 5 MB; what is resident
+costs its surface. The nulls double as the empty-space skip for rays: a null top entry (with no
+instances in it) skips 64 voxels, a null brick 8. Ray walks look a brick up once as they enter it
+and reuse it for every step inside.
+
+Every index table sits in one storage buffer, in regions: the top levels of the world and of each
+model, index blocks, the per-cell instance lists, instances and models. That keeps the pass
+within the default limit of 8 storage buffers per shader stage. The world's top level is mirrored
+in a small 3D texture as well, since every ray step starts there and texture reads cache better.
+
+<Callout title="Keep the constants in sync">
+`BRICK_B` (8) and `TOP_B` (64) in `src/brick.ts` are duplicated as the WGSL constants `COARSE_B`
+and `TOP_B` in `src/shaders/grid.wesl`. Change both or neither.
+</Callout>
+
+## Filling and editing the world
+
+The renderer's bricks are the source of truth. There are two ways to put voxels in.
+
+### From a dense array
+
+Pass `data` in the [`RenderScene`](/docs/renderer/api/renderer/interfaces/RenderScene/) and the
+renderer builds its bricks from it. After changing the array, call `updateVoxels(data, box?)`:
+with a [`DirtyBox`](/docs/renderer/api/renderer/interfaces/DirtyBox/) (inclusive voxel
+coordinates) only the bricks overlapping it are rebuilt and uploaded. `data` is always the
+full-grid array; the box selects a region of it.
+
+```ts
+data[x + y * size.x + z * size.x * size.y] = 5;
+renderer.updateVoxels(data, { x0: x, y0: y, z0: z, x1: x, y1: y, z1: z });
+```
+
+This suits small scenes, effects and the viewer. A dense copy of a large world is exactly what
+the brick layout exists to avoid.
+
+### A brick at a time
+
+Omit `data` for an empty world and write it through
+[`renderer.edit(box, fill)`](/docs/renderer/api/renderer/classes/Renderer/). `fill` receives each
+overlapping brick's current 512 voxels (local index `lx + ly * 8 + lz * 64`) and its world origin,
+mutates what it wants and returns whether it changed anything. Touched bricks are re-encoded and
+uploaded before `edit` returns. Nothing reads back from a dense array, so a world can be built and
+edited without one ever existing.
+
+```ts
+const renderer = await createRenderer(gpu, { size: SIZE, palette: allocator.buildPalette() });
+renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
+
+// Fill the ground from a generator, one brick at a time.
+renderer.edit(
+  { x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 },
+  (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase),
+);
+```
+
+- `editMany(boxes, fill)` edits many separate boxes (typically single bricks) with one upload at
+  the end. It is what moving things need: a crowd touches a few thousand scattered bricks a frame,
+  and one box around all of them would visit most of the world.
+- `clear(box)` drops every brick fully inside `box` and returns its memory to the pool; bricks only
+  partly covered are edited, so a box off brick boundaries cannot delete a neighbour's content.
+  This is how a streamed chunk leaves the resident set.
+
+The engine builds on these: `blitModelToBricks` stamps an entity through `edit`,
+`makeBrickStamper` moves things through `editMany` and restores what they covered, and the chunk
+streamer loads and frees through `edit` and `clear`. See
+[Stamping and crowds](/docs/engine/stamping-and-crowds/) and
+[Placement and worlds](/docs/engine/placement-and-worlds/).
+
+### The clip box
+
+Rays are clipped to an axis-aligned box. With `data`, it defaults to the occupied bounds scanned at
+construction; without, to the whole grid. A scene whose occupied region grows, or that starts
+empty and fills through `edit`, should call `setClipBounds(min, max)` with the full extent.
+
+## Growth and limits
+
+Brick pools are allocated with headroom and reallocated (and rebound) when content stamped after
+construction outgrows them. A binding larger than the device allows does not fail at creation:
+it makes the bind group invalid, and rendering silently stops. The renderer checks the pools
+against `gpu.limits.maxStorageBufferBindingSize` and reports it with a message that says what to
+do, which is why `initGpu` asks for generous limits.
+
+`renderer.stats()` reports resident voxel memory: bricks in use, how many are 8-bit, the GPU bytes
+held, and `dense`, what the same grid would have cost as one 3D texture.
+
+## CPU-side volumes
+
+### Sparse models
+
+[`SparseVoxels`](/docs/renderer/api/renderer/interfaces/SparseVoxels/) is the CPU form of a model
+too large to hold densely: a `Map` of 8³ bricks keyed `bx + by * bdx + bz * bdx * bdy`, each 512
+values. A tree at 100 voxels per metre is over a gigabyte dense and a few percent of that as
+bricks. `addModel` accepts one directly, and the engine's `EntityModel.sparse` carries one in place
+of dense `data`.
+
+| function | does |
+|---|---|
+| `makeSparse(size)` | an empty volume |
+| `sparseGet(s, x, y, z)`, `sparseSet(s, x, y, z, v)` | read and write a voxel; a brick is created on first write |
+| `sparseFromDense(size, data)`, `sparseToDense(s)` | convert (the dense copy is for small models and tests) |
+| `sparseDims(size)`, `sparseCount(s)` | brick dimensions, solid voxel count |
+
+### BrickGrid and BrickPool
+
+[`BrickGrid`](/docs/renderer/api/renderer/classes/BrickGrid/) and
+[`BrickPool`](/docs/renderer/api/renderer/classes/BrickPool/) are the CPU mirror the renderer
+uploads from, exported for tools and tests: several grids (the world and every instanced model)
+share one pool, which is what lets one GPU buffer serve them all. `BrickGrid.get(x, y, z)` reads a
+voxel back from the sparse form.
+
+### OccupancyGrid and GridStamper
+
+[`OccupancyGrid`](/docs/renderer/api/renderer/classes/OccupancyGrid/) is a CPU occupancy grid of
+`COARSE_B`³ (4³) cells over a dense array, for game logic that wants a coarse "is anything here".
+The shader no longer uses it: the brick index is the empty-space structure, and
+`renderer.updateCoarse` is kept as a no-op for older callers.
+
+[`GridStamper`](/docs/renderer/api/renderer/classes/GridStamper/) composites moving voxels over a
+dense base grid: each `stamp(voxels)` restores the previously stamped region from the base, writes
+the new voxels and returns the union dirty box to pass to `updateVoxels`. Batch every mover into one
+`stamp` call per frame; `writeBase` makes permanent edits (carving, rubble) without a full copy.
+For a world held only as bricks, use the engine's `makeBrickStamper` instead.

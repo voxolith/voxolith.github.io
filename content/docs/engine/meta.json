@@ -1,0 +1,21 @@
+{
+  "root": true,
+  "title": "Engine",
+  "description": "@voxolith/engine: entities, input, animation, worlds",
+  "icon": "Cpu",
+  "pages": [
+    "index",
+    "entities-and-roles",
+    "generator-contract",
+    "share-codes",
+    "placement-and-worlds",
+    "instances",
+    "stamping-and-crowds",
+    "workers",
+    "input",
+    "animation",
+    "atmosphere",
+    "vox",
+    "api"
+  ]
+}

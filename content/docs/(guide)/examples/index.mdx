@@ -1,0 +1,66 @@
+---
+title: Examples
+description: The live Voxolith example pages and apps, from one .vox model to a streamed 100 voxel-per-metre valley, with source and what each shows.
+---
+
+The examples are small, complete programs: each page is one `main.ts` in
+[voxolith/examples](https://github.com/voxolith/examples), running live at
+[voxolith.github.io/examples/](/examples/). They all need a browser with WebGPU. Each page below
+says what the example shows, links the live page and its source, points at the APIs it uses, and
+lists the URL options it reads.
+
+<ImageZoom src="/shots/world.webp" alt="The world example: the whole generated valley from above, a village among the woods" width={960} height={540} />
+
+| example | shows | size |
+|---|---|---|
+| [hello-vox](/docs/examples/hello-vox/) | load a `.vox` model and draw it with a turning camera | ~35 lines |
+| [orbit](/docs/examples/orbit/) | a voxel grid written by hand, an orbit camera, rendering on demand | ~55 lines |
+| [minecraft-region](/docs/examples/minecraft-region/) | drop a Minecraft `.mca` region and fly through it in first person | ~85 lines |
+| [world](/docs/examples/world/) | a generated valley: terrain, river, village, forest, a lamp to carry, day and night, weather | ~470 lines + layout |
+| [valley](/docs/examples/valley/) | the same valley at 100 voxels per metre: refined models as instances, streamed ground, rats | ~450 lines |
+| [creature](/docs/examples/creature/) | rigged, animated rats you can wound and dismember with a tap | ~375 lines |
+| [swarm](/docs/examples/swarm/) | hundreds of animated rats through one crowd, with a live cost overlay | ~150 lines |
+| [instances](/docs/examples/instances/) | trees and a crowd drawn by reference, nothing written into the world | ~145 lines |
+
+If you are new, read them in that order: each builds on ideas from the ones before. The
+[tutorial](/docs/tutorial/) walks through most of the same ground one step at a time.
+
+## Running them locally
+
+```sh
+git clone https://github.com/voxolith/examples
+```
+
+Clone it into a workspace with the renderer, engine and generators, as in
+[Installation](/docs/getting-started/installation/), add `"examples"` to the workspace list, then:
+
+```sh
+bun install
+bun run --cwd examples dev
+```
+
+Open the `https://localhost:5173` URL and pick an example from the landing page.
+
+## Common URL options
+
+Every example reads a few options through the shared startup code (`src/shared/boot.ts`):
+
+| option | effect |
+|---|---|
+| `?diag` | show the adapter, the 3D texture limit and the storage binding limit in the page |
+| `?perf` | where the example uses `makePerf`: show the frame-time and render-scale overlay |
+| `?e2e` | expose test hooks on `window` for the end-to-end input checks; not for normal use |
+
+GPU validation errors and a lost device are shown in the page too, since a phone has no console.
+
+## Apps
+
+Larger programs built on the same packages, each in its own repository:
+
+- **[Viewer](/viewer/)**: open MagicaVoxel `.vox` files and Minecraft `.mca` regions, or build
+  models from the generators and share them as codes. [Source](https://github.com/voxolith/viewer)
+- **[Demolition Shot](/demolition-shot/)**: aim, release, watch it crumble. A mobile demolition
+  game and installable PWA, the engine's showcase. [Source](https://github.com/voxolith/demolition-shot)
+- **[Editor](/editor/)**: a voxel editor, in its early days. [Source](https://github.com/voxolith/editor)
+
+<ImageZoom src="/shots/demolition-shot.webp" alt="Demolition Shot: a brick tower on a checkered field, the slingshot in the foreground" width={960} height={540} />

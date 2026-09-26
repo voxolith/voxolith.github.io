@@ -1,0 +1,114 @@
+---
+title: Performance
+description: Keep a Voxolith game fast - render on demand, choose quality presets, cap resolution, adapt the render scale, spot software adapters and budget load time.
+---
+
+A raymarcher redraws every pixel every frame, so its cost is set by how many pixels you draw, how
+far each ray may walk, how often you draw at all, and how long the world takes to build. Voxolith
+keeps those knobs in the engine rather than in each app, so a game only has to offer UI for them.
+This page goes through them in order of how much they usually save.
+
+## Render on demand
+
+The biggest saving is not drawing. `makeFrameLoop` only schedules a frame when something asked for
+one, so a still scene costs nothing:
+
+```ts
+import { makeFrameLoop, makePerf, observeResize, resizeToDisplay } from "@voxolith/renderer";
+
+const perf = makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.35 });
+const loop = makeFrameLoop({
+  render(now) {
+    perf.frame(now);
+    gpu.renderScale = perf.scale();
+    resizeToDisplay(gpu);
+    renderer.render({ ...frame(), ...lighting });
+  },
+});
+observeResize(canvas, loop);                 // viewport changes
+const input = createInput(canvas, { loop }); // every input event
+loop.invalidate();
+```
+
+- `loop.invalidate()` requests one frame (coalesced). Call it after any change to the camera, the
+  scene, the palette or the lights. The input, orbit controller and `observeResize` do it for you.
+- `loop.setContinuous(true)` only while something animates: water on screen, weather, a crowd,
+  an effect. Turn it off when that stops. The frame rate is capped at 60 by default (`maxFps`).
+
+## Quality presets
+
+`renderer.setQuality` sets three per-frame knobs, all runtime uniforms, so changing them is free:
+
+| preset | `maxSteps` | `shadowSteps` | `ao` |
+|---|---|---|---|
+| `low` | 256 | 0 (no shadows, no point-light shadows) | off |
+| `medium` | 512 | 48 | on |
+| `high` | 768 | 90 | on |
+
+`low` is roughly two to three times cheaper per pixel than `high`. Pass a preset name or a partial
+object. A large world may need a longer primary walk than a preset gives, or distant ground is
+clipped: the world example multiplies `maxSteps` by its size, and the valley sets 2048.
+
+Offer the presets in a select and store the choice under `voxolith-quality`, as the apps do. On a
+software adapter, start on `low`.
+
+## Resolution
+
+Rays per frame scale with the square of the render scale and the pixel ratio.
+
+- `initGpu(canvas, { maxPixelRatio: 1 })` caps HiDPI; a phone at pixel ratio 3 draws nine times the
+  pixels of the same screen at 1.
+- `makePerf` adapts `gpu.renderScale` between `minScale` and `maxScale` to hit `targetMs` (16.7 by
+  default). `perf.setScale()` or `setRenderScale()` pins it.
+- `makePerf` learns a ceiling: a scale that proved too slow is not retried for `retryAfterMs`
+  (30 s). Under vsync a frame that fits reads the same as one with room to spare, so a naive
+  controller hunts and visibly resamples a still image. A scene that renders continuously with a
+  still camera (water, weather) should pass `retryAfterMs: Infinity` and call `perf.reprobe()` when
+  the view moves, as the world example does from the orbit's `onChange`.
+- Frame gaps over `maxSampleMs` (250 ms) are treated as idle. A continuously rendered scene that may
+  be slower than that must raise it, or the controller never sees a sample.
+- `?perf` in the examples shows the overlay: frame time, fps, scale and a label.
+
+## Software adapters
+
+`gpu.software` is true for CPU WebGPU implementations (SwiftShader, llvmpipe, lavapipe, fallback
+adapters), and `gpu.adapterInfo` is what the browser reported. Warn the player and start on `low`
+with a small render scale; a CPU adapter can take seconds over one full-size frame before the scale
+controller reacts. If a capable GPU shows as software, the browser is not using it.
+
+On Linux Chrome, a hardware adapter can still be slow when `chrome://gpu` lists
+`webgpu_on_vk_via_gl_interop` as disabled: each frame is copied through the CPU. Enabling Vulkan
+fixes it; see [Troubleshooting](/docs/troubleshooting/).
+
+## Scene costs
+
+- **Lights**: a pixel out of every light's range pays only range tests; a shadowed light in range
+  costs one shadow ray per pixel. See [Lighting](/docs/manual/lighting/).
+- **Atmosphere**: fog and clouds are a few operations per pixel, precipitation 8 hash samples, snow
+  shelter one short ray per upward pixel while there is cover.
+- **Instances**: compiled out until the first is placed. A static set costs once; a dynamic set
+  costs its members and the cells they touch each commit.
+- **Edits**: each touched brick is re-encoded on the CPU and uploaded. Past a few hundred stamped
+  animated members, that dominates; instanced crowds avoid it.
+- **Memory**: `renderer.stats()` and `renderer.instanceStats()` report GPU bytes. Mobile GPUs often
+  cap a storage binding far below desktop ones.
+
+## Load time
+
+Generation was 89.6% of the examples' forest build time, placement 2%. In order:
+
+1. Generate fewer models: a [variant pool](/docs/manual/using-generators/) of a few per species,
+   each placed in eight orientations or at any yaw as an instance.
+2. Generate on [workers](/docs/manual/workers-and-caching/), and cache the results in IndexedDB.
+3. Build only what is near the camera with a [chunked world](/docs/manual/streaming/), and show the
+   page once the middle of the view is in.
+
+## See also
+
+- [Renderer: quality and performance](/docs/renderer/quality-and-performance/)
+- [Mobile and PWA](/docs/manual/mobile-and-pwa/)
+- API: [`makeFrameLoop`](/docs/renderer/api/renderer/functions/makeFrameLoop/),
+  [`makePerf`](/docs/renderer/api/renderer/functions/makePerf/),
+  [`PerfOptions`](/docs/renderer/api/renderer/interfaces/PerfOptions/),
+  [`QUALITY_PRESETS`](/docs/renderer/api/renderer/variables/QUALITY_PRESETS/),
+  [`GpuOptions`](/docs/renderer/api/renderer/interfaces/GpuOptions/)

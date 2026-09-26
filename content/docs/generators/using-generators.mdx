@@ -1,0 +1,177 @@
+---
+title: Using generators
+description: Calling a generator directly or through the engine registry, presets and parameter specs, placing the result, and generating off the main thread.
+---
+
+A generator package offers the same model two ways: a direct function with a typed parameter
+object, and `EntityGenerator` objects that the engine's registry, the viewer, workers and share
+codes drive by id. Both are pure: the result depends only on the parameters and the rng.
+
+## Direct calls
+
+Each package exports `generate<Name>(params, rng, id?, ctx?)`, its `PRESETS` and `PRESET_NAMES`,
+and `cloneParams`. The result is the entity plus stats (voxel counts and timings, different per
+generator):
+
+```ts
+import { seededRandom } from "@voxolith/renderer/core";
+import { generateRock, PRESETS, cloneParams } from "@voxolith/gen-rock";
+
+const p = cloneParams(PRESETS.boulder);
+p.shape.size = 64;
+p.look.moss = 0.6;
+
+const { entity, stats } = generateRock(p, seededRandom(7), "boulder-1");
+entity.model.size;   // tight Y-up box
+entity.model.anchor; // bottom centre, raised by shape.sink
+stats.ms;
+```
+
+`rng` is any `() => number` in [0, 1); `seededRandom(seed)` from `@voxolith/renderer/core` is the
+one the engine uses, so a seed means the same thing everywhere. Generators never mutate the
+parameters they are given, so a preset can be passed as is. The `id` becomes `entity.id`; `ctx`
+asks for a finer scale (see [scales and refinement](/docs/generators/scales-and-refinement/)).
+
+| package | function | presets |
+|---|---|---|
+| `@voxolith/gen-tree` | `generateTree` | `oak`, `maple`, `birch`, `spruce`, `pine` |
+| `@voxolith/gen-bush` | `generateBush` | `bush`, `thicket`, `bramble`, `flowering`, `hedge` |
+| `@voxolith/gen-grass` | `generateGrass` | `grass`, `meadow`, `reeds`, `fern`, `dry` |
+| `@voxolith/gen-rock` | `generateRock` | `boulder`, `sandstone`, `basalt`, `limestone`, `mossy`, `outcrop`, `pebbles` |
+| `@voxolith/gen-building` | `generateBuilding` | `cottage`, `farmhouse`, `townhouse`, `tower`, `barn` |
+| `@voxolith/gen-creature` | `generateCreature(params, rng, id?)` | `rat`, `grey rat`, `lab rat`, `black rat`, `fat rat` |
+
+The terrain is different: it describes a region, not an entity. See
+[terrain](/docs/generators/terrain/).
+
+## The registry
+
+Each package also exports `register<Name>Generators()`, which adds its generators to the engine
+registry. After that, anything can generate by id without importing the package:
+
+```ts
+import { getGenerator, listGenerators } from "@voxolith/engine";
+import { registerTreeGenerators } from "@voxolith/gen-tree";
+import { registerRockGenerators } from "@voxolith/gen-rock";
+import { seededRandom } from "@voxolith/renderer/core";
+
+registerTreeGenerators();
+registerRockGenerators();
+
+for (const gen of listGenerators()) console.log(gen.id, gen.version, gen.params.length);
+
+const outcrop = getGenerator("voxolith/outcrop")!;
+const entity = outcrop.generate(outcrop.defaults, seededRandom(3));
+```
+
+An [`EntityGenerator`](/docs/engine/api/engine/interfaces/EntityGenerator/) carries what a host
+needs to know without the parameter type:
+
+- `id` (namespaced and stable, `voxolith/tree.broadleaf`) and `version` (bumped when output
+  changes for the same input, so caches can be invalidated);
+- `roles`, every role it can emit, in voxel-value order;
+- `defaults` and `params`, a list of [`ParamSpec`](/docs/engine/api/engine/type-aliases/ParamSpec/)s:
+  a dotted `path` into the parameter object, a `label`, a `kind` (`number` with `min`, `max` and
+  `step`, `int`, `bool` or `enum` with `options`), and an optional `group` and `help`;
+- `scales`, the finer voxels-per-metre it supports, and `looseRoles`, the roles allowed to float
+  at those scales.
+
+Several generators of one package share a parameter type and differ in their defaults:
+`voxolith/thicket` is `voxolith/bush` starting from the `thicket` preset, and
+`voxolith/townhouse` is `voxolith/house` starting from `townhouse`. A preset that a generator does
+not start from is still reachable by passing it as the parameters.
+
+`registerGenerator` throws if the id is already registered, so register each package once per
+thread. `clearGenerators` exists for tests and hot reload.
+
+## Parameter specs drive UIs
+
+The specs are the public surface of a generator: what the viewer shows as sliders and what a
+[share code](/docs/generators/share-codes/) carries. Anything not declared as a spec is part of
+the preset. `getParam` and `withParam` read and write a dotted path, the second without mutating:
+
+```ts
+import { clampToSpec, getParam, readParams, withParam } from "@voxolith/engine";
+
+const gen = getGenerator("voxolith/rock")!;
+for (const { spec, value } of readParams(gen, gen.defaults)) console.log(spec.path, value);
+
+const spec = gen.params.find((s) => s.path === "shape.roughness")!;
+const params = withParam(gen.defaults, spec.path, clampToSpec(spec, 0.137)); // snaps to 0.14
+```
+
+`clampToSpec` clamps to the range and snaps a `number` to its `step`, exactly as a share code
+would store it. Each generator page lists its specs, defaults and presets in full.
+
+## Placing the result
+
+An entity is a model of role indices. To stamp it into the world, give its roles a slot range in
+the world palette and write `base + r - 1`:
+
+```ts
+import { PaletteAllocator, blitModel } from "@voxolith/engine";
+
+const palette = new PaletteAllocator();
+const { base } = palette.allocateFor(entity);        // keyed by entity.kind: clones share slots
+blitModel(world, entity.model, { x: 64, y: 0, z: 64 }, base);
+renderer.updatePalette(palette.buildPalette());
+```
+
+Large or repeated models, and every model at a finer scale (which is sparse), are drawn as
+instances instead: `renderer.addModel` once, then `setInstances` with a palette of their own, so
+they cost nothing of the world's 256 slots. See [instances](/docs/engine/instances/) and
+[placement and worlds](/docs/engine/placement-and-worlds/).
+
+## A few models, placed many times
+
+Generation dominates the build time of a large scene, not placement. `makeVariantPool` generates
+`count` models lazily and hands each out in any of eight axis-aligned orientations, so a dozen
+models give about a hundred silhouettes:
+
+```ts
+import { makeVariantPool } from "@voxolith/engine";
+
+const oaks = makeVariantPool({
+  count: 12,
+  make: (i) => generateTree(PRESETS.oak, seededRandom(1000 + i), `oak-${i}`).entity,
+});
+const { entity, orientation } = oaks.pick(rng);
+```
+
+Vary something by index (height, age, seed) so the pool is not twelve copies of one tree.
+
+## Off the main thread
+
+Generation is CPU-heavy and never touches the DOM, so it belongs in a worker. Register the
+generators in the worker and serve them; the main thread asks by id:
+
+```ts
+// gen.worker.ts
+import { registerTreeGenerators } from "@voxolith/gen-tree";
+import { registerRockGenerators } from "@voxolith/gen-rock";
+import { serveGenerators } from "@voxolith/engine/worker";
+
+registerTreeGenerators();
+registerRockGenerators();
+serveGenerators({ cache: import.meta.env.DEV ? undefined : "voxolith-models" });
+```
+
+```ts
+// main thread
+import { makeGeneratorPool } from "@voxolith/engine/worker";
+
+const pool = makeGeneratorPool({
+  spawn: () => new Worker(new URL("./gen.worker.ts", import.meta.url), { type: "module" }),
+});
+const oak = await pool.generate({ generator: "voxolith/tree.broadleaf", params: PRESETS.oak, seed: 42, ctx: { voxelsPerMetre: 100 } });
+```
+
+The optional IndexedDB cache is salted with the worker's URL, which a production build hashes, so a
+new build never reads a model made by older generator code. See [workers](/docs/engine/workers/).
+
+## Baking to files
+
+Every generator package has a `gen` script that bakes each preset to MagicaVoxel `.vox` in its
+`out/` folder (`bun run --cwd generators/rock gen`; `bun run gen` from the workspace root runs them
+all). The files carry the roles as the palette; `entityFromVox` reads them back as entities. See
+[vox](/docs/engine/vox/).

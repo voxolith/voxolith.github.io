@@ -1,0 +1,246 @@
+---
+title: "1. Project setup"
+description: "Rat Hunt, step 1: a bun workspace with the Voxolith repos, a Vite app with TypeScript and HTTPS, and a first frame of empty sky."
+---
+
+In this step you create the project and draw the first frame: an empty world under a morning sky.
+It is not much to look at, but it proves the whole chain works: bun, Vite, TypeScript, WebGPU
+and the renderer.
+
+## The workspace
+
+The Voxolith packages are not on npm yet, so the game lives in a bun workspace next to checkouts
+of the three library repos (see [Installation](/docs/getting-started/installation/) for why).
+
+```sh
+mkdir voxolith && cd voxolith
+git clone https://github.com/voxolith/renderer
+git clone https://github.com/voxolith/engine
+git clone https://github.com/voxolith/generators
+mkdir -p rat-hunt/src
+```
+
+When you have finished this step, the folder looks like this:
+
+<Files>
+  <Folder name="voxolith" defaultOpen>
+    <File name="package.json" />
+    <Folder name="renderer" />
+    <Folder name="engine" />
+    <Folder name="generators" />
+    <Folder name="rat-hunt" defaultOpen>
+      <File name="index.html" />
+      <File name="package.json" />
+      <File name="tsconfig.json" />
+      <File name="vite.config.ts" />
+      <Folder name="src" defaultOpen>
+        <File name="main.ts" />
+        <File name="style.css" />
+      </Folder>
+    </Folder>
+  </Folder>
+</Files>
+
+The workspace root lists every package folder:
+
+```json title="voxolith/package.json"
+{
+  "name": "rat-hunt-workspace",
+  "private": true,
+  "workspaces": ["renderer", "engine", "generators/*", "rat-hunt"]
+}
+```
+
+## The app
+
+The game uses the renderer, the engine and four generators. Declare them all now, so you only
+install once:
+
+```json title="rat-hunt/package.json"
+{
+  "name": "rat-hunt",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@voxolith/renderer": "workspace:*",
+    "@voxolith/engine": "workspace:*",
+    "@voxolith/gen-terrain": "workspace:*",
+    "@voxolith/gen-tree": "workspace:*",
+    "@voxolith/gen-building": "workspace:*",
+    "@voxolith/gen-creature": "workspace:*"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "@webgpu/types": "^0.1.74",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}
+```
+
+```ts title="rat-hunt/vite.config.ts"
+import { defineConfig } from "vite";
+import basicSsl from "@vitejs/plugin-basic-ssl";
+
+export default defineConfig({
+  // GitHub Pages serves the game under /<repo>/; step 7 sets BASE_PATH.
+  base: process.env.BASE_PATH ?? "/",
+  // WebGPU needs a secure context, also on a phone on the LAN.
+  plugins: [basicSsl()],
+  server: { host: true },
+  // The renderer ships TypeScript with `?raw` shader imports: compile it with the app.
+  optimizeDeps: { exclude: ["@voxolith/renderer"] },
+});
+```
+
+```json title="rat-hunt/tsconfig.json"
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["@webgpu/types", "vite/client"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true,
+    "noEmit": true
+  },
+  "include": ["src"]
+}
+```
+
+Install from the workspace root, not from `rat-hunt/`, so the `workspace:*` links resolve:
+
+```sh
+bun install
+```
+
+## The page
+
+The page is a full-window canvas with a small heads-up display on top. The HUD elements
+(`#status`, `#quality`, `#message`, `#crosshair`) are used in later steps; putting them in now
+means you will not touch this file again.
+
+```html title="rat-hunt/index.html"
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Rat Hunt</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene"></canvas>
+      <div id="crosshair"></div>
+      <div id="hud">
+        <span id="status">loading…</span>
+        <select id="quality" aria-label="Quality">
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+      <div id="message" hidden></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
+```
+
+```css title="rat-hunt/src/style.css"
+:root {
+  --bg: #10141f;
+  --panel: rgba(16, 20, 31, 0.72);
+  --text: #eef0f4;
+}
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+#app { position: fixed; inset: 0; }
+#scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#hud { position: absolute; top: 12px; left: 12px; display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-radius: 8px; background: var(--panel); }
+#crosshair { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px; border-radius: 50%; background: var(--text); opacity: 0.7; pointer-events: none; }
+#message { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); padding: 16px 20px; border-radius: 10px; background: var(--panel); font-size: 18px; text-align: center; }
+```
+
+## The first frame
+
+```ts title="rat-hunt/src/main.ts"
+// Rat Hunt: catch the giant rats in the valley before night falls.
+import {
+  createRenderer,
+  initGpu,
+  makeCamera,
+  makeFrameLoop,
+  observeResize,
+  resizeToDisplay,
+  showUnsupportedScreen,
+  WebGPUUnsupportedError,
+} from "@voxolith/renderer";
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import "./style.css";
+
+const canvas = document.getElementById("scene") as HTMLCanvasElement;
+
+// --- WebGPU -------------------------------------------------------------------
+const gpu = await initGpu(canvas).catch((err: unknown) => {
+  if (err instanceof WebGPUUnsupportedError) showUnsupportedScreen(err.message, { appName: "Rat Hunt" });
+  throw err;
+});
+
+// --- an empty world ---------------------------------------------------------------
+const SIZE = { x: 384, y: 128, z: 384 };
+const renderer = await createRenderer(gpu, { size: SIZE, palette: new Float32Array(256 * 4) });
+renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
+
+const camera = makeCamera({ target: [SIZE.x / 2, 20, SIZE.z / 2], distance: 420, pitchDeg: 30, fovDeg: 45 });
+const sky = atmosphereFrame(timeOfDay(0.35), ATMOSPHERES.clear);
+
+// --- the loop ------------------------------------------------------------------------------
+const loop = makeFrameLoop({
+  render() {
+    resizeToDisplay(gpu);
+    renderer.render({ ...camera(30), ...sky });
+  },
+});
+observeResize(canvas, loop);
+loop.invalidate();
+```
+
+What this does:
+
+- **`initGpu(canvas)`** opens WebGPU on the canvas. If the browser cannot, it throws a
+  `WebGPUUnsupportedError` and `showUnsupportedScreen` replaces `#app` with an explanation, which
+  is far kinder than a blank page.
+- **`createRenderer(gpu, { size, palette })`** makes a renderer for a world of 384 × 128 × 384
+  voxels. There are no voxels yet (no `data`), and the palette is 256 empty colours.
+  `setClipBounds` tells the renderer the whole box is in use, since it cannot infer that from an
+  empty world.
+- **`makeCamera`** gives a function that turns a yaw (in degrees) into the camera fields a frame
+  needs.
+- **`timeOfDay(0.35)`** is the lighting for mid-morning: 0 is midnight, 0.25 sunrise, 0.5 noon,
+  0.75 sunset. `atmosphereFrame` adds the weather to it, here `ATMOSPHERES.clear`.
+- **`makeFrameLoop`** calls `render` when a frame is needed. Nothing moves yet, so it renders
+  once (`loop.invalidate()`) and again whenever the canvas is resized (`observeResize`).
+
+## Run it
+
+```sh
+bun run --cwd rat-hunt dev
+```
+
+Open the `https://localhost:5173` URL that Vite prints and accept the self-signed certificate.
+You should see a blue sky fading to a pale horizon, and the HUD saying "loading…". To try it on
+a phone, open the `https://192.168...` network URL instead.
+
+If the page says WebGPU is unavailable, see [Troubleshooting](/docs/troubleshooting/).
+
+**Next:** [a generated valley](/docs/tutorial/terrain/).

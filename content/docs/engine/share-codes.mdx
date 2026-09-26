@@ -1,0 +1,82 @@
+---
+title: Share codes
+description: "How @voxolith/engine packs a generator id, version, parameters and seed into a short base64url code that rebuilds a model, and why stale codes fail."
+---
+
+A generator, its parameters and a seed are a complete description of one model: generation is
+pure and takes all its randomness from the injected rng, so the same three always rebuild the same
+voxels. A **share code** packs those three into a short string that can go in a URL or a chat and
+be turned back into the model on the other side. The [viewer](/viewer/) shows one for every model
+it generates.
+
+```ts
+import { decodeState, encodeState, fingerprint, generateFromState, getGenerator } from "@voxolith/engine";
+
+const gen = getGenerator("voxolith/tree.broadleaf")!;
+const code = encodeState(gen, { seed: 42, params: gen.defaults });
+
+// elsewhere, with the same generators registered:
+const state = decodeState(code);            // { generator, version, seed, params }
+const entity = generateFromState(state);    // same voxels
+const name = fingerprint(code);             // "3fa2c81b9e04", for filenames and caches
+```
+
+## A code, not a hash
+
+A hash is one-way: it could name a model but not rebuild one, which would need a server holding
+every model anyone had made. The code is the model's recipe, so nothing needs storing.
+[`fingerprint(code)`](/docs/engine/api/engine/functions/fingerprint/) is there separately for the
+naming-and-comparing job: a short stable string for filenames, caches and "is this the same
+tree?", one-way like any hash.
+
+## What it carries
+
+The code is base64url over a small byte layout:
+
+| field | encoding |
+|---|---|
+| format version | one byte (currently 1) |
+| generator id | length-prefixed UTF-8 |
+| generator version | length-prefixed UTF-8 |
+| schema hash | two bytes, a hash of the parameter layout |
+| seed | LEB128 varint |
+| each declared parameter, in declaration order | LEB128 varint |
+
+Only the generator's declared `params` travel, and decoding starts from the generator's
+`defaults`, so the code covers exactly what a UI can show and a person can tweak. Anything not
+declared as a [`ParamSpec`](/docs/engine/api/engine/type-aliases/ParamSpec/) is part of the preset
+and comes from the defaults on the other side.
+
+Values are quantised by their spec: a `number` is stored as a count of `step`s from `min` (1000
+steps across the range when the spec has no `step`), an `int` as its offset from `min`, a `bool` as
+0 or 1, an `enum` as its option index. Most take one byte.
+[`clampToSpec(spec, value)`](/docs/engine/api/engine/functions/clampToSpec/) is the same clamp and
+snap applied on its own, and rounds to the step's own precision so encoding and decoding are
+exactly stable (no `0.30000000000000004`). Since a value is snapped on the way in, a UI should
+snap its sliders the same way, or the shared model will differ slightly from the one on screen.
+
+## Refusing, not guessing
+
+A code is a positional list, so a generator that gains, loses or reorders a parameter can no
+longer read old codes. The two-byte **schema hash** covers each spec's path, kind and enum options;
+[`decodeState`](/docs/engine/api/engine/functions/decodeState/) compares it with the registered
+generator's and throws when they differ, naming both versions, rather than silently rebuilding a
+different model. A version change alone does not break a code: the version is carried for
+information, and the layout decides.
+
+`decodeState` also throws when the generator is not registered (it needs its defaults) or the
+string is not a valid code.
+
+## The functions
+
+- [`encodeState(gen, { seed, params })`](/docs/engine/api/engine/functions/encodeState/): the code.
+- [`decodeState(code)`](/docs/engine/api/engine/functions/decodeState/): a
+  [`GeneratorState`](/docs/engine/api/engine/interfaces/GeneratorState/), `{ generator, version, seed, params }`.
+- [`generateFromState(state, id?, ctx?)`](/docs/engine/api/engine/functions/generateFromState/):
+  builds the model with `seededRandom(state.seed || 1)`; `ctx` asks for a finer scale, which does
+  not change the code.
+- [`readParams(gen, params)`](/docs/engine/api/engine/functions/readParams/): every declared
+  parameter with its current value, for building an editor.
+
+The generators' side of this, including why defaults must sit on the step grid, is in
+[Share codes](/docs/generators/share-codes/) under Generators.

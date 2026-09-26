@@ -1,0 +1,106 @@
+---
+title: Rocks
+description: "@voxolith/gen-rock: boulders, outcrops and pebbles from fractured, noise-displaced superellipsoids, with strata, cracks, moss, lichen and snow."
+---
+
+<ImageZoom src="/generators/rock-species.webp" alt="The seven rock presets: boulder, sandstone, basalt, limestone, mossy, outcrop and pebbles" width={820} height={790} />
+
+`@voxolith/gen-rock` makes rocks. A rock is a noise-displaced superellipsoid, round, blocky or
+slab-like, cleaved along a few fracture planes, with a surface pass that hands out mottled tones,
+sedimentary strata on a tilted bedding plane, cracks, moss on the upward faces, lichen, a damp band
+at the base and optional snow. `outcrop` tumbles smaller rocks against a main mass, kept as one
+connected piece.
+
+```ts
+import { seededRandom } from "@voxolith/renderer/core";
+import { generateRock, PRESETS } from "@voxolith/gen-rock";
+
+const { entity, stats } = generateRock(PRESETS.boulder, seededRandom(42));
+// stats.rocks, stats.moss, stats.cracks; the anchor is the base centre, raised by shape.sink
+```
+
+It is the template for every solid-mass generator: see
+[writing a generator](/docs/generators/gen-kit/writing-a-generator/).
+
+## How it works
+
+<Steps>
+<Step>
+**Mass.** The main rock is a [`blob`](/docs/generators/api/gen-kit/gen-kit/functions/blob/) with
+half-extents from `size`, `aspect` (height) and `elongation` (depth). `exponent` picks the family:
+2 round, 4 a rounded block, 8 nearly cubic. `roughness` and `detail` set the bumps; `grit` adds a
+voxel or so of fine texture, which breaks the contour terraces bumps leave on shallow slopes.
+</Step>
+<Step>
+**Fractures.** [`facet`](/docs/generators/api/gen-kit/gen-kit/functions/facet/) cleaves the
+mass along `facets` planes, each removing up to `facetDepth` of it. A lumpy ellipsoid reads as a
+potato; flat breaks meeting at hard edges read as stone. 0 leaves a water-worn cobble. The voxels on
+each fracture face are tagged, so each break can take one even tone.
+</Step>
+<Step>
+**Extras.** With `cluster` above 0, smaller rocks (`clusterScale` of the main one, with a random
+spread) are placed touching it on the same floor, so the group reads as fallen together. Each rock
+is shaped and fractured in its own scratch volume and then unioned in, so one rock's planes never
+slice its neighbour, and the overlap keeps the whole one piece.
+</Step>
+<Step>
+**Surface.** Every surface voxel is given a role from a snapshot, so no decision reads a neighbour
+already repainted: light, mid and dark tones from two scales of value noise (`mottle`), one tone
+per fracture face a notch lighter than weathered stone, darker undersides and crevices, `strata`
+bands along a plane tilted by `strataTiltDeg`, thin `cracks` where a signed noise field crosses
+zero, a damp band at the base (`wet`), lichen patches (`lichen`), moss on upward faces, denser
+low down (`moss`), and snow on top faces with clear sky above (`snow`).
+</Step>
+<Step>
+**Anchor** at the bottom centre, raised by `sink` of the height from the rock's real bottom, so the
+rock sits in the ground rather than on it. The interior stays the mid tone: the renderer never sees
+it, but a game that breaks a rock open will.
+</Step>
+</Steps>
+
+Parameters split into `shape` (which voxels exist) and `look` (which role each surface voxel gets).
+The stone skin (`species`: granite, sandstone, basalt, limestone or slate) only changes the default
+colours of the ten roles, so the same shape restyles by palette without regenerating.
+
+## Presets
+
+<ImageZoom src="/generators/rock-seeds.webp" alt="Boulder, outcrop and basalt, three seeds each" width={820} height={790} />
+
+| preset | character |
+|---|---|
+| `boulder` | granite, rounded, nine fractures, some moss and lichen |
+| `sandstone` | bedded and blocky, weathered flat, with strong strata |
+| `basalt` | angular and near-cubic, many sharp fractures, little life |
+| `limestone` | pale, pitted and heavily cracked |
+| `mossy` | a low granite boulder under thick moss, with a damp base |
+| `outcrop` | a slate mass with five smaller rocks tumbled against it, on a steep bedding plane |
+| `pebbles` | a small group of water-worn cobbles, no fractures, sunk into the ground |
+
+## Finer scales
+
+At 50 and 100 voxels per metre the rock is refined with the `smooth` rule: it rounds off its voxel
+steps and takes a rough, grainy surface, the mid tone breaks into light and dark speckle, hairline
+cracks a voxel deep run across the faces, and moss and lichen become ragged patches. It has no
+loose roles. See [scales and refinement](/docs/generators/scales-and-refinement/).
+
+## Development
+
+```sh
+bun run --cwd generators/rock verify            # connectivity, determinism, knobs, share codes
+bun run --cwd generators/rock preview species   # contact sheets into previews/ (also: seeds, roughness, angularity)
+bun run --cwd generators/rock gen               # bake .vox files into out/
+```
+
+## Rock
+
+`voxolith/rock` starts from the `boulder` preset.
+
+<GeneratorReference id="voxolith/rock" />
+
+## Outcrop
+
+`voxolith/outcrop` is the same generator starting from the `outcrop` preset.
+
+<GeneratorReference id="voxolith/outcrop" />
+
+See the [API reference](/docs/generators/api/gen-rock/) for `generateRock` and the parameter types.

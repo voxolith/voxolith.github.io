@@ -1,0 +1,99 @@
+---
+title: Preview renderer
+description: "@voxolith/gen-kit/preview: the headless CPU raymarcher, contact sheets, cut-aways and PNG output used to judge generator output without a GPU."
+---
+
+The GPU renderer cannot be screenshotted headlessly in a generator's own tooling, so generator work
+is judged with a CPU renderer instead. `@voxolith/gen-kit/preview` is a DDA raymarcher over an
+entity's own grid, dense or sparse, with coarse empty-space skipping, a sun shadow ray, face ambient
+occlusion and a ground plane, plus captioned contact sheets and a PNG writer. Every contact sheet in
+these docs comes from it.
+
+Shadow and occlusion are not decoration: without them a canopy is impossible to read, and judging
+canopies is the point. The shading follows the real renderer closely enough that what looks right
+here looks right on the GPU, but it is a preview: no materials, one bounce.
+
+```ts
+import { writeFileSync } from "node:fs";
+import { seededRandom } from "@voxolith/renderer/core";
+import { contactSheet, encodePng, renderEntity, type SheetCell } from "@voxolith/gen-kit/preview";
+import { generateRock, PRESETS, PRESET_NAMES } from "@voxolith/gen-rock";
+
+const cells: SheetCell[] = PRESET_NAMES.map((name) => {
+  const { entity } = generateRock(PRESETS[name], seededRandom(21), name);
+  return { render: renderEntity(entity, { width: 260, height: 234, yawDeg: 34, pitchDeg: 22 }), label: name };
+});
+const sheet = contactSheet(cells, { cols: 4, title: "presets" });
+writeFileSync("species.png", encodePng(sheet.width, sheet.height, sheet.rgb));
+```
+
+<Callout type="warn">
+The preview imports `node:zlib` (for PNG compression), so it runs under bun or Node, in tools and
+tests. Never import it into a browser bundle; the main `@voxolith/gen-kit` entry has no such
+dependency.
+</Callout>
+
+## Rendering
+
+[`renderEntity(entity, opts)`](/docs/generators/api/gen-kit/preview/functions/renderEntity/) and
+[`renderModel(model, opts)`](/docs/generators/api/gen-kit/preview/functions/renderModel/) return a
+[`RenderResult`](/docs/generators/api/gen-kit/preview/interfaces/RenderResult/): `width`,
+`height`, row-major RGB bytes and the time taken. The camera orbits the model and looks at it:
+
+| option | default | meaning |
+|---|---|---|
+| `width`, `height` | 420, 560 | image size in pixels |
+| `yawDeg` | 35 | orbit angle; 0 looks along +Z |
+| `pitchDeg` | 12 | elevation above the horizon |
+| `fovDeg` | 30 | vertical field of view |
+| `zoom` | 1 | above 1 pulls the camera back, below 1 pushes in |
+| `aimY`, `aimOffset` | 0.5, none | look-at height as a fraction of the model's height, then an offset in voxels (for close-ups) |
+| `sun` | `[0.42, 0.78, -0.46]` | direction towards the sun |
+| `shadows`, `ao`, `ground` | on | sun shadows, face ambient occlusion, and a ground plane at the bottom of the model's box that takes its shadow |
+| `sky`, `groundColor` | blue sky, green checker | the sky gradient's top and horizon colours; the ground's two checker colours (8-voxel squares) |
+| `palette` | the model's roles | replace the role colours, for example to try a skin |
+| `flat` | none | draw the silhouette in one colour, to judge shape alone |
+
+The full list with types is on [`RenderOptions`](/docs/generators/api/gen-kit/preview/interfaces/RenderOptions/).
+A sparse model skips empty space by its bricks; a dense one builds the renderer's occupancy grid, so
+a refined 1 cm-voxel tree renders as readily as a coarse one.
+
+## Contact sheets
+
+Iterating on a generator means comparing variants side by side, not squinting at one render at a
+time, so the sheet is the main output of a preview run.
+[`contactSheet(cells, opts)`](/docs/generators/api/gen-kit/preview/functions/contactSheet/) tiles
+renders into one image with a caption under each and an optional `title`; `cols`, `pad`,
+`background`, `labelColor` and `labelScale` lay it out. It returns another `RenderResult`, so a
+sheet is written the same way as a single render. `drawText` and `textWidth` expose its 3x5 pixel
+font.
+
+[`encodePng(width, height, rgb)`](/docs/generators/api/gen-kit/preview/functions/encodePng/)
+encodes RGB bytes as a PNG.
+
+## Cut-aways
+
+[`cutAway(model, axis, at, keep?)`](/docs/generators/api/gen-kit/preview/functions/cutAway/)
+removes everything past a plane, so a preview shows a cross-section: bone, flesh and organs inside a
+creature, heartwood inside a trunk. `keep` is `"below"` (default) or `"above"`. It works on dense
+models.
+
+<ImageZoom src="/generators/creature-cut.webp" alt="A rat cut open along its length, showing fur, fat, flesh, bone and organs" width={820} height={452} />
+
+## Preview scripts
+
+Every generator package has a `preview` script built on this, with named rounds:
+
+```sh
+bun run --cwd generators/tree preview species     # also: skeleton, foliage, bark, shell, resolution, seasons
+bun run --cwd generators/bush preview species     # also: seeds, seasons
+bun run --cwd generators/rock preview seeds       # also: species, roughness, angularity
+bun run --cwd generators/building preview closeup # also: species, roofs, walls, seeds
+bun run --cwd generators/creature preview clips   # also: species, cut, walk, turns; --scale 100
+bun run --cwd generators/terrain preview          # a shaded map
+bun run --cwd generators/contract preview         # every generator at 100 vox/m, whole and close up
+```
+
+Sheets land in each package's `previews/` folder. `bun run previews` from the workspace root runs
+every package's preview; this site's `tools/previews.ts` renders the rounds these pages show and
+copies them into `public/generators/` as WebP.

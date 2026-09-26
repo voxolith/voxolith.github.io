@@ -1,0 +1,542 @@
+---
+title: "7. Performance and deploying"
+description: "Rat Hunt, step 7: a quality menu over QUALITY_PRESETS, adaptive render resolution with makePerf, then a GitHub Actions workflow that publishes to Pages."
+---
+
+The game is finished; in this step you make it run well on slow machines and put it online.
+Voxolith's cost knobs live in the engine, so the game only has to offer them to the player and
+feed the adaptive controller.
+
+## Where the time goes
+
+Every pixel of every frame walks rays through the voxels, so the cost is roughly *pixels × steps
+per ray*, plus a shadow ray per shadowed light. Three things control it:
+
+| knob | what it changes | how |
+|---|---|---|
+| quality preset | steps per ray, shadow steps, ambient occlusion | `renderer.setQuality("low" \| "medium" \| "high")` |
+| render scale | how many pixels are raymarched, under the device pixel ratio | `gpu.renderScale`, driven by `makePerf` |
+| pixel ratio cap | the most pixels per CSS pixel on high-density screens | `initGpu(canvas, { maxPixelRatio })` |
+
+## A quality menu
+
+The `#quality` select from step 1 lists the three [`QUALITY_PRESETS`](/docs/renderer/api/renderer/variables/QUALITY_PRESETS/).
+Replace the `setQuality` line after `createRenderer` with a section that reads the player's
+choice, remembers it, and starts a software adapter on Low:
+
+```ts
+import { makePerf, QUALITY_PRESETS, type QualityPreset } from "@voxolith/renderer";
+
+// --- quality --------------------------------------------------------------------
+const qualitySelect = document.getElementById("quality") as HTMLSelectElement;
+const stored = (() => { try { return localStorage.getItem("rat-hunt-quality"); } catch { return null; } })();
+let quality: QualityPreset = stored && stored in QUALITY_PRESETS ? (stored as QualityPreset) : gpu.software ? "low" : "medium";
+renderer.setQuality(quality);
+qualitySelect.value = quality;
+qualitySelect.addEventListener("change", () => {
+  quality = qualitySelect.value as QualityPreset;
+  renderer.setQuality(quality);
+  try { localStorage.setItem("rat-hunt-quality", quality); } catch { /* private mode */ }
+});
+const warning = gpu.software ? " · software WebGPU adapter, expect a low frame rate" : "";
+```
+
+`gpu.software` is true when the browser gave you a CPU implementation of WebGPU (SwiftShader,
+llvmpipe and the like): it works, but slowly, so the game says so and starts cheap. The storage
+calls are wrapped in `try` because private windows can refuse them. Add `${warning}` to the end
+of the status line so the player sees it.
+
+Changing the preset takes effect on the next frame; nothing is rebuilt.
+
+## Adaptive resolution
+
+[`makePerf`](/docs/renderer/api/renderer/functions/makePerf/) watches frame times and lowers the
+render scale when frames run long, raising it again when there is room:
+
+```ts
+const perf = makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity });
+```
+
+In the frame, before resizing, feed it and apply its scale:
+
+```ts
+    if (moved || input.active()) perf.reprobe();
+    perf.frame(now);
+    gpu.renderScale = perf.scale();
+    resizeToDisplay(gpu);
+```
+
+and keep whether the player moved:
+
+```ts
+    const moved = !over && movePlayer(dt);
+```
+
+Why `retryAfterMs: Infinity` and `reprobe`: under vsync, a frame that just fits and a frame with
+time to spare both read as 16.7 ms, so the controller can only find the limit by trying a higher
+scale and seeing it miss. Each try resamples the image, which is visible when the view is still.
+This game renders every frame (the rats and the water move), so it tells the controller never to
+retry on its own, and calls `perf.reprobe()` only while the player is moving or looking, when a
+change of resolution goes unnoticed. `?perf` on the URL shows the controller's overlay.
+
+`initGpu(canvas, { maxPixelRatio: 1.5 })` at the top caps phones with 3x screens at 1.5 device
+pixels per CSS pixel, which alone can halve the pixel count.
+
+See [Performance](/docs/manual/performance/) for the rest: step caps, shadow steps, instances,
+and how the examples size their worlds for phones.
+
+<Accordions>
+<Accordion title="The finished src/main.ts">
+
+```ts title="src/main.ts"
+// Rat Hunt: catch the giant rats in the valley before night falls.
+import {
+  createRenderer,
+  firstPersonFrame,
+  hashSeed,
+  initGpu,
+  makeFrameLoop,
+  makePerf,
+  makeRay,
+  observeResize,
+  QUALITY_PRESETS,
+  rayAABB,
+  resizeToDisplay,
+  seededRandom,
+  showUnsupportedScreen,
+  voxelRaycast,
+  WebGPUUnsupportedError,
+  type PointLight,
+  type QualityPreset,
+  type Vec3,
+} from "@voxolith/renderer";
+import { blitModelToBricks, makeBrickStamper, PaletteAllocator, type Entity, type Orientation } from "@voxolith/engine";
+import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import {
+  axis,
+  button,
+  createInput,
+  makeActions,
+  makeLookController,
+  makeTouchControls,
+  prepareSurface,
+  recogniseGestures,
+} from "@voxolith/engine/input";
+import { generateTerrain } from "@voxolith/gen-terrain";
+import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
+import { generateBuilding, PRESETS as BUILDINGS } from "@voxolith/gen-building";
+import { atScale, generateCreature, PRESETS as RATS } from "@voxolith/gen-creature";
+import "./style.css";
+
+const canvas = document.getElementById("scene") as HTMLCanvasElement;
+const status = document.getElementById("status")!;
+const message = document.getElementById("message")!;
+const params = new URLSearchParams(location.search);
+
+// --- WebGPU -------------------------------------------------------------------
+const gpu = await initGpu(canvas, { maxPixelRatio: 1.5 }).catch((err: unknown) => {
+  if (err instanceof WebGPUUnsupportedError) showUnsupportedScreen(err.message, { appName: "Rat Hunt" });
+  throw err;
+});
+
+// --- the valley -----------------------------------------------------------------
+const SIZE = { x: 384, y: 128, z: 384 };
+const seed = hashSeed(params.get("seed") ?? "rat-hunt");
+const rng = seededRandom(seed);
+
+const terrain = generateTerrain(
+  {
+    width: SIZE.x, depth: SIZE.z, height: SIZE.y,
+    baseY: 18, relief: 20, featureSize: 100, waterLevel: 13,
+    river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 },
+  },
+  seed,
+);
+
+// --- the farmhouse and the trees -------------------------------------------------
+const houseParams = structuredClone(BUILDINGS.cottage);
+houseParams.look.lit = 0.5; // half the windows glow
+const house = generateBuilding(houseParams, seededRandom(seed + 1)).entity;
+
+// Somewhere dry near the middle, levelled flat before any ground is built.
+const hs = house.model.size, ha = house.model.anchor;
+let hx = SIZE.x / 2, hz = SIZE.z / 2;
+for (let i = 0; i < 50; i++) {
+  const x = SIZE.x * (0.3 + rng() * 0.4), z = SIZE.z * (0.3 + rng() * 0.4);
+  const corners = [[-1, -1], [1, -1], [-1, 1], [1, 1], [0, 0]];
+  if (corners.every(([cx, cz]) => terrain.heightAt(x + cx * hs.x * 0.7, z + cz * hs.z * 0.7) > terrain.waterLevel + 1)) {
+    hx = Math.round(x); hz = Math.round(z);
+    break;
+  }
+}
+const hx0 = hx - ha[0], hz0 = hz - ha[2], hx1 = hx0 + hs.x - 1, hz1 = hz0 + hs.z - 1;
+const pad = levelPad(hx0, hz0, hx1, hz1, 12);
+const insideHouse = (x: number, z: number, margin: number) =>
+  x > hx0 - margin && x < hx1 + margin && z > hz0 - margin && z < hz1 + margin;
+
+/** Flatten a box to its average height and blend the ground back over an apron. */
+function levelPad(x0: number, z0: number, x1: number, z1: number, apron: number): number {
+  let sum = 0, n = 0;
+  for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) { sum += terrain.heightAt(x, z); n++; }
+  const h = Math.round(sum / n);
+  for (let z = z0 - apron; z <= z1 + apron; z++)
+    for (let x = x0 - apron; x <= x1 + apron; x++) {
+      if (x < 0 || z < 0 || x >= terrain.width || z >= terrain.depth) continue;
+      const edge = Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(z0 - z, 0, z - z1));
+      if (edge > apron) continue;
+      const w = 1 - edge / apron, i = x + z * terrain.width;
+      terrain.heights[i] = Math.round(h * w + terrain.heights[i] * (1 - w));
+    }
+  return h;
+}
+
+// Six tree models, two of each species, reused for every tree.
+const treeModels: { kind: string; entity: Entity }[] = [];
+for (const kind of ["oak", "birch", "spruce"] as const)
+  for (let n = 0; n < 2; n++) {
+    const p = structuredClone(TREES[kind]);
+    p.shape.height = 80 + n * 30;
+    treeModels.push({ kind, entity: generateTree(p, seededRandom(seed + treeModels.length * 31)).entity });
+  }
+const trees: { x: number; z: number; model: (typeof treeModels)[number]; orientation: Orientation }[] = [];
+for (let tries = 0; trees.length < 28 && tries < 2000; tries++) {
+  const x = Math.round(20 + rng() * (SIZE.x - 40)), z = Math.round(20 + rng() * (SIZE.z - 40));
+  if (terrain.waterAt(x, z) || insideHouse(x, z, 40)) continue;
+  if (trees.some((t) => Math.hypot(t.x - x, t.z - z) < 34)) continue;
+  const model = treeModels[Math.floor(rng() * treeModels.length)];
+  trees.push({ x, z, model, orientation: Math.floor(rng() * 8) as Orientation });
+}
+
+// --- the rats ---------------------------------------------------------------------
+const RAT_KINDS = ["rat", "grey rat", "lab rat", "black rat"];
+// atScale sizes a preset for 10 voxels per metre; 0.7 is as small as a rat gets.
+const ratModels = RAT_KINDS.map((k, i) => generateCreature(atScale(RATS[k], 10), seededRandom(seed + 100 + i), k).entity);
+
+// --- palette and renderer ----------------------------------------------------------
+const palette = new PaletteAllocator(1);
+const groundBase = palette.allocate(terrain.roles, "terrain").base;
+const houseBase = palette.allocateFor(house, "house").base;
+const treeBase = new Map(treeModels.map((t) => [t, palette.allocate(t.entity.model.roles, t.kind).base]));
+const ratBase = ratModels.map((e, i) => palette.allocate(e.model.roles, RAT_KINDS[i]).base);
+
+const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
+
+renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) =>
+  terrain.fillBrick(cells, ox, oy, oz, groundBase),
+);
+blitModelToBricks(renderer, house.model, { x: hx, y: pad + 1, z: hz }, houseBase);
+for (const t of trees) {
+  blitModelToBricks(renderer, t.model.entity.model, { x: t.x, y: terrain.heightAt(t.x, t.z) + 1, z: t.z }, treeBase.get(t.model)!, t.orientation);
+}
+
+// --- quality --------------------------------------------------------------------
+const qualitySelect = document.getElementById("quality") as HTMLSelectElement;
+const stored = (() => { try { return localStorage.getItem("rat-hunt-quality"); } catch { return null; } })();
+let quality: QualityPreset = stored && stored in QUALITY_PRESETS ? (stored as QualityPreset) : gpu.software ? "low" : "medium";
+renderer.setQuality(quality);
+qualitySelect.value = quality;
+qualitySelect.addEventListener("change", () => {
+  quality = qualitySelect.value as QualityPreset;
+  renderer.setQuality(quality);
+  try { localStorage.setItem("rat-hunt-quality", quality); } catch { /* private mode */ }
+});
+const warning = gpu.software ? " · software WebGPU adapter, expect a low frame rate" : "";
+const perf = makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity });
+
+// --- input --------------------------------------------------------------------------
+prepareSurface(canvas);
+const input = createInput(canvas);
+const actions = makeActions(input, {
+  strafe: axis({ negative: ["key:KeyA", "key:ArrowLeft"], positive: ["key:KeyD", "key:ArrowRight"], analog: ["pad:LeftX", "touch:move.x"] }),
+  walk: axis({
+    negative: ["key:KeyS", "key:ArrowDown", "pad:LeftY+", "touch:move.y+"],
+    positive: ["key:KeyW", "key:ArrowUp", "pad:LeftY-", "touch:move.y-"],
+  }),
+  run: button("key:ShiftLeft", "key:ShiftRight", "pad:LT"),
+  grab: button("key:Space", "pad:A"),
+});
+const look = makeLookController(input, { yaw: 180, pitch: -8, keys: { left: ["KeyQ"], right: ["KeyE"] } });
+makeTouchControls(input, { joysticks: [{ id: "move", side: "left" }] });
+
+// --- the player ---------------------------------------------------------------------
+const EYE = 17; // 1.7 m
+const player = { x: hx, z: Math.min(SIZE.z - 10, hz1 + 70), eyeY: 0 };
+player.eyeY = terrain.heightAt(player.x, player.z) + EYE;
+const view = () => firstPersonFrame([player.x, player.eyeY, player.z], look.yaw(), look.pitch(), 70);
+
+function movePlayer(dt: number): boolean {
+  const [sx, wz] = actions.vector("strafe", "walk");
+  if (!sx && !wz) return false;
+  const speed = (actions.down("run") ? 80 : 40) * dt;
+  const yaw = (look.yaw() * Math.PI) / 180;
+  // firstPersonFrame: forward is (sin, cos), screen-right is cross(forward, up).
+  const nx = player.x + (Math.sin(yaw) * wz - Math.cos(yaw) * sx) * speed;
+  const nz = player.z + (Math.cos(yaw) * wz + Math.sin(yaw) * sx) * speed;
+  if (nx < 4 || nz < 4 || nx > SIZE.x - 5 || nz > SIZE.z - 5 || insideHouse(nx, nz, 3)) return false;
+  player.x = nx;
+  player.z = nz;
+  return true;
+}
+
+// --- rats ---------------------------------------------------------------------------
+interface Rat extends CrowdMember { state: "wander" | "flee" | "caught"; speed: number; turn: number; timer: number; }
+const crowd = makeCrowd({ stamper: makeBrickStamper(renderer, { size: SIZE }), near: 200, keepModels: true });
+const blocked = (x: number, z: number) =>
+  x < 10 || z < 10 || x > SIZE.x - 10 || z > SIZE.z - 10 || terrain.waterAt(Math.round(x), Math.round(z)) || insideHouse(x, z, 8);
+
+const rats: Rat[] = [];
+const RAT_COUNT = Math.max(1, Math.min(20, Number(params.get("rats") ?? 8)));
+for (let i = 0; i < RAT_COUNT; i++) {
+  const k = i % ratModels.length;
+  let x = 0, z = 0;
+  do { x = 20 + rng() * (SIZE.x - 40); z = 20 + rng() * (SIZE.z - 40); }
+  while (blocked(x, z) || Math.hypot(x - player.x, z - player.z) < 80);
+  const anim = makeAnimator(ratModels[k], "idle");
+  rats.push({ id: i + 1, entity: ratModels[k], variant: RAT_KINDS[k], anim, base: ratBase[k], x, y: 0, z, yaw: rng() * Math.PI * 2, state: "wander", speed: 0, turn: 0, timer: rng() * 3 });
+}
+let caught = 0;
+let over = false;
+
+const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+function think(r: Rat, dt: number): void {
+  r.timer -= dt;
+  if (r.state === "caught") {
+    if (r.anim.finished() && r.timer <= 0) {
+      crowd.remove(r.id);
+      rats.splice(rats.indexOf(r), 1);
+    }
+    r.anim.update(dt);
+    return;
+  }
+  const away = Math.hypot(r.x - player.x, r.z - player.z);
+  if (away < 70 && r.state !== "flee") {
+    // Too close: run directly away from the player.
+    r.state = "flee";
+    r.turn = Math.atan2(r.x - player.x, r.z - player.z);
+    r.speed = 45;
+    r.timer = 2 + rng();
+    r.anim.play("run", { fade: 0.1 });
+  } else if (r.timer <= 0) {
+    r.state = "wander";
+    const clip = ["walk", "walk", "idle", "sniff"][Math.floor(rng() * 4)];
+    r.anim.play(clip, { fade: 0.25 });
+    r.speed = clip === "walk" ? 14 : 0;
+    r.turn = r.yaw + (rng() - 0.5) * 2.4;
+    r.timer = 1.5 + rng() * 3;
+  }
+  if (r.speed > 0) {
+    r.yaw += Math.max(-4 * dt, Math.min(4 * dt, wrap(r.turn - r.yaw)));
+    const nx = r.x + Math.sin(r.yaw) * r.speed * dt, nz = r.z + Math.cos(r.yaw) * r.speed * dt;
+    if (blocked(nx, nz)) { r.turn = r.yaw + Math.PI * (0.6 + rng() * 0.8); }
+    else { r.x = nx; r.z = nz; }
+  }
+  r.y = terrain.heightAt(r.x, r.z) + 1;
+  r.anim.update(dt);
+}
+
+// --- catching -------------------------------------------------------------------------
+const REACH = 90; // 9 m
+function grabAt(clientX: number, clientY: number): void {
+  if (over) return;
+  const { origin, dir } = makeRay(canvas, view(), clientX, clientY);
+  const len = Math.hypot(dir[0], dir[1], dir[2]);
+  // Nothing behind the ground counts, and nothing out of reach.
+  let best = REACH / len;
+  const hit = terrain.pick(origin, dir, { maxT: REACH });
+  if (hit) best = Math.min(best, ((hit[0] - origin[0]) * dir[0] + (hit[1] - origin[1]) * dir[1] + (hit[2] - origin[2]) * dir[2]) / (len * len));
+  let target: Rat | null = null;
+  for (const r of rats) {
+    const pose = crowd.last(r.id);
+    if (r.state === "caught" || !pose?.model) continue;
+    const m = pose.model;
+    // Where the stamper put this pose: the anchor sits at the rat's position.
+    const o: Vec3 = [Math.round(r.x - m.anchor[0]), Math.round(r.y - m.anchor[1]), Math.round(r.z - m.anchor[2])];
+    const box = rayAABB(origin, dir, o, [o[0] + m.size.x, o[1] + m.size.y, o[2] + m.size.z]);
+    if (box === null || box > best) continue;
+    const exact = voxelRaycast(m.size, m.data, [origin[0] - o[0], origin[1] - o[1], origin[2] - o[2]], dir, best);
+    if (exact && exact.t < best) { best = exact.t; target = r; }
+  }
+  if (!target) return;
+  target.state = "caught";
+  target.timer = 1;
+  target.anim.play("death", { fade: 0.1 });
+  caught++;
+}
+// A tap or click grabs where it lands; with the mouse captured, at the crosshair.
+const centre = () => { const b = canvas.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2] as const; };
+recogniseGestures(input, { tap: (t) => (input.locked() ? grabAt(...centre()) : grabAt(t.x, t.y)) }, { longPressMs: 0 });
+
+// --- day, night and lights ---------------------------------------------------------------
+const DAY_SECONDS = Math.max(10, Number(params.get("day") ?? 180));
+const DAWN = 0.3, DUSK = 0.78;
+let clock = 0;
+const doorLamp: Vec3 = [hx, pad + 20, hz1 + 3];
+
+function lights(night: number): PointLight[] {
+  if (night < 0.02) return [];
+  return [
+    { position: doorLamp, color: [1, 0.72, 0.4], intensity: 2.4 * night, range: 90, glow: 2 * night },
+    // A lantern the player carries: no shadow ray, so it costs little.
+    { position: [player.x, player.eyeY - 4, player.z], color: [1, 0.85, 0.6], intensity: 0.9 * night, range: 60, shadows: false },
+  ];
+}
+
+function finish(text: string): void {
+  over = true;
+  input.unlock();
+  message.textContent = text;
+  message.hidden = false;
+}
+
+// --- the loop ------------------------------------------------------------------------------
+const loop = makeFrameLoop({
+  continuous: true,
+  render(now, dt) {
+    input.update();
+    look.update(dt);
+    const moved = !over && movePlayer(dt);
+    const ground = terrain.heightAt(player.x, player.z) + EYE;
+    player.eyeY += (ground - player.eyeY) * Math.min(1, dt * 10);
+    if (!over && actions.pressed("grab")) grabAt(...centre());
+
+    for (const r of [...rats]) think(r, dt);
+    const f = view();
+    crowd.update(rats, f.camPos);
+
+    if (!over) {
+      clock += dt;
+      if (caught === RAT_COUNT) finish(`All ${RAT_COUNT} rats caught with ${Math.ceil(DAY_SECONDS - clock)} s of daylight to spare.`);
+      else if (clock >= DAY_SECONDS) finish(`Night fell. You caught ${caught} of ${RAT_COUNT} rats.`);
+    }
+    const phase = DAWN + (Math.min(clock, DAY_SECONDS) / DAY_SECONDS) * (DUSK - DAWN);
+    const lighting = timeOfDay(phase);
+    renderer.setLights(lights(lighting.nightFactor));
+    status.textContent = `${caught}/${RAT_COUNT} rats · ${Math.max(0, Math.ceil(DAY_SECONDS - clock))} s to nightfall${warning}`;
+
+    if (moved || input.active()) perf.reprobe();
+    perf.frame(now);
+    gpu.renderScale = perf.scale();
+    resizeToDisplay(gpu);
+    renderer.render({ ...f, ...atmosphereFrame(lighting, ATMOSPHERES.clear), time: now / 1000 });
+  },
+});
+observeResize(canvas, loop);
+```
+
+</Accordion>
+</Accordions>
+
+## Build
+
+```sh
+bun run --cwd rat-hunt build
+bun run --cwd rat-hunt preview
+```
+
+`build` type-checks and writes a static site to `rat-hunt/dist/`. `preview` serves it on
+`http://localhost:4173`, which is a secure context, so WebGPU works there without HTTPS.
+
+## Deploy to GitHub Pages
+
+GitHub Pages serves a repository `rat-hunt` at `https://<you>.github.io/rat-hunt/`, so the build
+has to know it lives under `/rat-hunt/`. The `vite.config.ts` from step 1 already reads that from
+`BASE_PATH`, and the game only ever fetches through `import.meta.env.BASE_URL`, so nothing in the
+code changes:
+
+```sh
+BASE_PATH=/rat-hunt/ bun run build
+```
+
+Put `rat-hunt/` in a repository of its own and add a workflow. Until the Voxolith packages are on
+npm, it recreates the workspace in CI: it checks out your game and the three library repos side by
+side, writes a workspace `package.json`, installs and builds.
+
+```yaml title=".github/workflows/pages.yml"
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: app
+      - uses: actions/checkout@v4
+        with:
+          repository: voxolith/renderer
+          path: renderer
+      - uses: actions/checkout@v4
+        with:
+          repository: voxolith/engine
+          path: engine
+      - uses: actions/checkout@v4
+        with:
+          repository: voxolith/generators
+          path: generators
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Create workspace root
+        run: |
+          cat > package.json <<'JSON'
+          { "name": "pages-workspace", "private": true, "workspaces": ["app", "renderer", "engine", "generators/*"] }
+          JSON
+      - run: bun install
+      - name: Build
+        working-directory: app
+        env:
+          BASE_PATH: /${{ github.event.repository.name }}/
+        run: bun run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+```
+
+This is the workflow the Voxolith examples deploy with. In the repository's settings, under
+**Pages**, set the source to **GitHub Actions**. Push to `main`, and the game appears at
+`https://<you>.github.io/rat-hunt/` a minute or two later. GitHub Pages is HTTPS, so it works on
+phones as it is.
+
+Once the packages are published, replace the four checkouts and the workspace root with a plain
+checkout, change the `workspace:*` dependencies to version ranges, and run `bun install` in the
+repository itself. [Deploying](/docs/manual/deploying/) covers other hosts and installable PWAs.
+
+## Where next
+
+You have used most of Voxolith's layers once. From here:
+
+- [The manual](/docs/manual/) takes each topic further: [streaming](/docs/manual/streaming/)
+  bigger worlds, [instances](/docs/manual/instances/) for thousands of models,
+  [water](/docs/manual/water/), [weather](/docs/manual/atmosphere-and-weather/) and
+  [effects](/docs/manual/effects/).
+- [The examples](/docs/examples/) are complete programs to read: the
+  [world](/docs/examples/world/) is a whole generated village, the
+  [valley](/docs/examples/valley/) the same one at ten times the resolution.
+- The [generators](/docs/generators/) section lists every parameter and preset.

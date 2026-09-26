@@ -1,0 +1,115 @@
+---
+title: The generator contract
+description: EntityGenerator, ParamSpec and the registry in @voxolith/engine, what makes a generator pure and deterministic, and how GenerateContext asks for scale.
+---
+
+A generator package exports one or more [`EntityGenerator`](/docs/engine/api/engine/interfaces/EntityGenerator/)s
+and the host registers them. The engine defines the contract; the generators themselves, and the
+toolkit they are written with, live in the [generators](/docs/generators/) repo.
+
+```ts
+interface EntityGenerator<P> {
+  id: string;              // namespaced and stable, e.g. "voxolith/tree.broadleaf"
+  name: string;
+  version: string;         // bump when output changes for the same input
+  description?: string;
+  roles: Role[];           // every role it can emit, in voxel-value order
+  defaults: P;
+  params: ParamSpec[];     // the tunables a UI (and a share code) can see
+  generate(params: P, rng: () => number, ctx?: GenerateContext): Entity;
+  scales?: number[];       // voxels per metre supported beyond the native 10
+  looseRoles?: string[];   // role ids allowed to float at finer scales
+}
+```
+
+## Pure and deterministic
+
+Generation takes all its randomness from the injected `rng` and nothing else: never
+`Math.random`, never the clock, never shared state. The same parameters and seed therefore always
+give the same entity, which is what makes generated content safe to use in gameplay, tests, asset
+baking, [share codes](/docs/engine/share-codes/) and [worker caches](/docs/engine/workers/). A
+generator must not mutate the parameter object it is handed.
+
+The rng is any `() => number` in `[0, 1)`; hosts use the renderer's
+[`seededRandom(seed)`](/docs/renderer/api/renderer/functions/seededRandom/) (import it from
+`@voxolith/renderer/core` outside the browser).
+
+`version` exists for caches: bump it whenever the output changes for the same input, so a stored
+model is not served for code that would now build something else.
+
+## Parameters
+
+A [`ParamSpec`](/docs/engine/api/engine/type-aliases/ParamSpec/) describes one tunable so an
+editor can build a UI without knowing the parameter type. Its `path` is a dotted path into the
+parameter object (`"shape.height"`); `label`, `group` and `help` are for the UI.
+
+| kind | fields | encoded as |
+|---|---|---|
+| `number` | `min`, `max`, `step?` | a count of steps from `min` (1000 steps across the range when no `step` is given) |
+| `int` | `min`, `max` | offset from `min` |
+| `bool` | | 0 or 1 |
+| `enum` | `options` | index into `options` |
+
+[`getParam(params, path)`](/docs/engine/api/engine/functions/getParam/) reads a dotted path and
+[`withParam(params, path, value)`](/docs/engine/api/engine/functions/withParam/) writes one,
+cloning the objects along the way so the original is untouched. What is declared as a spec is
+exactly what a UI shows and a share code carries; anything not declared is part of the preset.
+
+<Callout type="warn" title="Defaults lie on the step grid">
+  A `number` default must be a multiple of its `step` from `min`, or a share code of the default
+  decodes to a different value and rebuilds a different model. Fix the default, never the step: a
+  new step silently changes what every old code decodes to. The contract checks this.
+</Callout>
+
+## The registry
+
+```ts
+import { registerTreeGenerators } from "@voxolith/gen-tree";
+import { getGenerator, listGenerators } from "@voxolith/engine";
+import { seededRandom } from "@voxolith/renderer/core";
+
+registerTreeGenerators(); // registerGenerator(broadleafGenerator); registerGenerator(coniferGenerator)
+
+const gen = getGenerator("voxolith/tree.broadleaf")!;
+const entity = gen.generate(gen.defaults, seededRandom(42));
+```
+
+- [`registerGenerator(gen)`](/docs/engine/api/engine/functions/registerGenerator/) throws if the
+  id is taken.
+- [`getGenerator(id)`](/docs/engine/api/engine/functions/getGenerator/) and
+  [`listGenerators()`](/docs/engine/api/engine/functions/listGenerators/) look them up.
+- [`clearGenerators()`](/docs/engine/api/engine/functions/clearGenerators/) is for tests and hot
+  reload.
+
+The registry is per realm: a [worker](/docs/engine/workers/) has its own and must register the
+generators it serves, since a function cannot be posted across the boundary.
+
+## Scale: GenerateContext
+
+Parameters are always written in the generator's native scale, **10 voxels per metre**
+([`DEFAULT_VOXELS_PER_METRE`](/docs/engine/api/engine/variables/DEFAULT_VOXELS_PER_METRE/)). A
+finer world asks for the same design at more voxels per metre through the optional third argument:
+
+```ts
+const fine = gen.generate(gen.defaults, seededRandom(42), { voxelsPerMetre: 100 });
+```
+
+[`GenerateContext`](/docs/engine/api/engine/interfaces/GenerateContext/) has one field,
+`voxelsPerMetre`, and every field defaults, so a call without it (or with 10) gives
+byte-for-byte the model it always did; share codes never change meaning.
+[`refinement(ctx)`](/docs/engine/api/engine/functions/refinement/) turns a context into the
+whole-number factor a generator works with (`Math.round(vpm / 10)`, at least 1).
+
+A generator lists the scales it supports in `scales` (every Voxolith entity generator:
+`[50, 100]`) and decides for itself how to add the detail. `looseRoles` names the roles that may
+come loose at a finer scale (single leaves, petals, seed heads, snow on foliage); everything else
+must still be one grounded piece. How the generators refine is covered in
+[Scales and refinement](/docs/generators/scales-and-refinement/).
+
+## Checked, not trusted
+
+Every registered Voxolith generator is run against the contract in CI: identity, roles, defaults
+inside their specs and on their step grid, determinism, no mutation, values within roles, anchor
+inside the box, nothing floating, share codes round-tripping, and every parameter at its extremes.
+See [The contract](/docs/generators/the-contract/). Writing a new generator is covered in
+[Writing a generator](/docs/generators/gen-kit/writing-a-generator/).

@@ -1,0 +1,131 @@
+---
+title: Entities and roles
+description: The entity contract of @voxolith/engine, dense and sparse models, anchors, colour roles, material hints and palette allocation across a scene.
+---
+
+An **entity** is the unit the engine places in a world: a voxel model plus an anchor and a set of
+named colour **roles**. It comes either from a `.vox` file ([MagicaVoxel](/docs/engine/vox/)) or
+from a [generator](/docs/engine/generator-contract/), and both produce exactly the same shape.
+
+```ts
+interface Entity {
+  id: string;                     // unique within a scene
+  kind: string;                   // what it is, e.g. "tree.broadleaf"; hosts group and cull by this
+  model: EntityModel;
+  meta: Record<string, unknown>;  // free-form provenance: parameters, seed, species, timings
+  rig?: Rig;                      // rigged entities only, see Animation
+  clips?: Clip[];
+}
+```
+
+See [`Entity`](/docs/engine/api/engine/interfaces/Entity/) and
+[`EntityModel`](/docs/engine/api/engine/interfaces/EntityModel/).
+
+## The model
+
+An [`EntityModel`](/docs/engine/api/engine/interfaces/EntityModel/) is a Y-up box of voxel values,
+tight around the occupied voxels.
+
+| field | meaning |
+|---|---|
+| `size` | the bounding box, `{ x, y, z }`, y is height |
+| `data` | dense role indices, 0 empty, indexed `x + y * size.x + z * size.x * size.y` ([`modelIndex`](/docs/engine/api/engine/functions/modelIndex/)); empty when the model is sparse |
+| `sparse` | the same voxels as 8³ bricks, for models too large to hold densely; present instead of `data`, never with it |
+| `anchor` | where the entity's origin sits inside the box, in voxels |
+| `roles` | the colour roles; `roles[i]` describes voxel value `i + 1` |
+| `bones` | rigged models only: which bone owns each voxel, indexed like `data` |
+
+The **anchor** is what placement aligns. A tree puts it at the trunk base centre with `y = 0`, so
+placing it means putting the anchor on a ground cell rather than guessing at a box corner. Every
+placement function in the engine (`blitModel`, `blitModelToBricks`, instances, the stamper) takes
+a world position for the anchor.
+
+### Sparse models
+
+A refined model at 100 voxels per metre (a 1 cm-voxel tree) is too large to hold as one dense
+array, so generators return it **sparse**: a map of 8³ bricks
+([`SparseVoxels`](/docs/engine/api/engine/interfaces/SparseVoxels/), the renderer's type), with
+`data` of length 0. Read either form through the helpers, which work on both:
+
+- [`modelAt(model, x, y, z)`](/docs/engine/api/engine/functions/modelAt/): the value at a cell, 0
+  outside the box.
+- [`isSparse(model)`](/docs/engine/api/engine/functions/isSparse/).
+- [`voxelCount(model)`](/docs/engine/api/engine/functions/voxelCount/): non-empty voxels.
+- [`roleHistogram(model)`](/docs/engine/api/engine/functions/roleHistogram/): voxels per role
+  value (element 0 is the empty count).
+- [`roleValue(model, id)`](/docs/engine/api/engine/functions/roleValue/): the 1-based value of a
+  role id, 0 when the model has none.
+
+Sparse models are meant to be drawn as [instances](/docs/engine/instances/) (the renderer takes
+the bricks as they are). The dense placement paths (`blitModel`, `blitModelToBricks`,
+`orientModel`, `toSprite`) read `data` and so need a dense model. See
+[Scales and refinement](/docs/generators/scales-and-refinement/) for when a generator returns one.
+
+## Roles, not colours
+
+Voxel values are role indices, never final colours. A [`Role`](/docs/engine/api/engine/interfaces/Role/)
+has a stable `id` (`"bark.dark"`), a human `name`, a default `color` (linear RGB, 0 to 1, as the
+renderer's palette takes it) and an optional `material`.
+
+A host maps role `r` of an entity to palette slot `base + r - 1`, where `base` is a slot range it
+allocated for that entity. Two things follow:
+
+- One scene mixes many entities inside the world's single 256-slot palette (world voxels are
+  8-bit). A tree takes a range, a rock another, and their voxel values never collide.
+- An entity restyles without regenerating: season, faction, damage and time of day change only
+  the colours in its range. Hosts key restyling off the role `id`, which is stable across
+  versions of a generator.
+
+The convention follows the decor models of the catagochi game, where it started.
+
+### Material hints
+
+A role can carry a [`MaterialHint`](/docs/engine/api/engine/interfaces/MaterialHint/), which
+mirrors the renderer's per-slot material block:
+
+| kind | fields | use |
+|---|---|---|
+| `diffuse` | `rough`, `spec` | the default |
+| `metal` | `metal`, `rough` | lamps, fittings |
+| `glass` | `alpha`, `ior`, `att` | windows |
+| `emit` | `emit` | glowing voxels (they light only themselves; add a point light for a lamp) |
+| `water` | `alpha`, `att` | the animated water surface; `att` is how fast the bed fades with depth, per voxel |
+
+`gen-terrain`'s water role, for instance, carries the `water` material. See
+[Lighting](/docs/renderer/lighting/) for how the renderer treats each kind.
+
+## Allocating palettes
+
+[`PaletteAllocator`](/docs/engine/api/engine/classes/PaletteAllocator/) hands every entity a
+contiguous slot range in the world's palette and builds the palette and material block the
+renderer uploads.
+
+```ts
+import { PaletteAllocator, blitModel } from "@voxolith/engine";
+
+const palette = new PaletteAllocator(); // or new PaletteAllocator(16) to keep slots 1..15 for the host
+const oak = palette.allocateFor(oakEntity);            // keyed by kind: every oak shares one range
+const lit = palette.allocate(lampEntity.model.roles, "lamp.lit");
+blitModel(world, oakEntity.model, { x: 64, y: 0, z: 64 }, oak.base);
+
+renderer.updatePalette(palette.buildPalette());        // 256 x RGBA floats
+```
+
+- `allocate(roles, key?)` reserves `roles.length` slots. The `key` deduplicates: two entities
+  from the same generator and style share one range instead of burning the palette.
+  `allocateFor(entity, key = entity.kind)` is the convenience form.
+- `setColor(slot, color)` overrides one slot, to tint a single placement.
+- `buildPalette()` gives 256 RGBA floats; `buildMaterials()` gives 256 x 8 floats, or `undefined`
+  when no role asked for a material, so the renderer keeps its cheaper flat-palette path.
+- `used` and `free` report the budget; `allocate` throws when the palette is exhausted.
+
+For previewing a single entity, [`entityPalette(model, slotMin)`](/docs/engine/api/engine/functions/entityPalette/)
+and [`entityMaterials(model, slotMin)`](/docs/engine/api/engine/functions/entityMaterials/) build
+the same blocks for one model on its own.
+
+<Callout title="Instances have no colour budget">
+  The 256-slot allocator is only for what is stamped into the world. Models drawn by reference get
+  palettes of their own after the world's 256 slots (`instancePalette`, `Renderer.addPalette`, or
+  `layer.palettes.of(...)`), so a scene of instances can hold any number of species and tints. See
+  [Instances](/docs/engine/instances/).
+</Callout>

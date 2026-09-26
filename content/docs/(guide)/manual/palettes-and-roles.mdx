@@ -1,0 +1,109 @@
+---
+title: Palettes and roles
+description: Share the world's 256 palette slots between entities with PaletteAllocator, give roles materials, and restyle models without regenerating them.
+---
+
+Voxels never store colours. A world voxel is an 8-bit slot in a 256-entry palette, and an entity's
+voxels are **role** indices (bark, leaf, moss, window glass) that you map onto slots when you place
+it. This page is about managing that mapping: allocating slots, giving roles materials, restyling
+and when to stop worrying about the budget altogether.
+
+## The world palette
+
+The renderer has one palette for the world: 256 RGBA entries, plus an optional block of 8 floats
+per slot for materials. Slot 0 is always empty, so 255 are usable. Each slot can carry a material:
+diffuse (the default), `metal`, `glass`, `emit` or `water`.
+
+## Roles and bases
+
+An entity's `model.roles[i]` describes voxel value `i + 1`: a stable `id`, a `name` and a default
+`color`, and optionally a `material`. To place it, reserve a contiguous range of slots for its
+roles and remember the first one, the **base**. Role `r` then becomes slot `base + r - 1`.
+
+This is what lets one world mix many entities, and what makes restyling free: a season, a faction
+or a burnt house is a different colour for the same slots, not a new model.
+
+`PaletteAllocator` does the bookkeeping. Give each allocation a key, and everything allocated under
+that key shares one range: every oak of one style costs its roles once, however many you place.
+
+```ts
+import { PaletteAllocator, type Role } from "@voxolith/engine";
+
+const palette = new PaletteAllocator(1);
+const lantern: Role[] = [
+  { id: "iron", name: "Iron", color: [0.2, 0.2, 0.22], material: { kind: "metal", rough: 0.4 } },
+  { id: "flame", name: "Flame", color: [1, 0.7, 0.3], material: { kind: "emit", emit: 3 } },
+  { id: "pane", name: "Glass", color: [0.8, 0.9, 1], material: { kind: "glass", alpha: 0.2 } },
+];
+const { base: lanternBase } = palette.allocate(lantern, "lantern");
+const { base: oakBase } = palette.allocateFor(oak, "oak"); // same key, same range
+
+renderer.updatePalette(palette.buildPalette());
+const mats = palette.buildMaterials();
+if (mats) renderer.updateMaterials(mats);
+```
+
+Pass `palette.buildPalette()` and `palette.buildMaterials()` to `createRenderer` for what you know
+up front. When you allocate later (a streamed chunk meets a new species), upload again with
+`updatePalette` and `updateMaterials`; the world example does this whenever `palette.used`
+changes.
+
+`buildMaterials()` returns `undefined` when no role asked for a material, and the renderer then
+keeps its cheaper flat-palette path. Pass it whenever it is defined, or glass, metal, emissive and
+water slots render as plain colours.
+
+## Restyling
+
+To recolour a placed entity, change its slots and upload the palette again. Nothing is
+regenerated and no voxel is touched:
+
+```ts
+// Autumn: recolour the oak's leaf roles in place.
+oak.model.roles.forEach((r, i) => {
+  if (r.id.startsWith("leaf")) palette.setColor(oakBase + i, [0.75, 0.4, 0.12]);
+});
+renderer.updatePalette(palette.buildPalette());
+```
+
+Key restyling off role ids rather than indices: ids such as `bark.dark` are stable, while the order
+of roles belongs to the generator.
+
+## Instances have no budget
+
+Everything stamped into the world shares the 255 slots, and `allocate` throws when they run out.
+Models drawn as [instances](/docs/manual/instances/) do not use them at all: each gets a palette of
+its own after the world's 256 slots, and the buffer grows as needed. With an instance layer, a
+palette per species or even per placement is fine:
+
+```ts
+const layer = makeInstanceLayer(renderer);
+const oakPal = layer.palettes.of("oak", oak.model.roles);
+const albino = layer.palettes.of("rat:albino", rat.model.roles, (c, role) =>
+  role.id.startsWith("fur") ? [0.95, 0.93, 0.9] : c);
+
+// Recolour every instance using the "oak" palette at once.
+layer.palettes.restyle("oak", oak.model.roles, (c, role) => (role.id.startsWith("leaf") ? [0.75, 0.4, 0.12] : c));
+```
+
+The valley example gives every house its own palette this way, shading walls, roof and paint per
+house so no two in the village match.
+
+## Pitfalls
+
+- Share keys only between entities with the same roles in the same order. Two generators' models
+  under one key would read each other's colours.
+- The world's palette is 256 entries, so a scene that stamps many species runs out quickly: the
+  world example keeps house styles to 32 roles and lets rock styles share a range. Moving scenery
+  to instances removes the limit.
+- Colours are linear RGB in 0..1, the same as the renderer's palette.
+
+## See also
+
+- [Engine: entities and roles](/docs/engine/entities-and-roles/)
+- [Entities](/docs/manual/entities/) for the model and role contract
+- [Lighting](/docs/manual/lighting/) for what emissive slots do and do not light
+- API: [`PaletteAllocator`](/docs/engine/api/engine/classes/PaletteAllocator/),
+  [`Role`](/docs/engine/api/engine/interfaces/Role/),
+  [`MaterialHint`](/docs/engine/api/engine/interfaces/MaterialHint/),
+  [`instancePalette`](/docs/engine/api/engine/functions/instancePalette/),
+  [`PaletteLibrary`](/docs/engine/api/engine/interfaces/PaletteLibrary/)

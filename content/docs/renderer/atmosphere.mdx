@@ -1,0 +1,128 @@
+---
+title: Atmosphere
+description: The renderer's raw atmospheric effects (fog, clouds, rain and snow, wet and snow-covered surfaces, wind on water, effectScale) and what each one costs.
+---
+
+The renderer draws raw atmospheric effects and knows nothing about weather. Fog, a cloud layer,
+falling particles, wet or covered ground and wind on the water are independent effects, each off
+until its amount is above zero, so a scene that sets none of them renders exactly as before.
+
+What the effects *mean* (rain, a blizzard, a foggy morning) is decided above the renderer:
+
+| layer | owns |
+|---|---|
+| renderer | the effects: optional fields of `FrameParams`, all off at zero |
+| [`@voxolith/engine/atmosphere`](/docs/engine/atmosphere/) | the vocabulary and translator: `timeOfDay`, `Atmosphere` presets, blending and transitions, `approach`, `atmosphereFrame` |
+| the game | whether there is weather at all, when it changes, how wetness and snow cover build up |
+
+Keep policy out of the engine and meaning out of the renderer.
+
+## The fields
+
+The effects are the optional half of
+[`FrameParams`](/docs/renderer/api/renderer/interfaces/FrameParams/), typed as
+[`AtmosphereParams`](/docs/renderer/api/renderer/interfaces/AtmosphereParams/). They are sent every
+frame with the camera and lighting; nothing is uploaded.
+
+### `fog`
+
+Exponential extinction towards a colour, optionally thinning with height. It is applied to hits by
+their distance and to the sky at a fixed far distance, so the horizon dissolves into it.
+
+<TypeTable
+  type={{
+    density: { description: 'Extinction per voxel of distance: 0.002 is a light haze, 0.02 thick fog.', type: 'number', required: true },
+    color: { description: 'Fog colour.', type: '[number, number, number]', required: true },
+    heightFalloff: { description: 'Fog thins with height at this rate per voxel above y = 0. 0 is uniform.', type: 'number', default: '0' },
+  }}
+/>
+
+### `clouds`
+
+A drifting noise layer over the sky gradient. `cover` 1 is overcast and hides the sun, moon and
+stars.
+
+<TypeTable
+  type={{
+    cover: { description: '0 clear to 1 fully overcast.', type: 'number', required: true },
+    color: { description: 'Cloud colour.', type: '[number, number, number]', required: true },
+    drift: { description: 'Drift of the layer, sky units per second on x and z.', type: '[number, number]', required: true },
+  }}
+/>
+
+### `precipitation`
+
+Rain streaks or snowflakes as analytic particles: nothing is stored or uploaded, and the field
+covers a world of any size. The primary ray samples a handful of depth layers, near to far,
+stopping at whatever it hit, so roofs and trees occlude the particles for free. At each sample,
+space is sheared along the fall direction (so streaks lean with the wind), stretched for rain,
+scrolled by fall × time and cut into cells, and a hash puts at most one particle in each cell.
+World positions stay put as the camera moves, and particles are kept at least a pixel wide at
+distance.
+
+<TypeTable
+  type={{
+    kind: { description: 'Streaks or flakes.', type: '"rain" | "snow"', required: true },
+    density: { description: '0 to 1: how many particles.', type: 'number', required: true },
+    fall: { description: 'Fall velocity in voxels per second; wind tilts it.', type: '[number, number, number]', required: true },
+    color: { description: 'Particle colour, already lit for the scene.', type: '[number, number, number]' },
+  }}
+/>
+
+The particles move with `FrameParams.time`, so precipitation needs a continuously rendering loop.
+
+### `surface`
+
+The ground's state rather than the sky's. `wet` darkens the ground and adds a sheen to upward
+faces; `cover` blends upward faces towards `coverColor` (settled snow). On medium and high quality a
+short upward ray keeps the cover off ground under canopies and roofs; `low` skips that ray.
+
+<TypeTable
+  type={{
+    wet: { description: '0 to 1: darker ground and a sheen on upward faces.', type: 'number', required: true },
+    cover: { description: '0 to 1: upward faces blend to coverColor.', type: 'number', required: true },
+    coverColor: { description: 'Settled snow colour.', type: '[number, number, number]', required: true },
+  }}
+/>
+
+### `waterWind`
+
+`[x, z]`: drifts the ripples on [water](/docs/renderer/lighting/#water); its length also raises
+them.
+
+### `effectScale`
+
+How many voxels the effects' own sizes are measured in (default 1): water wavelengths and bed fade,
+rain and snow particle size and layering, the sky's fog distance and the snow-shelter test. A world
+at k times the resolution passes k so waves, caustics, drops and snowflakes keep their size in it.
+Fog density and fall speeds are already per voxel and are scaled by whoever sets them.
+`atmosphereFrame(..., { voxelsPerMetre })` sets all of this for you.
+
+## Cost
+
+| effect | cost per pixel |
+|---|---|
+| fog, clouds | a few arithmetic operations |
+| precipitation | 8 hash samples along the primary ray |
+| surface cover | one short upward ray per upward-facing pixel, while `cover > 0` (medium and high only) |
+| wet, waterWind | shading terms only |
+
+## From the engine
+
+A game that wants weather keeps an `Atmosphere` (a preset, a script, a season), changes it by its
+own rules and hands it to `atmosphereFrame` with the time-of-day lighting each frame. The result is
+spread straight into `render`:
+
+```ts
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+
+const weather = { ...ATMOSPHERES.rain, wetness: 0.6 }; // the game owns wetness and cover
+renderer.render({
+  ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()),
+  ...atmosphereFrame(timeOfDay(0.4), weather, { voxelsPerMetre: 10 }),
+  time: now / 1000,
+});
+```
+
+See [Atmosphere](/docs/engine/atmosphere/) in the engine section for the presets, blending and
+transitions.

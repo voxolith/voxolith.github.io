@@ -1,0 +1,152 @@
+---
+title: Animation
+description: "@voxolith/engine/animation: rigs and quaternion clips, the animator, forward kinematics, baking posed models by inverse mapping, cover, wounds, severing."
+---
+
+Rigged entities are optional on the contract. A generator that authors one (such as
+[`gen-creature`](/docs/generators/creature/)) gives the entity a rest model whose voxels know their
+bone, a rig and a set of clips. `@voxolith/engine/animation` plays the clips, turns a pose into
+bone matrices, bakes the posed voxel model, and damages the rest model. It is headless and pure:
+getting a posed model on screen is the host's job, through the
+[stamper, a crowd or instances](/docs/engine/stamping-and-crowds/).
+
+```ts
+import { bakePose, makeAnimator, poseMatrices } from "@voxolith/engine/animation";
+
+const anim = makeAnimator(rat, "walk");
+anim.play("run", { fade: 0.1 });
+
+// per frame:
+for (const e of anim.update(dt)) if (e.name === "footfall") dust(e);
+const matrices = poseMatrices(rat.rig!, anim.pose());
+const posed = bakePose(rat.model, rat.rig!, matrices, { yaw: heading });
+```
+
+## The data
+
+| field | type | meaning |
+|---|---|---|
+| `model.bones` | `Uint8Array` | the bone owning each voxel, indexed like `model.data` |
+| `entity.rig` | [`Rig`](/docs/engine/api/engine/interfaces/Rig/) | `bones` and an optional `cover` table |
+| `entity.clips` | [`Clip`](/docs/engine/api/engine/interfaces/Clip/)`[]` | the animations |
+
+A [`Bone`](/docs/engine/api/engine/interfaces/Bone/) has an `id`, a `parent` index (-1 for the
+root; parents come before children), and a `head` and `tail` in rest-pose model voxels. A bone
+rotates about its head; the tail is where its children usually start.
+
+A clip has a `duration` in seconds, `loop`, and one [`ClipTrack`](/docs/engine/api/engine/interfaces/ClipTrack/)
+per animated bone: ascending `times` and four numbers per key, a unit quaternion (x, y, z, w)
+relative to rest. Voxolith's generators author clips at **12 frames a second**, which reads right
+at voxel scale and keeps the pose cache small. A clip can also carry a `root` offset track (a bob, a
+crouch; three numbers per key, in voxels) and [`ClipEvent`](/docs/engine/api/engine/interfaces/ClipEvent/)s,
+named moments such as footfalls or a bite, for sound, dust and gameplay.
+
+## Playing
+
+[`makeAnimator(entity, initial?)`](/docs/engine/api/animation/functions/makeAnimator/) returns an
+[`Animator`](/docs/engine/api/animation/interfaces/Animator/):
+
+- `play(id, { fade?, restart?, speed? })` switches clip, crossfading from the current pose over
+  `fade` seconds (default 0.2). Playing the current clip again does nothing unless `restart`.
+- `update(dt)` advances and returns the events crossed since the last update, including every
+  crossing of a looping clip's wrap.
+- `pose()`, `clip()`, `time()` (wrapped for loops) and `finished()` (a non-looping clip at its end).
+
+The pieces are available separately: [`sampleClip`](/docs/engine/api/animation/functions/sampleClip/)
+(slerp between keys), [`blendPoses`](/docs/engine/api/animation/functions/blendPoses/),
+[`restPose`](/docs/engine/api/animation/functions/restPose/),
+[`clipTime`](/docs/engine/api/animation/functions/clipTime/). A
+[`Pose`](/docs/engine/api/animation/interfaces/Pose/) is one rotation per bone plus a root offset.
+
+## Posing
+
+[`poseMatrices(rig, pose)`](/docs/engine/api/animation/functions/poseMatrices/) is forward
+kinematics: one rigid 3x4 matrix per bone (12 floats each) mapping rest model space to posed model
+space. Each bone rotates about its own head inside its parent's posed frame, and the root carries
+the pose's offset. The same matrices serve baking and hit-testing (a `BakedPose` from a crowd keeps
+them). Small quaternion and affine helpers (`quatAxisAngle`, `quatMul`, `quatToMat`, `mulAffine`,
+`invertRigid`, `transformPoint`) are exported for generators and hosts.
+
+## Baking
+
+[`bakePose(model, rig, matrices, options?)`](/docs/engine/api/animation/functions/bakePose/)
+produces the posed voxel model.
+
+<Steps>
+<Step>
+**Inverse mapping.** Forward-mapping every rest voxel to its posed position leaves holes as soon as
+a bone rotates (neighbours land two cells apart). Instead, for each bone every cell of its posed
+bounding box is taken back to rest space through the bone's inverse matrix and filled from the rest
+voxel there, if that voxel belongs to the bone. Every posed cell is sampled, so rotated limbs stay
+solid at any angle. Along a row the rest position is linear, so each row is clipped to the span
+that lands inside the bone's rest box rather than visiting every cell.
+</Step>
+<Step>
+**Weld** (`weld`, default on). Each bone samples only its own voxels, so where a child turns
+against its parent they can end up touching at an edge or a corner only, and a thin limb comes
+off. Around each posed joint the empty cells of a 3x3x3 block are filled from the rest model
+through either bone's inverse. The rest model decides what is solid, so a weld never adds bulk the
+body did not have.
+</Step>
+<Step>
+**Fill** (`fill`, default on) closes the one-voxel cracks that open on the outside of a bending
+joint.
+</Step>
+<Step>
+**Cover.** When a limb swings, voxels that were buried at rest (flesh under a haunch) end up on
+the surface. With a cover table (role value to surface role, e.g. interior to fur; `options.cover`
+or `rig.cover`), those are drawn with the cover instead. Voxels already on the rest surface,
+including wounds carved into the rest model, are left alone, so damage still shows its inside.
+</Step>
+</Steps>
+
+`yaw` turns the model about the vertical axis through the anchor inside the same inverse map, so a
+creature turns at any angle. That is resampling, which is why scenery sticks to
+[90° orientations](/docs/engine/placement-and-worlds/#orientations); a creature trades one-voxel
+exactness for motion. Baking the 3.5k-voxel rat takes about 0.6 ms.
+
+The result is a dense model with its own size and anchor, and `bones` for the posed voxels.
+
+### Caching poses
+
+Clips run at 12 fps and headings can be bucketed, so a herd sharing a few variants asks for the
+same few hundred poses repeatedly.
+[`makePoseCache(sizeOf, { maxBytes?, onEvict? })`](/docs/engine/api/animation/functions/makePoseCache/)
+is a least-recently-used cache with a byte budget (default 48 MB), keyed by the caller (variant,
+clip, frame, heading bucket, damage); `drop(prefix)` forgets one damaged creature's poses.
+[`makeCrowd`](/docs/engine/stamping-and-crowds/#crowds) builds on it.
+
+## Damage
+
+Both damage functions work on the **rest** model, so damage follows the creature through every
+pose it is baked into afterwards. They are pure: a game calls them, keeps the results and throws
+the pieces around; nothing here knows about physics. A generator that layers its interior (bone,
+flesh, organs under the skin, as gen-kit's `layerInterior` does) gets gore for free: carving simply
+exposes what is underneath.
+
+- [`wound(model, point, radius, { rim? })`](/docs/engine/api/animation/functions/wound/) removes the
+  voxels within `radius` of a rest-space point and optionally paints a rim role (blood) around the
+  hole.
+- [`sever(model, rig, bone, { rim? })`](/docs/engine/api/animation/functions/sever/) cuts a bone
+  and its [`subtree`](/docs/engine/api/animation/functions/subtree/) off. It returns the `body`
+  (still on the original rig; the severed bones own no voxels) and the `piece`: its own model,
+  anchored at the cut, with its own sub-rig and the `origin` where its anchor sat in the body's rest
+  space, so a game can spawn it in place. Both cut faces get the rim role.
+
+```ts
+import { wound } from "@voxolith/engine/animation";
+import { ROLE } from "@voxolith/gen-creature";
+
+const hurt = wound(member.rest ?? rat.model, hitPoint, 2.5, { rim: ROLE.BLOOD });
+member.rest = hurt;
+member.damage = (member.damage ?? 0) + 1; // a crowd then stops reusing the undamaged poses
+```
+
+## Authoring rigs
+
+Generators author rigs with gen-kit's `RiggedVolume`, in which later fills own what they overwrite
+(so a child owns its joint), and `layerInterior`, which gives the mass an inside by depth. The
+creature generator documents the resolution rules that keep a rig animating cleanly: nothing
+animated thinner than 2 voxels (the tail tip aside), 4 or more voxels between joints, and the detail
+budget spent on the head. See [Creatures](/docs/generators/creature/) and
+[the toolkit](/docs/generators/gen-kit/).

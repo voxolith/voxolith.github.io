@@ -1,0 +1,11 @@
+{
+  "name": "voxolith-api-docs",
+  "private": true,
+  "type": "module",
+  "description": "Generates the API reference pages from the package sources with TypeDoc. Its own install, outside the workspace: TypeDoc needs the classic TypeScript compiler API (TS <= 6), and the workspace is on TS 7.",
+  "dependencies": {
+    "typedoc": "^0.28.20",
+    "typedoc-plugin-markdown": "^4.13.1",
+    "typescript": "~6.0.3"
+  }
+}

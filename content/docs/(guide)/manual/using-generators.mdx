@@ -1,0 +1,145 @@
+---
+title: Using generators
+description: Build trees, rocks, houses and creatures from a seed, rebuild them from share codes, reuse a few variants many times, and ask for finer scales.
+---
+
+Generators bake models: a tree, a boulder, a townhouse, a rat. They are pure functions of their
+parameters and a seeded random number generator, so the same inputs always give the same voxels.
+That makes generated content safe for gameplay and saves, lets a model travel as a short share
+code, and means you can cache a model instead of storing it. This page covers calling them,
+choosing how many to make, and asking for finer detail.
+
+## What is available
+
+| package | generator ids | makes |
+|---|---|---|
+| `@voxolith/gen-tree` | `voxolith/tree.broadleaf`, `voxolith/tree.conifer` | oaks, maples, birches, spruces, pines |
+| `@voxolith/gen-bush` | `voxolith/bush`, `voxolith/thicket` | shrubs, thickets, brambles, hedges |
+| `@voxolith/gen-grass` | `voxolith/grass`, `voxolith/meadow`, `voxolith/fern` | grass, meadow, reeds, ferns |
+| `@voxolith/gen-rock` | `voxolith/rock`, `voxolith/outcrop` | boulders, outcrops, pebbles |
+| `@voxolith/gen-building` | `voxolith/house`, `voxolith/townhouse` | cottages, farmhouses, townhouses, towers, barns |
+| `@voxolith/gen-creature` | `voxolith/creature` | rigged, animated rats |
+| `@voxolith/gen-terrain` | none (not an entity generator) | ground, a river and lakes for a region |
+
+Each package's page under [Generators](/docs/generators/) lists its parameters and presets.
+
+## Calling one
+
+The direct call is the simplest. Every entity generator exports a `generateX(params, rng)` and a
+`PRESETS` table; the result carries the entity and some stats.
+
+```ts
+import { seededRandom } from "@voxolith/renderer/core";
+import { generateTree, PRESETS } from "@voxolith/gen-tree";
+
+const { entity } = generateTree(PRESETS.oak, seededRandom(42));
+```
+
+Tweak a preset by cloning it (`structuredClone(PRESETS.oak)`) and changing fields; never mutate the
+shared preset. Draw the seed from something stable, such as `hashSeed("village-oak-3")` or a world
+seed mixed with an index, so the same place grows the same tree every visit.
+
+The **registry** is the other way in. Each package has a `registerXGenerators()` that adds its
+generators to the engine by id, which is what workers, editors and share codes use:
+
+```ts
+import { hashSeed, seededRandom } from "@voxolith/renderer/core";
+import { decodeState, encodeState, generateFromState, getGenerator } from "@voxolith/engine";
+import { registerTreeGenerators, type TreeParams } from "@voxolith/gen-tree";
+
+registerTreeGenerators();
+const gen = getGenerator<TreeParams>("voxolith/tree.broadleaf")!;
+const params = structuredClone(gen.defaults);
+params.shape.height = 120;
+const oak = gen.generate(params, seededRandom(hashSeed("village-oak")));
+
+// A short code that rebuilds exactly this tree wherever the generator is registered.
+const code = encodeState(gen, { seed: 7, params });
+const again = generateFromState(decodeState<TreeParams>(code));
+```
+
+A generator also describes its parameters as `ParamSpec`s (path, label, range, step, group), which
+is enough to build a settings UI without knowing the parameter type; the [viewer](/viewer/) does
+exactly that. A share code carries the generator id, its version, a hash of its parameter layout,
+the seed and every declared parameter. `decodeState` needs the generator registered and throws on
+a code made with a different parameter layout, rather than rebuild it into a different model.
+
+## Few models, many placements
+
+Generation dominates load time. Measured on the examples' forest, it was 89.6% of the build: 10.8 of
+12.1 seconds for 1120 entities, while placing them took 2%. So generate a handful of variants per
+species and place each many times. `makeVariantPool` does that lazily, and hands back a random
+orientation with each pick, so eight models give 64 silhouettes:
+
+```ts
+import { makeVariantPool, type Entity } from "@voxolith/engine";
+
+const oaks = makeVariantPool({
+  count: 8,
+  make: (i): Entity => {
+    const p = structuredClone(PRESETS.oak);
+    p.shape.height = 90 + i * 6; // vary by index, or the pool is 8 copies of one tree
+    return generateTree(p, seededRandom(seed + i * 31)).entity;
+  },
+});
+const v = oaks.pick(rng); // { entity, orientation, index }
+```
+
+For more than a few dozen models, generate them on workers and cache them; see
+[Workers and caching](/docs/manual/workers-and-caching/).
+
+## Scale: voxels per metre
+
+Generator parameters are written in **10 voxels per metre**: a 120-voxel oak is 12 m tall. That is
+also the scale every share code means. The same design can be asked for finer, at 50 or 100 voxels
+per metre (every entity generator lists `scales: [50, 100]`):
+
+```ts
+const fine = generateTree(PRESETS.oak, seededRandom(42), "oak", { voxelsPerMetre: 100 }).entity;
+fine.model.sparse; // 8³ bricks; draw it as an instance
+```
+
+Generators build natively and then refine the surface with per-role rules: trees, bushes and grass
+redraw limbs and blades from their skeletons with single leaves or needles, buildings get bricks,
+tiles and planks at real size, rocks round off with grain and cracks. Building a whole volume
+natively at 10 times the resolution would cost 1000 times as much, so they never do.
+
+What finer scales cost you:
+
+- 0.1 to 3 seconds per model and a few to a few tens of MB of GPU bricks each. Generate them on
+  workers, and keep the variant count low (the valley example defaults to three per species).
+- Fine models are **sparse** (`model.sparse`, `data` empty): draw them as
+  [instances](/docs/manual/instances/), not by stamping.
+- A context at 10 gives the byte-identical native model, so existing codes never change.
+- Some roles (`looseRoles`: single leaves, petals) may float at fine scales; everything else is
+  still one grounded piece.
+
+The creature is authored close to real scale already: use `atScale(params, voxelsPerMetre)` from
+`@voxolith/gen-creature` to size a rat for a world with a fixed unit.
+
+## Terrain is different
+
+`@voxolith/gen-terrain` describes a region rather than a model: `generateTerrain(params, seed)`
+returns an editable `heights` map, `fillBrick` to write ground a brick at a time, `pick` for rays and
+colour roles whose water role carries the `water` material. Settlement layout (house sites, levelled
+pads, paths) is your game's code on top of it, and must edit `heights` before anything is built.
+See [Streaming](/docs/manual/streaming/) and [Generators: terrain](/docs/generators/terrain/).
+
+## Pitfalls
+
+- Never use `Math.random` for anything that feeds a generator; the result is then not reproducible.
+- Parameter defaults sit on their `ParamSpec` step grid. If you expose a slider, keep to that step,
+  or a share code of the value rebuilds something slightly different.
+- Registering the same generator twice throws. Register once per realm: once on the main thread,
+  and once inside each worker.
+
+## See also
+
+- [Generators: using generators](/docs/generators/using-generators/)
+- [Generators: scales and refinement](/docs/generators/scales-and-refinement/)
+- [Engine: share codes](/docs/engine/share-codes/) and [generator contract](/docs/engine/generator-contract/)
+- API: [`EntityGenerator`](/docs/engine/api/engine/interfaces/EntityGenerator/),
+  [`GenerateContext`](/docs/engine/api/engine/interfaces/GenerateContext/),
+  [`makeVariantPool`](/docs/engine/api/engine/functions/makeVariantPool/),
+  [`encodeState`](/docs/engine/api/engine/functions/encodeState/),
+  [`generateTree`](/docs/generators/api/gen-tree/functions/generateTree/)

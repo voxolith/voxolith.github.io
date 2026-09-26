@@ -1,0 +1,302 @@
+---
+title: "5. Day and night"
+description: "Rat Hunt, step 5: a game clock that drives timeOfDay and atmosphereFrame from morning to dusk, and point lights that come on as it gets dark."
+---
+
+The game lasts one day. In this step a clock moves the sun from mid-morning to after sunset, the
+sky and the light change with it, and as it gets dark a lamp by the door and a lantern you carry
+come on.
+
+## The clock
+
+[`timeOfDay(phase)`](/docs/engine/api/atmosphere/functions/timeOfDay/) turns a single number
+into every lighting field of a frame: the sun's direction and colour, ambient light, the sky
+gradient, the moon. The phase runs over a day: 0 is midnight, 0.25 sunrise, 0.5 noon, 0.75
+sunset. Rat Hunt runs from 0.3 to 0.78, early morning to just after sunset, over three minutes:
+
+```ts
+import type { PointLight, Vec3 } from "@voxolith/renderer";
+
+const DAY_SECONDS = Math.max(10, Number(params.get("day") ?? 180));
+const DAWN = 0.3, DUSK = 0.78;
+let clock = 0;
+```
+
+`?day=30` on the URL makes a 30-second day, which is handy while you test the evening.
+
+Remove the fixed `sky` constant from step 2; the frame now computes it from the clock:
+
+```ts
+    clock += dt;
+    const phase = DAWN + (Math.min(clock, DAY_SECONDS) / DAY_SECONDS) * (DUSK - DAWN);
+    const lighting = timeOfDay(phase);
+    renderer.setLights(lights(lighting.nightFactor));
+    status.textContent = `${Math.max(0, Math.ceil(DAY_SECONDS - clock))} s to nightfall`;
+```
+
+and renders with it:
+
+```ts
+    renderer.render({ ...view(), ...atmosphereFrame(lighting, ATMOSPHERES.clear), time: now / 1000 });
+```
+
+[`atmosphereFrame`](/docs/engine/api/atmosphere/functions/atmosphereFrame/) combines the lighting
+with an atmosphere. `ATMOSPHERES.clear` changes nothing; try `ATMOSPHERES.cloudy`, `rain` or
+`fog` to see the same day under other weather. The engine only describes and blends weather:
+when it changes, and how wet the ground gets, is the game's decision (see
+[Atmosphere and weather](/docs/manual/atmosphere-and-weather/)).
+
+At the top of the file, next to `canvas`, take the HUD's status line:
+
+```ts
+const status = document.getElementById("status")!;
+```
+
+## Lights
+
+The sun and moon are one directional key light, which `timeOfDay` controls. Anything else that
+gives light is a [point light](/docs/renderer/api/renderer/interfaces/PointLight/), a position
+with a colour and a hard `range` beyond which it adds exactly nothing. Up to 32 at a time are
+passed with `renderer.setLights`.
+
+```ts
+const doorLamp: Vec3 = [hx, pad + 20, hz1 + 3];
+
+function lights(night: number): PointLight[] {
+  if (night < 0.02) return [];
+  return [
+    { position: doorLamp, color: [1, 0.72, 0.4], intensity: 2.4 * night, range: 90, glow: 2 * night },
+    // A lantern the player carries: no shadow ray, so it costs little.
+    { position: [player.x, player.eyeY - 4, player.z], color: [1, 0.85, 0.6], intensity: 0.9 * night, range: 60, shadows: false },
+  ];
+}
+```
+
+`nightFactor` from `timeOfDay` goes from 0 by day to 1 at night, so both lights fade in through
+the evening instead of switching on. By day there are no point lights at all, which costs
+nothing.
+
+- The door lamp stands just in front of the door, 20 voxels up, at the top of the frame. Its
+  `glow` draws a visible halo, so the lamp itself shows.
+- The lantern follows the player, a little below the eye. It sets `shadows: false`: every
+  shadowed light traces an extra ray per pixel it reaches, and a light at the camera casts
+  shadows you would hardly see.
+
+The lit windows from step 4 are emissive: they glow, but light only their own voxels. To make a
+window light the ground outside, put a point light at it.
+
+## Run it
+
+Load the page with `?day=30`. The sun climbs, swings across and reddens; the shadows lengthen; at
+dusk the lamp and the lantern come on and the windows glow. The HUD counts down to nightfall.
+When the clock runs out the evening simply stays; the next step makes that the end of the game.
+
+<Accordions>
+<Accordion title="src/main.ts after step 5">
+
+```ts title="src/main.ts"
+// Rat Hunt: catch the giant rats in the valley before night falls.
+import {
+  createRenderer,
+  firstPersonFrame,
+  hashSeed,
+  initGpu,
+  makeFrameLoop,
+  observeResize,
+  resizeToDisplay,
+  seededRandom,
+  showUnsupportedScreen,
+  WebGPUUnsupportedError,
+  type PointLight,
+  type Vec3,
+} from "@voxolith/renderer";
+import { blitModelToBricks, PaletteAllocator, type Entity, type Orientation } from "@voxolith/engine";
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import {
+  axis,
+  button,
+  createInput,
+  makeActions,
+  makeLookController,
+  makeTouchControls,
+  prepareSurface,
+} from "@voxolith/engine/input";
+import { generateTerrain } from "@voxolith/gen-terrain";
+import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
+import { generateBuilding, PRESETS as BUILDINGS } from "@voxolith/gen-building";
+import "./style.css";
+
+const canvas = document.getElementById("scene") as HTMLCanvasElement;
+const status = document.getElementById("status")!;
+const params = new URLSearchParams(location.search);
+
+// --- WebGPU -------------------------------------------------------------------
+const gpu = await initGpu(canvas).catch((err: unknown) => {
+  if (err instanceof WebGPUUnsupportedError) showUnsupportedScreen(err.message, { appName: "Rat Hunt" });
+  throw err;
+});
+
+// --- the valley -----------------------------------------------------------------
+const SIZE = { x: 384, y: 128, z: 384 };
+const seed = hashSeed(params.get("seed") ?? "rat-hunt");
+const rng = seededRandom(seed);
+
+const terrain = generateTerrain(
+  {
+    width: SIZE.x, depth: SIZE.z, height: SIZE.y,
+    baseY: 18, relief: 20, featureSize: 100, waterLevel: 13,
+    river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 },
+  },
+  seed,
+);
+
+// --- the farmhouse and the trees -------------------------------------------------
+const houseParams = structuredClone(BUILDINGS.cottage);
+houseParams.look.lit = 0.5; // half the windows glow
+const house = generateBuilding(houseParams, seededRandom(seed + 1)).entity;
+
+// Somewhere dry near the middle, levelled flat before any ground is built.
+const hs = house.model.size, ha = house.model.anchor;
+let hx = SIZE.x / 2, hz = SIZE.z / 2;
+for (let i = 0; i < 50; i++) {
+  const x = SIZE.x * (0.3 + rng() * 0.4), z = SIZE.z * (0.3 + rng() * 0.4);
+  const corners = [[-1, -1], [1, -1], [-1, 1], [1, 1], [0, 0]];
+  if (corners.every(([cx, cz]) => terrain.heightAt(x + cx * hs.x * 0.7, z + cz * hs.z * 0.7) > terrain.waterLevel + 1)) {
+    hx = Math.round(x); hz = Math.round(z);
+    break;
+  }
+}
+const hx0 = hx - ha[0], hz0 = hz - ha[2], hx1 = hx0 + hs.x - 1, hz1 = hz0 + hs.z - 1;
+const pad = levelPad(hx0, hz0, hx1, hz1, 12);
+const insideHouse = (x: number, z: number, margin: number) =>
+  x > hx0 - margin && x < hx1 + margin && z > hz0 - margin && z < hz1 + margin;
+
+/** Flatten a box to its average height and blend the ground back over an apron. */
+function levelPad(x0: number, z0: number, x1: number, z1: number, apron: number): number {
+  let sum = 0, n = 0;
+  for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) { sum += terrain.heightAt(x, z); n++; }
+  const h = Math.round(sum / n);
+  for (let z = z0 - apron; z <= z1 + apron; z++)
+    for (let x = x0 - apron; x <= x1 + apron; x++) {
+      if (x < 0 || z < 0 || x >= terrain.width || z >= terrain.depth) continue;
+      const edge = Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(z0 - z, 0, z - z1));
+      if (edge > apron) continue;
+      const w = 1 - edge / apron, i = x + z * terrain.width;
+      terrain.heights[i] = Math.round(h * w + terrain.heights[i] * (1 - w));
+    }
+  return h;
+}
+
+// Six tree models, two of each species, reused for every tree.
+const treeModels: { kind: string; entity: Entity }[] = [];
+for (const kind of ["oak", "birch", "spruce"] as const)
+  for (let n = 0; n < 2; n++) {
+    const p = structuredClone(TREES[kind]);
+    p.shape.height = 80 + n * 30;
+    treeModels.push({ kind, entity: generateTree(p, seededRandom(seed + treeModels.length * 31)).entity });
+  }
+const trees: { x: number; z: number; model: (typeof treeModels)[number]; orientation: Orientation }[] = [];
+for (let tries = 0; trees.length < 28 && tries < 2000; tries++) {
+  const x = Math.round(20 + rng() * (SIZE.x - 40)), z = Math.round(20 + rng() * (SIZE.z - 40));
+  if (terrain.waterAt(x, z) || insideHouse(x, z, 40)) continue;
+  if (trees.some((t) => Math.hypot(t.x - x, t.z - z) < 34)) continue;
+  const model = treeModels[Math.floor(rng() * treeModels.length)];
+  trees.push({ x, z, model, orientation: Math.floor(rng() * 8) as Orientation });
+}
+
+// --- palette and renderer ----------------------------------------------------------
+const palette = new PaletteAllocator(1);
+const groundBase = palette.allocate(terrain.roles, "terrain").base;
+const houseBase = palette.allocateFor(house, "house").base;
+const treeBase = new Map(treeModels.map((t) => [t, palette.allocate(t.entity.model.roles, t.kind).base]));
+
+const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
+renderer.setQuality(gpu.software ? "low" : "medium");
+
+renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) =>
+  terrain.fillBrick(cells, ox, oy, oz, groundBase),
+);
+blitModelToBricks(renderer, house.model, { x: hx, y: pad + 1, z: hz }, houseBase);
+for (const t of trees) {
+  blitModelToBricks(renderer, t.model.entity.model, { x: t.x, y: terrain.heightAt(t.x, t.z) + 1, z: t.z }, treeBase.get(t.model)!, t.orientation);
+}
+
+// --- input --------------------------------------------------------------------------
+prepareSurface(canvas);
+const input = createInput(canvas);
+const actions = makeActions(input, {
+  strafe: axis({ negative: ["key:KeyA", "key:ArrowLeft"], positive: ["key:KeyD", "key:ArrowRight"], analog: ["pad:LeftX", "touch:move.x"] }),
+  walk: axis({
+    negative: ["key:KeyS", "key:ArrowDown", "pad:LeftY+", "touch:move.y+"],
+    positive: ["key:KeyW", "key:ArrowUp", "pad:LeftY-", "touch:move.y-"],
+  }),
+  run: button("key:ShiftLeft", "key:ShiftRight", "pad:LT"),
+});
+const look = makeLookController(input, { yaw: 180, pitch: -8, keys: { left: ["KeyQ"], right: ["KeyE"] } });
+makeTouchControls(input, { joysticks: [{ id: "move", side: "left" }] });
+
+// --- the player ---------------------------------------------------------------------
+const EYE = 17; // 1.7 m
+const player = { x: hx, z: Math.min(SIZE.z - 10, hz1 + 70), eyeY: 0 };
+player.eyeY = terrain.heightAt(player.x, player.z) + EYE;
+const view = () => firstPersonFrame([player.x, player.eyeY, player.z], look.yaw(), look.pitch(), 70);
+
+function movePlayer(dt: number): boolean {
+  const [sx, wz] = actions.vector("strafe", "walk");
+  if (!sx && !wz) return false;
+  const speed = (actions.down("run") ? 80 : 40) * dt;
+  const yaw = (look.yaw() * Math.PI) / 180;
+  // firstPersonFrame: forward is (sin, cos), screen-right is cross(forward, up).
+  const nx = player.x + (Math.sin(yaw) * wz - Math.cos(yaw) * sx) * speed;
+  const nz = player.z + (Math.cos(yaw) * wz + Math.sin(yaw) * sx) * speed;
+  if (nx < 4 || nz < 4 || nx > SIZE.x - 5 || nz > SIZE.z - 5 || insideHouse(nx, nz, 3)) return false;
+  player.x = nx;
+  player.z = nz;
+  return true;
+}
+
+// --- day, night and lights ---------------------------------------------------------------
+const DAY_SECONDS = Math.max(10, Number(params.get("day") ?? 180));
+const DAWN = 0.3, DUSK = 0.78;
+let clock = 0;
+const doorLamp: Vec3 = [hx, pad + 20, hz1 + 3];
+
+function lights(night: number): PointLight[] {
+  if (night < 0.02) return [];
+  return [
+    { position: doorLamp, color: [1, 0.72, 0.4], intensity: 2.4 * night, range: 90, glow: 2 * night },
+    // A lantern the player carries: no shadow ray, so it costs little.
+    { position: [player.x, player.eyeY - 4, player.z], color: [1, 0.85, 0.6], intensity: 0.9 * night, range: 60, shadows: false },
+  ];
+}
+
+// --- the loop ------------------------------------------------------------------------------
+const loop = makeFrameLoop({
+  continuous: true,
+  render(now, dt) {
+    input.update();
+    look.update(dt);
+    movePlayer(dt);
+    const ground = terrain.heightAt(player.x, player.z) + EYE;
+    player.eyeY += (ground - player.eyeY) * Math.min(1, dt * 10);
+
+    clock += dt;
+    const phase = DAWN + (Math.min(clock, DAY_SECONDS) / DAY_SECONDS) * (DUSK - DAWN);
+    const lighting = timeOfDay(phase);
+    renderer.setLights(lights(lighting.nightFactor));
+    status.textContent = `${Math.max(0, Math.ceil(DAY_SECONDS - clock))} s to nightfall`;
+
+    resizeToDisplay(gpu);
+    renderer.render({ ...view(), ...atmosphereFrame(lighting, ATMOSPHERES.clear), time: now / 1000 });
+  },
+});
+observeResize(canvas, loop);
+```
+
+</Accordion>
+</Accordions>
+
+See [Lighting](/docs/manual/lighting/) for shadow cost and the quality presets' `shadowSteps`.
+
+**Next:** [rats](/docs/tutorial/rats/).
