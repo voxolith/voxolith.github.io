@@ -164,21 +164,31 @@ It draws exactly what baking writes cell for cell (bake step one, checked in
 diagonal gaps and fill joint cracks are not reproduced, which in practice is not visible (compare
 them side by side in [examples/rigged](/examples/rigged/)).
 
-CPU cost (`bun run --cwd generators/creature bench --rigged`: bone matrices plus the renderer's
-own instance packing) and the words uploaded per frame, against the stamped path above:
+Each pose (a set of bone matrices for a clip frame) is packed in the model's own space and uploaded
+once, then shared by every rat showing it, wherever it stands; per frame a rat costs one instance
+record, as a baked instance does.
 
-| rats | ms/frame | KB/frame |
-|---|---|---|
-| 10 | 0.1 | 37 |
-| 100 | 0.7 | 383 |
-| 500 | 3.4 | 1901 |
-| 1000 | 6.5 | 3804 |
+What each path costs, headless (`bun run --cwd generators/creature bench --mode=stamped|instances|rigged [--damaged]`:
+the crowd's real code, the renderer's brick encoding and instance packing), for 1000 rats. "Stale"
+counts rats shown last frame's pose because the bake budget ran out:
 
-The CPU cost is a fraction of stamping's; the upload is larger (bone transforms and part masks,
-about 3.8 KB per rat), and the GPU does more per sample than for a baked instance: on a desktop
-Radeon, 300 rats in `examples/swarm?rigged` draw at about two thirds of the frame rate of baked
-instances. Baked instances remain the default; use `rigged` where bakes, pose memory or CPU time
-are what limit you.
+| 1000 rats, poses shared | CPU/frame | bakes/frame | stale/frame | models | upload/frame |
+|---|---|---|---|---|---|
+| stamped | 35.8 ms | 3.6 | 13 | 2.6 MB (world bricks) | 1.1 MB |
+| baked instances | 1.0 ms | 0 | 0 | 1.4 MB | 94 KB |
+| posed on the GPU | 0.7 ms | 0 | 0 | 0.4 MB | 94 KB |
+
+| 1000 rats, each wounded differently | CPU/frame | bakes/frame | stale/frame | models | upload/frame |
+|---|---|---|---|---|---|
+| baked instances | 6.9 ms | 6.7 | 759 | 35.6 MB | 124 KB |
+| posed on the GPU | 1.1 ms | 0 | 0 | 27.9 MB | 94 KB |
+
+When poses repeat, baked instances and posing on the GPU cost the CPU and the bus about the same;
+when they do not (damage, per-member variation), baking cannot keep up and most members freeze on
+an old pose, while posing on the GPU animates every one. The price is GPU time per sample: on a
+desktop Radeon, 300 rats in `examples/swarm` draw at 46 fps as baked instances and 29 fps posed on
+the GPU (60 stamped, which costs 12 ms of CPU a frame instead). Baked instances remain the default;
+choose `rigged` when poses stop repeating, when bakes stall members, or when pose memory matters.
 
 ## References
 

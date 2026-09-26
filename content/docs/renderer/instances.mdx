@@ -136,9 +136,13 @@ renderer.setInstances(
 );
 ```
 
-Each such instance is a single entry in the per-cell lists. It carries a small grid of part masks,
-two 32-bit words per 8³ brick of its box (which parts can be in the brick, and which joints weld
-there), so a sample tests one or two parts and a ray skips the bricks no part reaches. A model can
+Each such instance is a single entry in the per-cell lists. Its pose (the part inverses, joints and
+a small grid of part masks, two 32-bit words per 8³ brick of the posed model saying which parts can
+be in the brick and which joints weld there) lives in the model's own space, so the renderer packs
+and uploads it once, keyed by the part transforms' identity, and every instance showing it shares
+it; per frame an instance costs its record. The masks let a sample test one or two parts and a ray
+skip the bricks no part reaches. Pass `partBoxes` to `addModel` (e.g. an undamaged model's) so
+damaged copies share poses too. A model can
 have at most 32 parts. The engine drives this from a rig: `prepareRigged` and
 `makeCrowd({ instances, rigged: true })` ([stamping and crowds](/docs/engine/stamping-and-crowds/#posed-on-the-gpu)).
 
