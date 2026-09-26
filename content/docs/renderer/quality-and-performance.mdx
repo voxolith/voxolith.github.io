@@ -159,3 +159,28 @@ own `--user-data-dir`, so the flag applies to development only.
 
 `renderer.stats()` and `instanceStats()` report the memory side; see
 [Storage](/docs/renderer/storage/#growth-and-limits).
+
+## Pipelines and GPU timing
+
+The renderer shades each pixel in one of two ways, with the same shading code and the same image:
+
+- **compute**: 8x8 compute tiles, written straight into the canvas when its format allows storage
+  writes (`rgba8unorm`, or `bgra8unorm` with the `bgra8unorm-storage` feature), otherwise into a
+  frame texture that a small present pass copies out;
+- **fragment**: one fullscreen fragment pass.
+
+`createRenderer(gpu, scene, { pipeline })` picks one; the default, `"auto"`, uses compute except for
+frames with instances posed on the GPU, whose kernel runs faster as a fragment shader on the
+hardware measured so far. The compute path is also the base for the passes that follow it: a
+coarse depth pre-pass, temporal accumulation and global illumination.
+
+When the adapter offers `timestamp-query`, `initGpu` enables it and the renderer times its passes:
+
+```ts
+const perf = makePerf({ enabled: true, gpuTimings: () => renderer.gpuTimings() });
+renderer.gpuTimings(); // e.g. { trace: 4.21 } in milliseconds, averaged over frames
+```
+
+`GpuContext.features` says what was granted. Browsers quantise timestamps (to about 0.1 ms unless
+the page is cross-origin isolated), so read the numbers as averages.
+
