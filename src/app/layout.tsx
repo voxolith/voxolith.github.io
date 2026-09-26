@@ -24,6 +24,8 @@ export const metadata: Metadata = {
     images: [{ url: '/brand/lockup-1280x640.png', width: 1280, height: 640, alt: 'Voxolith, WebGPU voxel engine' }],
   },
   twitter: { card: 'summary_large_image' },
+  // Google Search Console ownership of https://voxolith.github.io/ (URL-prefix property).
+  verification: { google: 'Plk9_lUdbmUbrXxd20iwtwlO-b139CmlsFP2_wXPIS0' },
 };
 
 export const viewport: Viewport = {
