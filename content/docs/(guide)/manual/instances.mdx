@@ -76,6 +76,12 @@ point lights and water treat it like any other voxel.
   that never uses them pays nothing. The first placement builds the instanced pipeline.
 - Static placements cost once. A dynamic set costs its members and the cells they touch every
   commit, so keep only what actually moves in it.
+- A ray step through a crowded cell tests only the instances that can be in its 16³ sub-cell (see
+  [crowded cells](/docs/renderer/instances/#crowded-cells)), but each of those is still a
+  transform and a model lookup per voxel. Rays cost by how far they travel through foliage, so a
+  close-up scene at a fine scale wants a view distance (`fog.distance`, see
+  [atmosphere](/docs/renderer/atmosphere/#fog)); `renderer.setDebug(10)` shows the steps each ray
+  took.
 
 ## Pitfalls
 

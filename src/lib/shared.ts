@@ -31,6 +31,12 @@ export const demos = [
     text: 'The same valley at 100 voxels per metre: refined models drawn as instances, the ground streamed in chunks.',
   },
   {
+    title: 'Nightwood',
+    href: '/examples/nightwood/',
+    image: '/shots/nightwood.webp',
+    text: 'A dense forest at night at 1 cm voxels: moonlight through the canopy, a lit cottage and fireflies. Look around; fog sets the view distance.',
+  },
+  {
     title: 'Demolition Shot',
     href: '/demolition-shot/',
     image: '/shots/demolition-shot.webp',
@@ -67,6 +73,7 @@ export const appPages = [
   '/examples/minecraft-region/',
   '/examples/world/',
   '/examples/valley/',
+  '/examples/nightwood/',
   '/examples/creature/',
   '/examples/swarm/',
   '/examples/instances/',

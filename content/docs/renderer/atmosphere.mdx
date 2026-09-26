@@ -27,13 +27,20 @@ frame with the camera and lighting; nothing is uploaded.
 ### `fog`
 
 Exponential extinction towards a colour, optionally thinning with height. It is applied to hits by
-their distance and to the sky at a fixed far distance, so the horizon dissolves into it.
+their distance and to the sky at a fixed far distance, so the horizon dissolves into it. Lamp glows
+are seen through the fog between the eye and each lamp.
+
+`distance` turns fog into a view distance ("fog of war"): primary rays stop there, and the fog
+closes to total over its last quarter, so the cut never shows and nothing past it is traced. The
+sky is behind the wall too. It is the way to bound a close-up scene at a fine scale, like the
+[nightwood](/docs/examples/nightwood/) example.
 
 <TypeTable
   type={{
     density: { description: 'Extinction per voxel of distance: 0.002 is a light haze, 0.02 thick fog.', type: 'number', required: true },
     color: { description: 'Fog colour.', type: '[number, number, number]', required: true },
     heightFalloff: { description: 'Fog thins with height at this rate per voxel above y = 0. 0 is uniform.', type: 'number', default: '0' },
+    distance: { description: 'View distance in voxels: rays stop there and the fog is total. 0 is unbounded.', type: 'number', default: '0' },
   }}
 />
 

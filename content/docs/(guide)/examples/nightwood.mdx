@@ -1,0 +1,90 @@
+---
+title: nightwood
+description: "A first-person night in a dense forest at 100 voxels per metre: moonlight, a cottage with lit windows through the trees, fireflies, and fog as the view distance."
+---
+
+**[Open the live page](/examples/nightwood/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/nightwood/main.ts)
+
+<ImageZoom src="/shots/nightwood.webp" alt="The nightwood example: a cottage with lit windows and a lantern at the door, seen across a flowering clearing between dark trunks at night" width={960} height={540} />
+
+You stand in a clearing in a dense wood at night. Oak, birch and spruce close in on every side,
+bushes, bracken and grass grow underneath, and through a gap in the trees a cottage has its windows
+lit and a lantern at the door. Fireflies drift between the trunks. You can look around but not
+walk. The camera stands still, so the world only has to reach as far as the fog lets you see.
+The lighting is the point of the page, and the renderer's coming work on temporal accumulation and
+world-space light will be measured against it.
+
+## What it shows
+
+- **1 cm voxels close up.** Every model is generated at 100 voxels per metre on the generator
+  workers (the world page's worker, with its model cache in production builds) and drawn as
+  instances: about 250 trees, 850 shrubs and 900 plants from 12 models. See
+  [Scales and refinement](/docs/generators/scales-and-refinement/).
+- **Fog as the view distance.** [`fog.distance`](/docs/renderer/atmosphere/#fog) stops every
+  primary ray at 24 m and closes the fog over its last quarter, so nothing past it is traced and
+  the edge of the 60 m world never shows.
+- **Moonlight.** The key light is the moon of
+  [`timeOfDay(0.98)`](/docs/engine/api/atmosphere/functions/timeOfDay/), brightened and turned
+  bluer. It shadows through the canopy, so only the clearing is moonlit.
+- **Point lights.** The lantern is a shadowed point light with a halo. Each firefly is a small
+  unshadowed one with a halo, wandering its own slow path and pulsing, up to 28 of the renderer's
+  32 lights. The window glass is emissive, which lights only itself (see
+  [Lighting](/docs/manual/lighting/)).
+- **Crowded instance cells.** Canopies overlap, so each 64³ cell of the wood lists about 20
+  instances. The renderer splits those lists by 16³ sub-cell (see
+  [crowded cells](/docs/renderer/instances/#crowded-cells)), which makes this page about 8 times
+  faster.
+
+## The interesting part
+
+The view distance is one field of the fog, and the fireflies are ordinary point lights, rebuilt
+every frame:
+
+```ts
+const fog = { density: 1.2 / m(30), color: [0.025, 0.035, 0.06] as Vec3, heightFalloff: 0, distance: m(VIEW) };
+
+const lights = (t: number): PointLight[] => [
+  { position: lantern, color: [1.0, 0.66, 0.34], intensity: 2.4, range: m(11), glow: m(0.12) },
+  ...flies
+    .filter((f) => pulse(f, t) > 0.02)
+    .map((f): PointLight => ({
+      position: wander(f, t),
+      color: [0.78, 1.0, 0.36],
+      intensity: 0.9 * pulse(f, t),
+      range: m(2.2),
+      shadows: false,
+      glow: m(0.035),
+    })),
+];
+```
+
+## Cost
+
+Rays through foliage at 1 cm step voxel by voxel wherever an instance may be, and each step
+transforms into the instances there. So this page is expensive: about 60 ms a frame at 1280 × 720
+on a desktop Radeon, with the adaptive render scale at its floor. Phones get 50 voxels per metre
+(an eighth of the voxels), 12 fireflies and the Medium preset. `renderer.setDebug(10)` shows the
+steps each ray took; `?renderScale=` fixes the scale for measuring.
+
+## Controls
+
+Drag (or click for mouse look) to look around; Q/E turn and R/F look up and down; a gamepad's
+right stick works too.
+
+## URL options
+
+| option | default (phone) | effect |
+|---|---|---|
+| `?full` | | desktop settings on a phone |
+| `?vpm=` | 100 (50) | voxels per metre: 50 or 100 |
+| `?view=` | 24 | view distance in metres, 8 to 40 |
+| `?fireflies=` | 24 (12) | fireflies, 0 to 28 |
+| `?trees=`, `?shrubs=`, `?plants=` | 1 | density of each, 0 to 1 |
+| `?seed=` | `nightwood` | a different wood |
+| `?renderScale=` | adaptive | a fixed render scale, for measuring |
+
+Plus the [common ones](/docs/examples/#common-url-options).
+
+See also [Instances](/docs/manual/instances/), [Lighting](/docs/manual/lighting/) and
+[Atmosphere and weather](/docs/manual/atmosphere-and-weather/).

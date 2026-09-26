@@ -57,6 +57,17 @@ bricks next to content are flagged (`NEAR_BIT`), because a ray through a rotated
 
 A cell lists at most 255 instances; entries beyond that are dropped with a console warning.
 
+### Crowded cells
+
+Overlapping boxes make long lists: in a dense wood at 100 voxels per metre a 64³ cell lists about
+20 instances, up to 75, and every step of a ray through a canopy would test them all. So a static
+cell with 8 or more gets a table instead, built once with the static set. Each of its 4³ sub-cells
+(16³ voxels) lists only the instances whose occupied model bricks can show a voxel there, in the
+cell list's order, so the same instance wins. It also masks which of its eight bricks they reach.
+A step then tests two or three instances, and a ray skips bricks and sub-cells nothing reaches
+without asking any model. On the nightwood page that is about 8 times faster. Cells a dynamic
+instance touches fall back to their whole list while it is there.
+
 ### Matching stamped orientations
 
 The engine stamps models in eight axis-aligned orientations (four quarter turns, optionally
@@ -69,7 +80,7 @@ what stamping with orientation `o` would; the engine's
 There are two sets of instances, sent separately:
 
 - **Static** (the default), for scenery: `setInstances(list)` replaces the static set and builds its
-  per-cell lists once.
+  per-cell lists (and the sub-cell tables of crowded cells) once.
 - **Dynamic**, for a crowd: `setInstances(list, { dynamic: true })` replaces only the moving set,
   every frame. Its cost is the moving instances and the cells they touch, however much scenery
   there is: moving instances go after the static ones, each cell they touch gets a fresh list (its

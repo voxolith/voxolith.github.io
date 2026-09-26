@@ -55,7 +55,8 @@ instances in it) skips 64 voxels, a null brick 8. Ray walks look a brick up once
 and reuse it for every step inside.
 
 Every index table sits in one storage buffer, in regions: the top levels of the world and of each
-model, index blocks, the per-cell instance lists, instances and models. That keeps the pass
+model, index blocks, the per-cell instance lists, instances, models, posed parts and the sub-cell
+tables of crowded instance cells. That keeps the pass
 within the default limit of 8 storage buffers per shader stage. The world's top level is mirrored
 in a small 3D texture as well, since every ray step starts there and texture reads cache better.
 
