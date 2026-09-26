@@ -74,6 +74,15 @@ crowd.update(members, camera.camPos); // poses, caches, and commits the layer
 A member that falls outside the bake budget keeps last frame's pose, so a burst of new poses never
 stalls a frame. `crowd.cache.stats()` reports hits and misses; the swarm example shows them live.
 
+### Posing on the GPU
+
+Pass `rigged: true` with `instances` and a crowd bakes nothing: the renderer poses each rat from
+one shared rest model using its bone matrices. CPU cost drops to a fraction of stamping's, at the
+price of more GPU work per sample; see
+[posed on the GPU](/docs/engine/stamping-and-crowds/#posed-on-the-gpu) for the numbers, and
+[examples/rigged](/examples/rigged/) for baked and GPU-posed rats side by side. The technique
+follows published research, credited in [Research and credits](/docs/credits/).
+
 ## Damage
 
 `wound` and `sever` are pure functions on the rest model, so damage follows the creature through

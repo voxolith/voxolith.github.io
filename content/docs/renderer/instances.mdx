@@ -119,3 +119,39 @@ layer.commit(); // sends the static and moving sets; cheap to call every frame
 
 See [Instances](/docs/engine/instances/) in the engine section for the layer, and
 [Stamping and crowds](/docs/engine/stamping-and-crowds/) for when to stamp instead.
+
+## Posed on the GPU
+
+A model added with **parts** (one part index per voxel, beside its role values) can be drawn with
+one transform per part instead of one per instance: pose a skeleton on the GPU from a single rest
+model, with nothing baked. The renderer takes each world cell back through every part's inverse
+into the rest model; the first part whose own voxel is there wins, parents first, and the cells
+around each joint may be filled from either side (a weld), so a turned limb stays on.
+
+```ts
+const id = renderer.addModel({ size, data, parts, joints }); // joints: parent and meeting point per part
+renderer.setInstances(
+  [{ model: id, x, y, z, anchor, yaw, base, parts: boneMatrices }], // 12 floats per part, model space
+  { dynamic: true },
+);
+```
+
+Each such instance is a single entry in the per-cell lists. It carries a small grid of part masks,
+two 32-bit words per 8³ brick of its box (which parts can be in the brick, and which joints weld
+there), so a sample tests one or two parts and a ray skips the bricks no part reaches. A model can
+have at most 32 parts. The engine drives this from a rig: `prepareRigged` and
+`makeCrowd({ instances, rigged: true })` ([stamping and crowds](/docs/engine/stamping-and-crowds/#posed-on-the-gpu)).
+
+Instances also take a full `rotation` (a 3x3, row-major) instead of `yaw`: tumbling debris, a
+tilted placement.
+
+## References
+
+- Holger Gruen, Carsten Benthin, Michael Kern, David McAllister. *Ray Tracing Massive Amounts of
+  Animated Geometry.* Proc. ACM Comput. Graph. Interact. Tech. 9(4), Article 49 (HPG 2026).
+  [doi:10.1145/3820014](https://doi.org/10.1145/3820014)
+- Chih-Chen Kao, Grzegorz Makowski, Shin Fujieda, Takahiro Harada. *Voxel Deformation-Aware Neural
+  Intersection Function.* Eurographics 2026 Short Papers.
+  [doi:10.2312/egs.20261026](https://doi.org/10.2312/egs.20261026)
+
+What Voxolith took from them and what is its own: [Research and credits](/docs/credits/).

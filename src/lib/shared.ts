@@ -70,6 +70,7 @@ export const appPages = [
   '/examples/creature/',
   '/examples/swarm/',
   '/examples/instances/',
+  '/examples/rigged/',
 ];
 
 const getContentUrl = createGetUrl(docsContentRoute);

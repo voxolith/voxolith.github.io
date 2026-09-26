@@ -1,0 +1,103 @@
+---
+title: Research and credits
+description: The published research Voxolith's techniques build on, what each paper contributed, and further reading for the renderer's next steps.
+---
+
+Voxolith stands on published graphics research. This page credits the work its techniques draw
+on, says what each paper contributed and what Voxolith does differently, and lists further reading
+that shapes where the renderer goes next. When a new technique lands, its papers are added here,
+on the pages that describe it, in the package README, in the code and in the commit that brings it.
+
+## Posing animated voxels on the GPU
+
+Rigged instances ([engine: stamping and crowds](/docs/engine/stamping-and-crowds/#posed-on-the-gpu),
+[renderer: instances](/docs/renderer/instances/#posed-on-the-gpu)) draw a creature from one rest
+model shared by every copy: each frame only its bone matrices change, and the renderer takes each
+world cell back through every bone's inverse into the rest model.
+
+<Cards>
+  <Card
+    title="Ray Tracing Massive Amounts of Animated Geometry"
+    href="https://doi.org/10.1145/3820014"
+    description="Holger Gruen, Carsten Benthin, Michael Kern, David McAllister (AMD). Proc. ACM Comput. Graph. Interact. Tech. 9(4), Article 49 (HPG 2026). Third place, Wolfgang Straßer Award."
+  />
+  <Card
+    title="Voxel Deformation-Aware Neural Intersection Function"
+    href="https://doi.org/10.2312/egs.20261026"
+    description="Chih-Chen Kao, Grzegorz Makowski, Shin Fujieda, Takahiro Harada (AMD). Eurographics 2026 Short Papers. arXiv:2604.24666."
+  />
+  <Card
+    title="Real-time Rendering of Animated Meshless Representation"
+    href="https://doi.org/10.2312/hpg.20251172"
+    description="Pacôme Luton, Thibault Tricard. High-Performance Graphics 2025."
+  />
+</Cards>
+
+- **Gruen et al.** animate a coarse tetrahedral cage instead of the geometry inside it, and transform
+  each ray entering a deformed tetrahedron back into the static rest pose, so the dense geometry and
+  its acceleration structure never change and are shared by every animated copy. Voxolith takes
+  that principle: move the samples, not the geometry, and share one rest representation between all
+  instances. ([author's version](https://gpuopen.com/download/TetrahedralMeshes_AuthorsVersion.pdf))
+- **Kao et al.** map rays in deformed space back to a voxelised rest space voxel by voxel, with the
+  deformation approximated as locally linear inside each voxel, to train a neural intersection
+  function that works across poses. Voxolith uses the non-neural half of that idea: sampling the
+  posed shape through a per-part inverse into the rest voxels.
+  ([paper](https://gpuopen.com/download/egs20261026.pdf))
+- **Luton and Tricard** encase meshless representations, including 3D textures (voxel grids), in a
+  coarse rigged tetrahedral mesh to animate them; Gruen et al. build on it. It is the origin of the
+  cage idea for voxels, and the reference for smooth (non-rigid) deformation if Voxolith adds it.
+
+**What is Voxolith's own:** the deformation is rigid per bone, because a generated creature binds
+each voxel to exactly one bone, so no cage is needed; sampling runs over the renderer's brick index
+at world voxel centres, exactly reproducing what baking a pose on the CPU writes (checked cell for
+cell in `engine/tools/verify-animation.ts`); each creature is one entry in the per-cell instance
+lists, with a small grid of 32-bit part masks per 8³ brick so a sample tests one or two bones and a
+ray skips the empty bricks of the creature's box; joints are welded as baking does; and the rig's
+cover (fur over flesh a pose uncovers) is precomputed into the rest model.
+
+## Further reading
+
+Papers from [AMD's publications](https://gpuopen.com/learn/publications/) that fit the renderer's
+next steps. Nothing on this list is implemented yet.
+
+**Global illumination** (lamps and emissive voxels lighting their surroundings, colour bleeding):
+
+- Guillaume Boissé, Sylvain Meunier, Heloise de Dinechin, Pieterjan Bartels, Alexander Veselov,
+  Kenta Eto, Takahiro Harada. *GI-1.0: A Fast and Scalable Two-level Radiance Caching Scheme for
+  Real-time Global Illumination.* 2022.
+  [PDF](https://gpuopen.com/download/publications/GPUOpen2022_GI1_0.pdf),
+  [arXiv:2310.19855](https://arxiv.org/abs/2310.19855)
+- Guillaume Boissé. *World-space Spatiotemporal Reservoir Reuse for Ray-traced Global
+  Illumination.* SIGGRAPH Asia 2021 Technical Communications.
+  [doi:10.1145/3478512.3488613](https://doi.org/10.1145/3478512.3488613)
+- Kenta Eto, Sylvain Meunier, Takahiro Harada, Guillaume Boissé. *Real-Time Rendering of Glossy
+  Reflections Using Ray Tracing and Two-Level Radiance Caching.* SIGGRAPH Asia 2023.
+  [PDF](https://gpuopen.com/download/publications/SA2023_RealTimeReflection.pdf)
+- Sylvain Meunier, Takahiro Harada. *Weighted À-Trous Linear Regression (WALR) for Real-Time
+  Diffuse Indirect Lighting Denoising.* AMD Technical Report, 2022.
+  [PDF](https://gpuopen.com/download/publications/GPUOpen2022_WALR.pdf)
+
+**Many lights** (hundreds of lights, emissive voxels as lights, lit fog):
+
+- Yusuke Tokuyoshi. *Efficient Visibility Reuse for Real-time ReSTIR.* SIGGRAPH 2024 Talks.
+  [doi:10.1145/3641233.3664320](https://doi.org/10.1145/3641233.3664320)
+- Yusuke Tokuyoshi. *Efficient Spatial Resampling Using the PDF Similarity.* Proc. ACM Comput.
+  Graph. Interact. Tech. 6(1), Article 4 (I3D 2023).
+  [PDF](https://gpuopen.com/download/publications/Efficient_Spatial_Resampling_Using_the_PDF_Similarity.pdf)
+- Yusuke Tokuyoshi, Sho Ikeda, Paritosh Kulkarni, Takahiro Harada. *Hierarchical Light Sampling with
+  Accurate Spherical Gaussian Lighting.* SIGGRAPH Asia 2024 Conference Papers, Article 82.
+  [PDF](https://gpuopen.com/download/Hierarchical_Light_Sampling_with_Accurate_Spherical_Gaussian_Lighting.pdf)
+- Yusuke Tokuyoshi. *Tiled Reservoir Sampling for Many-Light Rendering.* AMD Technical Report, 2021.
+  [PDF](https://gpuopen.com/download/publications/TiledReservoirSampling21-11-ecdc.pdf)
+- Shin Fujieda, Yusuke Tokuyoshi, Takahiro Harada. *Stochastic Light Culling for Single Scattering
+  in Participating Media.* Eurographics 2022 Short Papers.
+  [PDF](https://gpuopen.com/download/publications/EG22_VolumeSlc.pdf)
+
+**Voxel traversal:**
+
+- Mehmet Oguz Derin, Takahiro Harada, Yusuke Takeda, Yasuhiro Iba. *Sparse Volume Rendering using
+  Hardware Ray Tracing and Block Walking.* SIGGRAPH Asia 2021.
+  [PDF](https://gpuopen.com/download/publications/SA2021_BlockWalk.pdf)
+
+Know of work Voxolith builds on that is missing here? Open an issue or a pull request against
+[voxolith.github.io](https://github.com/voxolith/voxolith.github.io).

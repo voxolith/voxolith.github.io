@@ -142,3 +142,51 @@ stamped.
 Past a few hundred, brick re-encoding dominates. The instance path removes both the re-encode and
 the upload, which is why `examples/valley` draws its rats as instances; `examples/swarm` shows the
 stamped path live.
+
+## Posed on the GPU
+
+`makeCrowd({ instances, rigged: true })` skips baking altogether. Each variant's rest model is
+prepared once (`prepareRigged`: bone ids beside the roles, the rig's cover applied) and uploaded;
+every member is then one instance carrying its bone matrices, and the renderer poses it while it
+draws. There are no pose models, no pose cache of bakes and no per-pose uploads, and members turn
+and move smoothly like any instance. The frame LOD (`near`, `farFps`, `freeze`) still applies; it
+now only saves matrix work.
+
+```ts
+const crowd = makeCrowd({ instances: makeInstanceLayer(renderer), rigged: true });
+// per frame, as with any crowd:
+for (const m of members) m.anim.update(dt);
+crowd.update(members, camera);
+```
+
+It draws exactly what baking writes cell for cell (bake step one, checked in
+`engine/tools/verify-animation.ts`), plus the joint weld; the bake's extra passes that bridge
+diagonal gaps and fill joint cracks are not reproduced, which in practice is not visible (compare
+them side by side in [examples/rigged](/examples/rigged/)).
+
+CPU cost (`bun run --cwd generators/creature bench --rigged`: bone matrices plus the renderer's
+own instance packing) and the words uploaded per frame, against the stamped path above:
+
+| rats | ms/frame | KB/frame |
+|---|---|---|
+| 10 | 0.1 | 37 |
+| 100 | 0.7 | 383 |
+| 500 | 3.4 | 1901 |
+| 1000 | 6.5 | 3804 |
+
+The CPU cost is a fraction of stamping's; the upload is larger (bone transforms and part masks,
+about 3.8 KB per rat), and the GPU does more per sample than for a baked instance: on a desktop
+Radeon, 300 rats in `examples/swarm?rigged` draw at about two thirds of the frame rate of baked
+instances. Baked instances remain the default; use `rigged` where bakes, pose memory or CPU time
+are what limit you.
+
+## References
+
+- Holger Gruen, Carsten Benthin, Michael Kern, David McAllister. *Ray Tracing Massive Amounts of
+  Animated Geometry.* Proc. ACM Comput. Graph. Interact. Tech. 9(4), Article 49 (HPG 2026).
+  [doi:10.1145/3820014](https://doi.org/10.1145/3820014)
+- Chih-Chen Kao, Grzegorz Makowski, Shin Fujieda, Takahiro Harada. *Voxel Deformation-Aware Neural
+  Intersection Function.* Eurographics 2026 Short Papers.
+  [doi:10.2312/egs.20261026](https://doi.org/10.2312/egs.20261026)
+
+What Voxolith took from them and what is its own: [Research and credits](/docs/credits/).

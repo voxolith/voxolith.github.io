@@ -1,0 +1,55 @@
+---
+title: rigged
+description: "The same rats baked on the CPU and posed on the GPU from one rest model, side by side, one pair per clip, to compare joints and cost."
+---
+
+**[Open the live page](/examples/rigged/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/rigged/main.ts)
+
+One pair of rats per clip (walk, the two turns, run, idle, sniff, death). In each pair the rat on
+the green ground is baked: every pose is resampled into voxels on the CPU by `bakePose` and drawn
+as an instance of that posed model. The rat on the blue ground is posed on the GPU: one rest model,
+drawn as a single instance carrying its 26 bone matrices, and the renderer takes each world cell
+back through every bone's inverse into the rest model.
+
+## What it shows
+
+- [`makeCrowd`](/docs/engine/api/animation/functions/makeCrowd/) with `rigged: true` next to the
+  baked instance path, sharing one [`makeInstanceLayer`](/docs/engine/api/engine/functions/makeInstanceLayer/):
+  each crowd writes into a small adapter and the page commits both sets together.
+- [`prepareRigged`](/docs/engine/api/animation/functions/prepareRigged/), done inside the crowd:
+  bone ids beside the roles, and the rig's cover applied up front.
+- That the two agree: the posed-on-the-GPU rat draws the cells baking writes, plus the joint weld.
+  The baked rat also bridges diagonal gaps and fills joint cracks; look at the knees, the neck and
+  the tail for the difference.
+
+## The interesting part
+
+```ts
+const layer = makeInstanceLayer(renderer);
+const collect = () => {
+  const c = { ...layer, list: [] as readonly InstancePlacement[], setDynamic(l) { c.list = l; }, commit() {} };
+  return c;
+};
+const leftLayer = collect(), rightLayer = collect();
+const baked = makeCrowd({ instances: leftLayer, near: 1e9, freeze: 1e9 });
+const posed = makeCrowd({ instances: rightLayer, rigged: true, near: 1e9, freeze: 1e9 });
+// per frame:
+baked.update(left, cam);
+posed.update(right, cam);
+layer.setDynamic([...leftLayer.list, ...rightLayer.list]);
+layer.commit();
+```
+
+## URL options
+
+| option | default | effect |
+|---|---|---|
+| `?vpm=` | 10 | `100` uses rats sized for a 100 voxels-per-metre world (smaller, finer) |
+| `?yaw=` | 0.35 | heading of every rat, radians |
+| `?pairs=` | all | show only the first few clips |
+| `?distance=` | 230 | camera distance, voxels |
+
+Drag to orbit, wheel or pinch to zoom, right-drag to pan.
+
+The technique follows published research; see [Research and credits](/docs/credits/).
