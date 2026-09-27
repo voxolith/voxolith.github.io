@@ -86,6 +86,10 @@ world example's lamp is a glowing point light with no voxel behind it at all.
 Big ranges with shadows are what get expensive: every pixel inside the range pays for a ray. Use
 shadowed lights for the few that matter and unshadowed fill lights for the rest.
 
+With [temporal accumulation](/docs/manual/performance/#temporal-accumulation) on, a still view
+stops tracing shadow rays once they have converged, so shadowed lights cost far less while the
+camera holds still, and the key light's shadows turn soft.
+
 ## Pitfalls
 
 - A render-on-demand app must `loop.invalidate()` after `setLights`.

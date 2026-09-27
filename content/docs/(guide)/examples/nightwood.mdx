@@ -12,8 +12,10 @@ You stand in a clearing in a dense, misty wood at night. Oak, birch and spruce c
 bushes, bracken and grass grow underneath, and through a gap in the trees a cottage has its windows
 lit and a lantern at the door. Fireflies drift between the trunks. You can look around but not
 walk. The camera stands still, so the world only has to reach as far as the fog lets you see.
-The lighting is the point of the page, and the renderer's coming work on temporal accumulation and
-world-space light will be measured against it.
+The lighting is the point of the page, and the renderer's work on lighting is measured against it:
+[temporal accumulation](/docs/renderer/quality-and-performance/#temporal-accumulation) nearly
+halves its frame at a fixed view (the page leaves it off; the [temporal](/docs/examples/temporal/)
+example has the toggle), and world-space light comes next.
 
 ## What it shows
 

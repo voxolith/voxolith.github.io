@@ -21,14 +21,15 @@ is free and takes effect on the next frame. `getQuality()` reads them back.
     maxSteps: { description: 'Primary-ray DDA step cap (16 to 4096). Lower is cheaper; too low clips far geometry, which then shades as sky.', type: 'number' },
     shadowSteps: { description: 'Shadow-ray step cap (0 to 512), for the key light and point lights. 0 disables shadows entirely.', type: 'number' },
     ao: { description: 'Face ambient occlusion: 8 neighbour lookups per hit.', type: 'boolean' },
+    temporal: { description: 'Temporal accumulation of the key light\'s shadow, AO and point-light shadows (compute pipeline only). Off in every preset. See below.', type: 'boolean' },
   }}
 />
 
-| preset | `maxSteps` | `shadowSteps` | `ao` |
-|---|---|---|---|
-| `low` | 256 | 0 | off |
-| `medium` | 512 | 48 | on |
-| `high` (default) | 768 | 90 | on |
+| preset | `maxSteps` | `shadowSteps` | `ao` | `temporal` |
+|---|---|---|---|---|
+| `low` | 256 | 0 | off | off |
+| `medium` | 512 | 48 | on | off |
+| `high` (default) | 768 | 90 | on | off |
 
 `high` is the original look; `low` is roughly 2 to 3 times cheaper per pixel. `low` also drops the
 point lights' shadows (the lights stay) and the snow-shelter ray. With the brick index's
@@ -37,10 +38,88 @@ empty-space skip, typical rays use far fewer steps than the cap, which is only a
 ```ts
 renderer.setQuality(gpu.software ? "low" : "high");
 renderer.setQuality({ shadowSteps: 32 }); // partial updates are allowed
+renderer.setQuality({ ...QUALITY_PRESETS.medium, temporal: true });
 ```
 
 The presets are exported as [`QUALITY_PRESETS`](/docs/renderer/api/renderer/variables/QUALITY_PRESETS/)
 for a UI to list.
+
+## Temporal accumulation
+
+Shadows and AO are the same from one frame to the next wherever nothing moved, yet each frame
+traces them again. `temporal: true` keeps them instead. Per pixel, the renderer stores the key
+light's shadow, the face AO and the point lights' shadows, and reuses them wherever the pixel still
+sees the same voxel face. A pixel stops tracing those terms once it has averaged 32 samples, so a
+still image is stable and costs little more than its primary rays.
+
+```ts
+renderer.setQuality({ ...QUALITY_PRESETS.medium, temporal: true });
+const loop = makeFrameLoop({
+  render: () => renderer.render(frame()),
+  converging: () => renderer.converging(),
+});
+```
+
+- **Opt-in, compute only.** It is off in every preset, and it runs in the compute pipeline only,
+  in kernels of its own. With the `"fragment"` pipeline it has no effect. With it off, the image is
+  byte-identical to a renderer without it.
+- **Soft shadows.** With temporal on, the key light is jittered within its angular radius,
+  [`FrameParams.lightAngle`](/docs/renderer/api/renderer/interfaces/FrameParams/) (default 0.02
+  rad, about 1.1°; the real sun's is about 0.0047). The accumulated shadows get soft penumbrae that
+  widen with the distance to the caster. The jitter follows the R2 low-discrepancy sequence. Point
+  lights accumulate the ratio of shadowed to unshadowed light, applied to the unshadowed light
+  evaluated every frame, so a light that changes colour or brightness (a flicker, a firefly) needs
+  no reset. Without temporal, shadows stay hard.
+- **Converging.** After the view stops changing, the image needs a few dozen more frames to settle.
+  [`renderer.converging()`](/docs/renderer/api/renderer/classes/Renderer/#converging) is true until
+  it has; give it to [`makeFrameLoop`](/docs/renderer/api/renderer/functions/makeFrameLoop/) as
+  `converging` and a render-on-demand loop keeps drawing until then, then goes idle. It is always
+  false without temporal.
+
+### History without motion vectors
+
+There are no motion vectors. Each pixel stores the hash of the face it hit and the distance to it.
+Reprojected through the previous frame's camera, a pixel reuses the old value only where it hit the
+same face at a consistent distance; anywhere else it starts over. While the camera moves, tiles take
+turns to sample the pixels that have not converged.
+
+What changes the shading of a face the pixel still sees is tracked instead:
+
+- **Change stamps.** Edits and the moving instance set stamp the 8-voxel columns they touch, swept
+  along each shadowing light as far as the shadow can reach. Stamped pixels are traced afresh, so a
+  moving rat leaves no trail and no stale shadow.
+- **Lights.** A key light that turns by more than about 2° in one frame retraces its shadow
+  everywhere; a slow turn keeps sampling. Moving a shadowed point light retraces point shadows.
+- **Resets.** A resize, a quality or debug change, a new static instance set and a camera cut (a
+  turn of more than about 10°, or a jump of more than 32 voxels in one frame) start the history
+  over.
+- **The crowd fallback.** When more than 30% of the world's columns change in one frame (a crowd
+  over the whole map), nearly every pixel would trace anyway and the temporal kernel costs more
+  than the plain one, so that frame renders without temporal. It comes back once under 20% change.
+
+### What it costs
+
+- **Memory:** 32 bytes of history per pixel (two 16-byte textures, ping-ponged).
+- **A full retrace:** about 24% more than the plain kernel, when an instance-heavy frame must be
+  traced in full.
+- **Near movers:** stamped areas are traced every frame, hard, as without temporal. Near moving
+  instances and edits, shadows lose their soft edges.
+
+Measured on a desktop Radeon at 1280 × 720, GPU ms per frame, off → on:
+
+| scene | off | on |
+|---|---|---|
+| world example, fixed view | 11.0 | 7.3 |
+| nightwood, render scale 0.5 | 51.5 | 28.6 |
+| [temporal](/docs/examples/temporal/) example, still, scale 0.8, drawn every frame | 6.2 | 4.2 |
+| temporal example, rotating slowly | 6.3 | 4.2 |
+| temporal example, still, scale 0.5 | 4.0 | 2.2 |
+| world, while the camera spins | 5.9 | 5.2 |
+| crowds over the whole map | unchanged | unchanged (the fallback engages) |
+
+Fixed views gain most, a slowly moving one nearly as much, a fast camera little, and a crowd
+nothing. The [temporal example](/docs/examples/temporal/) has a toggle and a readout to judge it
+on your own device.
 
 ## Resolution
 
@@ -148,9 +227,9 @@ own `--user-data-dir`, so the flag applies to development only.
 | cost | scales with | knob |
 |---|---|---|
 | primary rays | pixels × steps to the hit | render scale, pixel ratio, `maxSteps` |
-| key-light shadow | one ray per lit pixel | `shadowSteps` |
-| point lights | lights in range per pixel; one shadow ray each | `range`, `shadows`, `shadowSteps` |
-| ambient occlusion | 8 lookups per hit | `ao` |
+| key-light shadow | one ray per lit pixel | `shadowSteps`, `temporal` |
+| point lights | lights in range per pixel; one shadow ray each | `range`, `shadows`, `shadowSteps`, `temporal` |
+| ambient occlusion | 8 lookups per hit | `ao`, `temporal` |
 | reflections, glass, water | one secondary ray per such pixel | materials in view |
 | precipitation | 8 hashes per pixel | `density` 0 turns it off |
 | edits | bricks touched | batch with `editMany` |
@@ -171,8 +250,9 @@ The renderer shades each pixel in one of two ways, with the same shading code an
 
 `createRenderer(gpu, scene, { pipeline })` picks one; the default, `"auto"`, uses compute except for
 frames with instances posed on the GPU, whose kernel runs faster as a fragment shader on the
-hardware measured so far. The compute path is also the base for the passes that follow it: a
-coarse depth pre-pass, temporal accumulation and global illumination.
+hardware measured so far. The compute path is also the base for the passes that build on it:
+[temporal accumulation](#temporal-accumulation) now, and a coarse depth pre-pass and global
+illumination next.
 
 When the adapter offers `timestamp-query`, `initGpu` enables it and the renderer times its passes:
 
@@ -184,3 +264,13 @@ renderer.gpuTimings(); // e.g. { trace: 4.21 } in milliseconds, averaged over fr
 `GpuContext.features` says what was granted. Browsers quantise timestamps (to about 0.1 ms unless
 the page is cross-origin isolated), so read the numbers as averages.
 
+## References
+
+- Eric Heitz, Stephen Hill, Morgan McGuire. *Combining Analytic Direct Illumination and Stochastic
+  Shadows.* Proceedings of the ACM SIGGRAPH Symposium on Interactive 3D Graphics and Games (I3D
+  2018). [doi:10.1145/3190834.3190852](https://doi.org/10.1145/3190834.3190852)
+- Martin Roberts. *The Unreasonable Effectiveness of Quasirandom Sequences.* 2018, blog post
+  (the R2 sequence).
+  [extremelearning.com.au](https://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/)
+
+What Voxolith took from them and what is its own: [Research and credits](/docs/credits/#temporal-accumulation-of-shadows).

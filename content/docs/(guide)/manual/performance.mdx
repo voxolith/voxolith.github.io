@@ -37,7 +37,8 @@ loop.invalidate();
 
 ## Quality presets
 
-`renderer.setQuality` sets three per-frame knobs, all runtime uniforms, so changing them is free:
+`renderer.setQuality` sets three per-frame cost knobs, all runtime uniforms, so changing them is
+free (a fourth, `temporal`, is off in every preset; see [below](#temporal-accumulation)):
 
 | preset | `maxSteps` | `shadowSteps` | `ao` |
 |---|---|---|---|
@@ -51,6 +52,33 @@ clipped: the world example multiplies `maxSteps` by its size, and the valley set
 
 Offer the presets in a select and store the choice under `voxolith-quality`, as the apps do. On a
 software adapter, start on `low`.
+
+## Temporal accumulation
+
+A view that holds still, or moves slowly, traces the same shadows and AO every frame. Turn on
+temporal accumulation and the renderer keeps them per pixel instead, until they have converged:
+
+```ts
+renderer.setQuality({ ...QUALITY_PRESETS[quality], temporal: true });
+const loop = makeFrameLoop({ render, converging: () => renderer.converging() });
+```
+
+`converging` keeps a render-on-demand loop drawing for the few dozen frames the picture needs to
+settle after the view stops, then it goes idle. Shadows turn soft, as wide as
+`FrameParams.lightAngle` says.
+
+Turn it on for:
+
+- **Still or slowly moving views**: a city builder, a viewer, an orbit camera, a first-person
+  camera that mostly looks. The world example's fixed view drops from 11.0 to 7.3 ms a frame.
+- **Phones**, where every traced ray counts, as long as the view mostly holds still.
+
+It gains little while the camera moves fast, and nothing with a crowd moving over the whole map
+(that frame renders without it). It is off in every preset, it needs the compute pipeline, and
+its history costs 32 bytes per pixel. Near moving instances and edits, shadows stay hard. The
+[temporal example](/docs/examples/temporal/) has a toggle and a readout of both costs; see
+[Renderer: temporal accumulation](/docs/renderer/quality-and-performance/#temporal-accumulation)
+for how it works.
 
 ## Resolution
 

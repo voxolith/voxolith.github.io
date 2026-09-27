@@ -74,6 +74,7 @@ export const appPages = [
   '/examples/world/',
   '/examples/valley/',
   '/examples/nightwood/',
+  '/examples/temporal/',
   '/examples/creature/',
   '/examples/swarm/',
   '/examples/instances/',

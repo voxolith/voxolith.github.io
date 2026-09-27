@@ -55,6 +55,38 @@ lists, with a small grid of 32-bit part masks per 8³ brick so a sample tests on
 ray skips the empty bricks of the creature's box; joints are welded as baking does; and the rig's
 cover (fur over flesh a pose uncovers) is precomputed into the rest model.
 
+## Temporal accumulation of shadows
+
+[Temporal accumulation](/docs/renderer/quality-and-performance/#temporal-accumulation)
+(`RenderQuality.temporal`) keeps each pixel's shadows and AO across frames, so a still view stops
+tracing them and the key light's shadows turn soft.
+
+<Cards>
+  <Card
+    title="Combining Analytic Direct Illumination and Stochastic Shadows"
+    href="https://doi.org/10.1145/3190834.3190852"
+    description="Eric Heitz, Stephen Hill, Morgan McGuire. Proceedings of the ACM SIGGRAPH Symposium on Interactive 3D Graphics and Games (I3D 2018)."
+  />
+</Cards>
+
+- **Heitz et al.** evaluate direct light analytically without shadows, estimate the shadowed share
+  stochastically, and apply the ratio of the two, so the noisy estimate only carries visibility.
+  Voxolith takes two things from it: accumulating a stochastic, jittered shadow visibility over
+  frames into soft shadows, and, for point lights, keeping the ratio of shadowed to unshadowed light
+  and applying it to the unshadowed light evaluated every frame, so a light that changes colour or
+  brightness keeps its history.
+
+**What is Voxolith's own:** the estimate is accumulated per pixel across frames rather than
+denoised within one; history is rejected without motion vectors, by a hash of the voxel face each
+pixel hit and its distance, reprojected through the previous camera; and what changes the shading
+of a face a pixel still sees (edits, moving instances, their shadows) is reported as change stamps
+on 8-voxel columns, swept along each shadowing light, which make those pixels trace afresh. When
+most of the world changes in one frame, that frame renders without accumulation.
+
+The key light's jitter follows the R2 low-discrepancy sequence from Martin Roberts,
+[*The Unreasonable Effectiveness of Quasirandom Sequences*](https://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/)
+(2018, blog post).
+
 ## Further reading
 
 Papers from [AMD's publications](https://gpuopen.com/learn/publications/) that fit the renderer's
