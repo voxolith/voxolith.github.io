@@ -116,9 +116,10 @@ Fine models are sparse, so the valley example draws every house, tree and rock a
 
 ## Costs
 
-- The GPU cost of a 100 voxels per metre valley is a few hundred MB. The valley example defaults to
-  three model variants per species (`?variants=3`) for that reason; ten match the coarse page
-  exactly but need over a gigabyte.
+- The GPU cost of a fine valley is hundreds of MB: the valley example measures about 130 MB at its
+  default 50 voxels per metre and about 560 MB at 100. It defaults to three model variants per
+  species (`?variants=3`) for that reason; ten match the coarse page exactly but need over a
+  gigabyte at 100.
 - A soft fog at the streaming radius hides the edge. The valley example adds a light haze whatever
   the weather and keeps the zoom limit well inside it.
 - Frame time spent in `step` is frame time not spent drawing. A budget of 4 to 6 ms per frame while

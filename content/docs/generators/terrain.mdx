@@ -129,8 +129,8 @@ renderer.editMany(boxes, (cells, ox, oy, oz) => ground.fillBrick(cells, ox, oy, 
 On a [`FineTerrain`](/docs/generators/api/gen-terrain/interfaces/FineTerrain/), `top` is looked up
 on coarse columns (the settlement's paths and yards) and applies to the top two fine voxels, with no
 blades. `heightAt`, `waterAt`, `waterTop`, `maxY`, `spanOf` and `pick` work in fine voxels. Its GPU
-cost is a few hundred MB for a whole valley, which is why the valley example drops to 50 voxels per
-metre on phones.
+cost is hundreds of MB for a whole valley: the valley example measures about 130 MB at 50 voxels
+per metre and about 560 MB at 100, which is why it defaults to 50.
 
 ## Development
 

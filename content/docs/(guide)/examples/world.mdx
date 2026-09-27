@@ -24,7 +24,7 @@ trunks and watch the shadows move. N runs day into night, W cycles the weather.
 - **Settlement layout as app code.** `layout.ts` picks the village and glade sites, turns each
   house so its door faces the village centre, joins the doors with a minimum spanning tree of
   wandering paths, and decides which plant or rock grows where. It is shared with the
-  [valley](/docs/examples/valley/), which runs the same layout at ten times the resolution.
+  [valley](/docs/examples/valley/), which runs the same layout at five or ten times the resolution.
 - **Generators on workers.** [`makeGeneratorPool`](/docs/engine/api/worker/functions/makeGeneratorPool/)
   runs every tree, bush, rock and house generator off the main thread;
   [`serveGenerators`](/docs/engine/api/worker/functions/serveGenerators/) in `gen.worker.ts`

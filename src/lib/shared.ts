@@ -28,7 +28,7 @@ export const demos = [
     title: 'Valley',
     href: '/examples/valley/',
     image: '/shots/valley.webp',
-    text: 'The same valley at 100 voxels per metre: refined models drawn as instances, the ground streamed in chunks.',
+    text: 'The same valley in 2 cm or 1 cm voxels: refined models drawn as instances, the ground streamed in chunks.',
   },
   {
     title: 'Nightwood',

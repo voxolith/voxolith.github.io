@@ -186,12 +186,12 @@ voxels per metre always rebuilds the same voxels; asking for a finer scale
 <Accordion id="big-worlds-on-phones" title="Big worlds on phones: the valley will not start, or crashes">
 
 Phones have less GPU memory and smaller storage buffer bindings than desktops, and the valley
-example at 100 voxels per metre uses a few hundred MB. It therefore picks a lighter profile when
-it sees a touch-only pointer, or a GPU whose largest storage binding is under 512 MiB:
+example uses about 130 MB at its default 50 voxels per metre (about 560 MB at `?vpm=100`). It
+therefore picks a lighter profile when it sees a touch-only pointer, or a GPU whose largest
+storage binding is under 512 MiB. The voxel size stays the same; the valley gets smaller:
 
 | setting | desktop | phone |
 |---|---|---|
-| voxels per metre | 100 | 50 |
 | valley size (`?scale=`) | 4 × 4 tiles | 2 × 2 tiles |
 | models per species (`?variants=`) | 3 | 1 |
 | rats (`?rats=`) | 60 | 20 |
@@ -199,7 +199,8 @@ it sees a touch-only pointer, or a GPU whose largest storage binding is under 51
 | quality preset | Medium | Low |
 
 `?full` asks for the desktop settings anyway, and each setting can be given on its own. If the
-phone profile still fails, lower `?scale=`, `?radius=` and `?rats=` further.
+phone profile still fails, lower `?scale=`, `?radius=` and `?rats=` further, and stay at 50
+voxels per metre (the HUD's "Switch to 1 cm" button quadruples the cost).
 
 The same approach works in your own app: read `gpu.limits.maxStorageBufferBindingSize` and
 `matchMedia("(pointer: coarse)")` once at startup and size the world from them. See
