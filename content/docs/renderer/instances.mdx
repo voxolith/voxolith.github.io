@@ -142,8 +142,16 @@ be in the brick and which joints weld there) lives in the model's own space, so 
 and uploads it once, keyed by the part transforms' identity, and every instance showing it shares
 it; per frame an instance costs its record. The masks let a sample test one or two parts and a ray
 skip the bricks no part reaches. Pass `partBoxes` to `addModel` (e.g. an undamaged model's) so
-damaged copies share poses too. A model can
-have at most 32 parts. The engine drives this from a rig: `prepareRigged` and
+damaged copies share poses too.
+
+Limits:
+- **A dense model.** `addModel` takes `parts` only beside dense `data`, not a `sparse` volume.
+- **At most 32 parts.**
+- **Rigid parts.** Each voxel follows exactly one part; there is no smooth (skinned or cage)
+  deformation between parts beyond the weld at each joint.
+- **Measured on a desktop GPU only.** Posing on the GPU has not been measured on a phone yet.
+
+The engine drives this from a rig: `prepareRigged` and
 `makeCrowd({ instances, rigged: true })` ([stamping and crowds](/docs/engine/stamping-and-crowds/#posed-on-the-gpu)).
 
 Instances also take a full `rotation` (a 3x3, row-major) instead of `yaw`: tumbling debris, a

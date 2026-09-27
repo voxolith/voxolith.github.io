@@ -190,6 +190,10 @@ desktop Radeon, 300 rats in `examples/swarm` draw at 46 fps as baked instances a
 the GPU (60 stamped, which costs 12 ms of CPU a frame instead). Baked instances remain the default;
 choose `rigged` when poses stop repeating, when bakes stall members, or when pose memory matters.
 
+Posing on the GPU is rigid per bone (each voxel follows one bone, welded at the joints), needs a
+dense rest model and at most 32 bones, and has not been measured on a phone yet; see
+[the renderer's limits](/docs/renderer/instances/#posed-on-the-gpu).
+
 ## References
 
 - Holger Gruen, Carsten Benthin, Michael Kern, David McAllister. *Ray Tracing Massive Amounts of

@@ -57,6 +57,13 @@ const crowd = makeCrowd({ stamper: makeBrickStamper(renderer, { size: SIZE }), n
 step at a lower rate). `keepModels: true` keeps each baked pose's voxels, which the tap test
 below reads.
 
+<Callout title="Other ways to draw a crowd">
+This step stamps the rats into the world, so they are part of what a ray hits. A crowd can also
+hand its poses to an instance layer (`makeCrowd({ instances: layer })`, cheapest when rats share
+a few clips), or pose them on the GPU from one rest model (`rigged: true`, for unique poses).
+[Animation](/docs/manual/animation/#posing-on-the-gpu) says when to choose which.
+</Callout>
+
 A [`CrowdMember`](/docs/engine/api/animation/interfaces/CrowdMember/) is an id, the entity, a
 cache key for its look (`variant`), an animator, a palette base, a position and a yaw in radians.
 The `Rat` type adds the game's own state. Spawn eight on dry ground, away from the player:

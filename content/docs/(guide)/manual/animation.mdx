@@ -77,8 +77,14 @@ stalls a frame. `crowd.cache.stats()` reports hits and misses; the swarm example
 ### Posing on the GPU
 
 Pass `rigged: true` with `instances` and a crowd bakes nothing: the renderer poses each rat from
-one shared rest model using its bone matrices. CPU cost drops to a fraction of stamping's, at the
-price of more GPU work per sample; see
+one shared rest model using its bone matrices. Against baked instances (the default) it costs the
+CPU and the upload about the same, and more GPU time per sample (on a desktop Radeon, 300 rats draw
+at 29 fps against 46). It wins when poses stop repeating: with per-member damage or variation,
+baking falls behind and members freeze on an old pose, while posing on the GPU animates every one.
+
+So: stamp when members must be part of the world itself (picked, edited, carved); use baked
+instances for crowds that share a few clips; pass `rigged: true` when poses are unique or bakes
+stall. Bones are rigid, the rest model must be dense, and it is not yet measured on phones. See
 [posed on the GPU](/docs/engine/stamping-and-crowds/#posed-on-the-gpu) for the numbers, and
 [examples/rigged](/examples/rigged/) for baked and GPU-posed rats side by side. The technique
 follows published research, credited in [Research and credits](/docs/credits/).
