@@ -25,7 +25,9 @@ const ratModels = RAT_KINDS.map((k, i) => generateCreature(atScale(RATS[k], 10),
 The presets are stylised, big game rats. [`atScale`](/docs/generators/api/gen-creature/functions/atScale/)
 sizes one for a world with a fixed number of voxels per metre, but never below the size at which
 legs would get thinner than two voxels. At 10 voxels per metre that floor wins, and each rat is
-about 43 voxels (over four metres) long and 12 tall. Hence *giant* rats.
+about 43 voxels (over four metres) long and 12 tall. Hence *giant* rats. (`realSizeAt(RATS.rat, 10)`
+from the same package is false for that reason; a rat is real size from about 84 voxels per metre,
+see [sizing for a world](/docs/generators/creature/#sizing-for-a-world).)
 
 Rats need palette slots like everything else. Add them to the palette section:
 

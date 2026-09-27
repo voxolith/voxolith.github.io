@@ -331,7 +331,9 @@ export type { MushroomParams, ShapeParams, LookParams } from "./params";
 
 ### Finer scales
 
-Declaring `scales: [50, 100]` promises the same design at 5 and 10 times the resolution. Never
+Declaring `scales: [50, 100]` promises the same design at 5 and 10 times the resolution. (The
+Voxolith generators also list 20, a factor of 2; add it only once your rules still read there,
+see [at 20 voxels per metre](/docs/generators/scales-and-refinement/#at-20-voxels-per-metre).) Never
 generate it natively; build the coarse model and refine it with gen-kit's
 [`refine`](/docs/generators/api/gen-kit/gen-kit/functions/refine/), choosing a rule per role (see
 [scales and refinement](/docs/generators/scales-and-refinement/)). The `detail` function here carves

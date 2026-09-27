@@ -24,8 +24,9 @@ fine.model.sparse; // 8³ bricks; fine.model.data is empty
 whose only field is `voxelsPerMetre`. [`refinement(ctx)`](/docs/engine/api/engine/functions/refinement/)
 turns it into a whole-number factor `k` (1 at the native
 [`DEFAULT_VOXELS_PER_METRE`](/docs/engine/api/engine/variables/DEFAULT_VOXELS_PER_METRE/) of 10). A
-generator lists the finer scales it supports in `scales`; every entity generator lists `[50, 100]`
-except `voxolith/creature`, which is native only (see below).
+generator lists the finer scales it supports in `scales`; every entity generator lists
+`[20, 50, 100]` (5, 2 and 1 cm voxels) except `voxolith/creature`, which is native only (see
+below).
 
 Two rules keep this invisible to everything that already works:
 
@@ -88,11 +89,33 @@ noise so tone patches come out organic rather than as k-voxel cubes.
 | bush | stems redrawn much slimmer than the coarse bush could draw them, with faint streaks; leaves become single leaves; thorns become pairs of short needles |
 | grass | blades redrawn from the skeleton as rods a voxel or two across, shaded base to tip from the coarse blades; flowers become petal discs, seed heads stay compact |
 | rock | rounds off its steps with a grainy surface; the mid tone breaks into speckle; hairline cracks run across the faces; moss and lichen become ragged patches |
-| building | stays crisp, outside faces only; masonry and joinery at their real size: brick in running bond with recessed joints, ashlar courses, tile, slate, shingle or thatch courses, boards on doors and shutters, planks on floors. The coarse building is generated without its relief, since the joints are drawn at their own scale here |
+| building | stays crisp, outside faces only; masonry and joinery at their real size (about twice it at 20): brick in running bond with recessed joints, ashlar courses, tile, slate, shingle or thatch courses, boards on doors and shutters, planks on floors. The coarse building is generated without its relief, since the joints are drawn at their own scale here |
 | creature | none. It is authored near that scale already; [`atScale`](/docs/generators/api/gen-creature/functions/atScale/) sizes a preset for a fixed-unit world |
 
 The terrain has its own refiner, [`refineTerrain`](/docs/generators/terrain/#finer-terrain), which
 answers per brick rather than building a model.
+
+## At 20 voxels per metre
+
+20 voxels per metre is a factor of 2: each coarse voxel becomes 2 × 2 × 2 fine ones. It is the
+scale the examples give phones, with about an eighth of the bricks of 50. Detail sized for 1 cm
+voxels does not survive at 5 cm, so three rules apply below a factor of 3 only:
+
+- **Thin limbs are lines.** At a larger factor a limb thinner than one fine voxel in radius is
+  widened to one, three voxels across; at a factor of 2 that is fatter than the coarse voxel it
+  came from. There such a limb is drawn as a one-voxel line that crosses a face at a time, so it
+  stays 6-connected. Skeleton shells are at least 2 voxels thick, since a one-voxel shell of a
+  round limb leaves diagonal gaps a ray can pass through.
+- **Building patterns have minimum sizes.** At real size a brick course or a slate row would be
+  under two voxels. Brick courses are at least 3 × 7 voxels, roof rows 3, tiles 4 and boards 3,
+  and the plaster, grain and thatch noise keeps the size it has at 50. So at 20 masonry and
+  roofing are drawn at about twice their real size, which still reads as bricks and tiles.
+- **Terrain blades vary.** `refineTerrain`'s default `bladeHeight` is `max(4, round(1.4k))`, so
+  blades at k = 2 are 2 or 3 voxels tall rather than all 2.
+
+Factor 5 and 10 already exceed every one of these minimums, so the models at 10, 50 and 100
+voxels per metre are byte-identical to what they were before 20 was added. The full contract runs
+at 20 as at the other scales.
 
 ## Sparse models
 

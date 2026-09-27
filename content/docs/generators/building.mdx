@@ -81,14 +81,18 @@ hints: glass is glass, lit glass emits, and the handle and rainwater goods are m
 
 ## Finer scales
 
-At 50 and 100 voxels per metre a building stays crisp (walls flat, corners sharp) and is refined on
+At 20, 50 and 100 voxels per metre a building stays crisp (walls flat, corners sharp) and is refined on
 its outside faces only; the rooms are skipped. What the finer grid adds is masonry and joinery at
 their real size, which the coarse building can only suggest (its bricks are 80 cm long and its
 joints 10 cm wide): bricks in running bond with one-voxel joints set back, ashlar courses of blocks
 of varying length, fine plaster mottling, grain along timbers, tile, slate or shingle courses with a
 shadowed lower edge, streaky ragged thatch, boards on doors and shutters and planks on floors. The
 coarse building is generated without its relief first, since the joints are drawn at their own
-scale. Flowers and leaves are loose roles. See [scales and refinement](/docs/generators/scales-and-refinement/).
+scale. At 20 voxels per metre (5 cm) a course or a slate row at real size would be under two
+voxels, so there the courses, tiles and boards have minimum sizes and come out at about twice
+their real size ([at 20 voxels per metre](/docs/generators/scales-and-refinement/#at-20-voxels-per-metre)). Door panels and handles are tied to their frames after refinement, so
+nothing on a door floats at any fine scale. Flowers and leaves are loose roles. See
+[scales and refinement](/docs/generators/scales-and-refinement/).
 
 ## Development
 

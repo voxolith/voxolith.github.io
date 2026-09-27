@@ -50,7 +50,7 @@ const fine = generateTree(PRESETS.oak, seededRandom(42), "oak", { voxelsPerMetre
   `look` only decides which role each voxel gets, so a UI can re-run the cheap colour pass while
   caching geometry.
 - **Finer scales.** Parameters are written in 10 voxels per metre. Every entity generator except
-  the creature also builds at 50 and 100, as a refined sparse model. See
+  the creature also builds at 20, 50 and 100, as a refined sparse model. See
   [scales and refinement](/docs/generators/scales-and-refinement/).
 - **Checked.** Every registered generator is run against [the contract](/docs/generators/the-contract/)
   in CI, at every parameter extreme and every finer scale.
@@ -59,7 +59,7 @@ const fine = generateTree(PRESETS.oak, seededRandom(42), "oak", { voxelsPerMetre
 
 <Cards>
   <Card title="Using generators" href="/docs/generators/using-generators/" description="Direct calls, the registry, presets, parameter specs, workers and variant pools." />
-  <Card title="Scales and refinement" href="/docs/generators/scales-and-refinement/" description="How a 10 voxels-per-metre design becomes a sparse model at 50 or 100." />
+  <Card title="Scales and refinement" href="/docs/generators/scales-and-refinement/" description="How a 10 voxels-per-metre design becomes a sparse model at 20, 50 or 100." />
   <Card title="The toolkit" href="/docs/generators/gen-kit/" description="gen-kit: volumes, rasterisers, noise, branch growth, canopies, masses, refinement." />
   <Card title="Writing a generator" href="/docs/generators/gen-kit/writing-a-generator/" description="A new package, step by step, from the rock and bush shapes." />
 </Cards>

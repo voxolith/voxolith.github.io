@@ -1,6 +1,6 @@
 ---
 title: valley
-description: "The world valley at 50 or 100 voxels per metre: refined models drawn as instances, ground streamed in chunks, real-size rats and a lighter phone profile."
+description: "The world valley at 20, 50 or 100 voxels per metre: refined models drawn as instances, ground streamed in chunks, rats at their real size and a lighter phone profile."
 ---
 
 **[Open the live page](/examples/valley/)** ·
@@ -9,18 +9,21 @@ description: "The world valley at 50 or 100 voxels per metre: refined models dra
 <ImageZoom src="/shots/valley.webp" alt="The valley example: cottages and houses with tiled and thatched roofs among trees, at 1 cm voxels (`?vpm=100`)" width={960} height={540} />
 
 The same valley as the [world](/docs/examples/world/) (terrain, river, village, footpaths,
-forest, from the same `world/layout.ts`), at five times the resolution by default: 2 cm voxels,
-so single leaves and needles, bark furrows, bricks, roof tiles and mortar at their real size.
-`?vpm=100`, or the scale button in the HUD, makes it ten times: 1 cm voxels. At the default
-valley size that is a 128 m valley of 6,400 × 960 × 6,400 voxels (12,800 × 1,920 × 12,800 at
-1 cm), which does not fit in memory at once, so the ground streams in around the view. Rats at
+forest, from the same `world/layout.ts`), at a finer voxel size. A desktop gets five times the
+resolution by default: 2 cm voxels, so single leaves and needles, bark furrows, bricks, roof
+tiles and mortar at their real size. A phone gets twice: 5 cm voxels. `?vpm=100`, or the scale
+button in the HUD on a desktop, makes it ten times: 1 cm voxels. At the default valley size that
+is a 128 m valley of 6,400 × 960 × 6,400 voxels at 2 cm (12,800 × 1,920 × 12,800 at 1 cm), which
+does not fit in memory at once, so the ground streams in around the view. At 1 cm, rats at
 their real size roam the village.
 
 ## What it shows
 
 - **Finer models from the same designs.** Every model is generated with
-  `ctx: { voxelsPerMetre: 50 }` (or 100) on the generator workers; the generators refine their
-  coarse design rather than generating natively at 2 cm or 1 cm. The results are sparse models (8³ bricks).
+  `ctx: { voxelsPerMetre: 50 }` (or 20, or 100) on the generator workers; the generators refine
+  their coarse design rather than generating natively at 5, 2 or 1 cm. The results are sparse
+  models (8³ bricks). At 20, brick courses and roof rows are drawn at about twice their real size
+  (see [at 20 voxels per metre](/docs/generators/scales-and-refinement/#at-20-voxels-per-metre)).
   See [Scales and refinement](/docs/generators/scales-and-refinement/).
 - **Instances.** [`makeInstanceLayer`](/docs/engine/api/engine/functions/makeInstanceLayer/)
   uploads each model once and places it by reference, at the layout's exact orientation
@@ -28,15 +31,21 @@ their real size roam the village.
   positions. Nothing is written into the world, and each species, even each house, has a palette
   of its own (`layer.palettes.of`), outside the world's 256 slots.
 - **Streamed fine terrain.** [`refineTerrain`](/docs/generators/api/gen-terrain/functions/refineTerrain/)
-  turns the coarse terrain into a smooth 2 cm (or 1 cm) surface with grass blades and pebbles, filled per
+  turns the coarse terrain into a smooth 5, 2 or 1 cm surface with grass blades and pebbles, filled per
   brick column ([`FineTerrain.columnSpan`](/docs/generators/api/gen-terrain/interfaces/FineTerrain/)) through
   `renderer.editMany` inside a [`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/)
   of 256-voxel chunks.
-- **An instanced crowd.** [`makeCrowd({ instances })`](/docs/engine/api/animation/functions/makeCrowd/)
-  draws each rat pose as an instance, so rats glide and turn smoothly.
+- **An instanced crowd, at real size only.** [`makeCrowd({ instances })`](/docs/engine/api/animation/functions/makeCrowd/)
+  draws each rat pose as an instance, so rats glide and turn smoothly. The page builds rats only
+  where gen-creature's [`realSizeAt`](/docs/generators/creature/#sizing-for-a-world) holds for
+  every kind: by default only at 100 voxels per metre. Below about 84 a rat's legs would be under
+  two voxels thick at its real size, so it would have to be built larger than life (0.86 m long
+  at 50, 2.15 m at 20). The page leaves them out and the HUD says "rats at 1 cm". `?rats=N` forces
+  a crowd at any scale, larger than life below 100.
 - **A phone profile.** A touch-only pointer, or a GPU whose storage bindings are under 512 MiB,
-  gets a lighter valley at the same voxel size: a 2 × 2 tile map, one model per species, 20 rats,
-  a 16 m streamed radius and the Low quality preset.
+  gets a lighter valley: 5 cm voxels (20 per metre), a 2 × 2 tile map, one model per species, a
+  16 m streamed radius, the Low quality preset, and rats (20) only at 100. `?full` gives a phone
+  the desktop settings.
 - **A model cache.** Production builds keep the generated models in IndexedDB, keyed by the
   worker's hashed URL, so a second visit loads in seconds and a new build never reads an old
   model.
@@ -79,18 +88,20 @@ keeps the camera inside it.
 
 As on the [world](/docs/examples/world/#controls): drag to turn, right-drag or two fingers to
 pan, wheel or pinch to zoom, drag the lamp, double-tap to drop it, N for night and day, W for the
-weather. The button in the HUD ("Switch to 1 cm", "Switch to 2 cm") reloads the page at the other
-scale and keeps every other URL option.
+weather. The button in the HUD steps between the device's default scale and one finer: 2 cm and
+1 cm on a desktop, 5 cm and 2 cm on a phone ("Switch to 1 cm", "Switch to 2 cm", ...). From any
+other scale it goes back to the default. It reloads the page, since every model is generated for
+its scale, and keeps every other URL option. The HUD title names the voxel size.
 
 ## URL options
 
 | option | default (phone) | effect |
 |---|---|---|
 | `?full` | | desktop settings on a phone |
-| `?vpm=` | 50 | voxels per metre: 50 or 100 (the HUD's scale button) |
+| `?vpm=` | 50 (20) | voxels per metre: 20, 50 or 100; anything else snaps to the nearest (the HUD's scale button) |
 | `?scale=` | 4 (2) | valley size in 320-voxel tiles of the world page, 1 to 8 |
 | `?variants=` | 3 (1) | models per species, 1 to 10; 10 matches the world page exactly but needs over a gigabyte of GPU memory |
-| `?rats=` | 60 (20) | rats in the crowd, 0 to 400 |
+| `?rats=` | 60 (20) at 100, else none | rats in the crowd, 0 to 400; a number forces a crowd at any scale, larger than life below 100 |
 | `?radius=` | 24 (16) | streamed radius, in metres (at least 8) |
 | `?seed=` | `voxolith` | a different valley |
 | `?season=` | `summer` | `spring`, `summer`, `autumn`, `winter` |
@@ -98,9 +109,13 @@ scale and keeps every other URL option.
 | `?weather=` | `clear` | any [`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/) name |
 | `?rigged` | | pose the rats on the GPU instead of baking poses ([posed on the GPU](/docs/engine/stamping-and-crowds/#posed-on-the-gpu)) |
 
-Plus the [common ones](/docs/examples/#common-url-options). On a desktop GPU the valley uses about
-130 MB at the defaults and about 560 MB at `?vpm=100`; see [Big worlds on phones](/docs/troubleshooting/#big-worlds-on-phones) if it will
-not start.
+Plus the [common ones](/docs/examples/#common-url-options).
+
+## Cost
+
+Measured on a desktop Radeon with the desktop settings, the valley holds about 19 MB of GPU
+memory at 20 voxels per metre, 126 MB at 50 and 560 MB at 100. See
+[Big worlds on phones](/docs/troubleshooting/#big-worlds-on-phones) if it will not start.
 
 See also [Instances](/docs/manual/instances/), [Streaming](/docs/manual/streaming/) and
 [Mobile and PWA](/docs/manual/mobile-and-pwa/).

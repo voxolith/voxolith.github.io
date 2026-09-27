@@ -100,8 +100,8 @@ byte-for-byte the model it always did; share codes never change meaning.
 [`refinement(ctx)`](/docs/engine/api/engine/functions/refinement/) turns a context into the
 whole-number factor a generator works with (`Math.round(vpm / 10)`, at least 1).
 
-A generator lists the scales it supports in `scales` (every Voxolith entity generator:
-`[50, 100]`) and decides for itself how to add the detail. `looseRoles` names the roles that may
+A generator lists the scales it supports in `scales` (every Voxolith entity generator
+except the creature: `[20, 50, 100]`) and decides for itself how to add the detail. `looseRoles` names the roles that may
 come loose at a finer scale (single leaves, petals, seed heads, snow on foliage); everything else
 must still be one grounded piece. How the generators refine is covered in
 [Scales and refinement](/docs/generators/scales-and-refinement/).

@@ -113,7 +113,7 @@ To carve, set cells to 0 inside your `fill`. To stamp models, use `blitModelToBr
   `updateCoarse` and `OccupancyGrid` appear in older examples. The brick index is now the
   empty-space structure, so `updateCoarse` is a no-op; you can drop both from new code.
 
-  Models generated at 50 or 100 voxels per metre come back sparse, with `model.data` empty. `blitModelToBricks` reads `data`, so draw
+  Models generated at 20, 50 or 100 voxels per metre come back sparse, with `model.data` empty. `blitModelToBricks` reads `data`, so draw
   sparse models as [instances](/docs/manual/instances/) instead.
 </Callout>
 

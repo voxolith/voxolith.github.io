@@ -7,7 +7,7 @@ Phones run WebGPU, but with a fraction of a desktop GPU's memory and fill rate, 
 device pixels per CSS pixel, and a thumb instead of a mouse. This page covers how the examples
 adapt to that, how to add touch controls, and how Demolition Shot, the engine's showcase, ships as
 an installable app that plays offline. Which settings a phone gets is your game's decision; the
-values below are the valley example's.
+values below are the valley example's (the nightwood example uses the same test and scales).
 
 ## Knowing it is a phone
 
@@ -26,16 +26,23 @@ usually right.
 
 ## A lighter profile
 
-The valley runs at 50 voxels per metre everywhere (a quarter of the surface voxels of 100 to
-generate and draw). On a phone it keeps that voxel size and shrinks the rest: a 2 × 2 tile map, one
-model per species, 20 rats instead of 60, a 16 m streamed radius instead of 24, the `low` preset
-with a shorter `maxSteps`, and a starting render scale of 0.6. Each setting can still be forced
-from the URL (`?scale=`, `?variants=`, `?rats=`, `?radius=`). The general levers, in the order they help:
+On a desktop the valley runs at 50 voxels per metre (a quarter of the surface voxels of 100 to
+generate and draw). A phone gets 20 voxels per metre (5 cm voxels), which the entity generators
+support as a scale of their own ([at 20 voxels per metre](/docs/generators/scales-and-refinement/#at-20-voxels-per-metre)):
+about an eighth of the bricks of 50, and 19 MB of GPU memory for the valley against 126 MB. It
+also shrinks the rest: a 2 × 2 tile map, one model per species, a 16 m streamed radius instead of
+24, the `low` preset with a shorter `maxSteps`, and a starting render scale of 0.6. Rats come only
+at 100 voxels per metre, where they are real size (20 of them on a phone, 60 on a desktop); see
+[sizing for a world](/docs/generators/creature/#sizing-for-a-world). Each setting can still be
+forced from the URL (`?vpm=`, `?scale=`, `?variants=`, `?rats=`, `?radius=`), and the HUD's
+scale button steps a phone between 20 and 50. The general levers, in the order they help:
 
 - Resolution: cap `maxPixelRatio` in `initGpu`, start `gpu.renderScale` low, and let `makePerf`
   climb from there.
 - Quality: `renderer.setQuality("low")` removes shadow rays, point-light shadows and ambient
   occlusion.
+- Voxel size: a coarser `voxelsPerMetre` cuts memory and ray steps together (nightwood takes
+  59 ms a frame at 20 against 144 ms at 50 at render scale 1, 1280 × 720).
 - Content: fewer model variants, a smaller streamed radius, fewer animated members.
 - Memory: keep an eye on `renderer.stats().bytes` against `gpu.limits.maxStorageBufferBindingSize`.
   Exceeding a binding makes rendering stop silently rather than fail loudly, so show GPU errors in

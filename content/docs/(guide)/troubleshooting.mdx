@@ -185,22 +185,26 @@ voxels per metre always rebuilds the same voxels; asking for a finer scale
 
 <Accordion id="big-worlds-on-phones" title="Big worlds on phones: the valley will not start, or crashes">
 
-Phones have less GPU memory and smaller storage buffer bindings than desktops, and the valley
-example uses about 130 MB at its default 50 voxels per metre (about 560 MB at `?vpm=100`). It
-therefore picks a lighter profile when it sees a touch-only pointer, or a GPU whose largest
-storage binding is under 512 MiB. The voxel size stays the same; the valley gets smaller:
+Phones have less GPU memory and smaller storage buffer bindings than desktops. On a desktop Radeon
+the valley example holds about 126 MB of GPU memory at its desktop default of 50 voxels per metre,
+560 MB at `?vpm=100` and 19 MB at 20. It therefore picks a lighter profile when it sees a
+touch-only pointer, or a GPU whose largest storage binding is under 512 MiB: coarser voxels and a
+smaller valley.
 
 | setting | desktop | phone |
 |---|---|---|
+| voxels per metre (`?vpm=`) | 50 (2 cm) | 20 (5 cm) |
 | valley size (`?scale=`) | 4 × 4 tiles | 2 × 2 tiles |
 | models per species (`?variants=`) | 3 | 1 |
-| rats (`?rats=`) | 60 | 20 |
+| rats (`?rats=`) | 60, at 100 only | 20, at 100 only |
 | streamed radius (`?radius=`) | 24 m | 16 m |
 | quality preset | Medium | Low |
 
-`?full` asks for the desktop settings anyway, and each setting can be given on its own. If the
-phone profile still fails, lower `?scale=`, `?radius=` and `?rats=` further, and stay at 50
-voxels per metre (the HUD's "Switch to 1 cm" button quadruples the cost).
+Rats are built only at a scale where they come out at their real size, which is 100 voxels per
+metre; at 20 or 50 the HUD says "rats at 1 cm". `?full` asks for the desktop settings anyway, and
+each setting can be given on its own. If the phone profile still fails, lower `?scale=` and
+`?radius=` further and stay at 20 voxels per metre (the HUD's "Switch to 2 cm" button costs nearly
+seven times the memory). The nightwood example uses the same test and the same scales.
 
 The same approach works in your own app: read `gpu.limits.maxStorageBufferBindingSize` and
 `matchMedia("(pointer: coarse)")` once at startup and size the world from them. See

@@ -129,7 +129,10 @@ remove.
 - The pose cache key is `variant` plus `damage`. Members sharing a variant must look identical;
   give a damaged member a variant of its own, or two rats with one wound each share poses.
 - Creature presets are stylised: 75 voxels nose to tail at size 1.2, right beside a 10 voxels per
-  metre house. In a world with a real unit, size them with `atScale(PRESETS.rat, voxelsPerMetre)`.
+  metre house. In a world with a real unit, size them with `atScale(PRESETS.rat, voxelsPerMetre)`;
+  below about 84 voxels per metre that still comes out larger than life (0.86 m at 50), which
+  `realSizeAt(params, voxelsPerMetre)` tells you. See
+  [sizing for a world](/docs/generators/creature/#sizing-for-a-world).
 - If you author creatures: nothing animated thinner than 2 voxels (the tail tip aside), at least 4
   voxels between joints, and spend the detail on the head. See
   [Generators: creature](/docs/generators/creature/).

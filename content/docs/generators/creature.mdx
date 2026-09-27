@@ -84,7 +84,7 @@ The proportions are chosen so the rat animates without losing the voxel look:
 The default rat is about 3.5k voxels and 26 bones, and bakes a posed model in about 2 ms
 (`bun run --cwd generators/creature bench` measures it).
 
-## Real scale
+## Sizing for a world
 
 The presets are stylised game rats: 75 voxels nose to tail tip at `size` 1.2, which is right beside
 a 10 voxels-per-metre house, but a 75 cm rat in a 1 cm world. The creature has no finer `scales`:
@@ -99,6 +99,39 @@ import { atScale, generateCreature, PRESETS } from "@voxolith/gen-creature";
 const rat = generateCreature(atScale(PRESETS.rat, 100), seededRandom(1)).entity;
 // size 0.8: 49 voxels long, a large brown rat of about 50 cm
 ```
+
+The floor of 0.7 keeps the legs two voxels thick, so below a certain scale `atScale` cannot give a
+rat its real size and it comes out larger than life. For the default rat:
+
+| voxels per metre | `shape.size` | nose to tail tip |
+|---|---|---|
+| 10 | 0.7 (held) | 43 voxels, about 4.3 m |
+| 20 | 0.7 (held) | about 2.15 m |
+| 50 | 0.7 (held) | about 0.86 m |
+| 100 | 0.8 | 49 voxels, about 0.5 m: real size |
+
+Two helpers share `atScale`'s maths, so an app can decide without hard-coding a threshold.
+[`realSizeAt(params, voxelsPerMetre)`](/docs/generators/api/gen-creature/functions/realSizeAt/)
+says whether `atScale` needs no clamping there, and
+[`minVoxelsPerMetre(params)`](/docs/generators/api/gen-creature/functions/minVoxelsPerMetre/) is
+the smallest scale where it holds: about 84.4 for the default rat, 88 for the fat rat.
+`realSizeAt` is also false above about 253 voxels per metre, where the size is held at its upper
+bound of 2 and the creature comes out smaller than life.
+
+```ts
+import { atScale, generateCreature, minVoxelsPerMetre, PRESETS, realSizeAt } from "@voxolith/gen-creature";
+
+// Show rats only where they are true to size; otherwise say where they would be.
+const kinds = ["rat", "grey rat", "black rat"] as const;
+const rats = kinds.every((k) => realSizeAt(PRESETS[k], vpm))
+  ? kinds.map((k, i) => generateCreature(atScale(PRESETS[k], vpm), seededRandom(seed + i), k).entity)
+  : [];
+if (!rats.length) console.log(`rats from ${Math.ceil(Math.max(...kinds.map((k) => minVoxelsPerMetre(PRESETS[k]))))} voxels per metre`);
+```
+
+The [valley example](/docs/examples/valley/) does this: its rats appear only at 100 voxels per
+metre, and at 20 or 50 the HUD says "rats at 1 cm". A game that wants giant rats (the
+[tutorial](/docs/tutorial/rats/)) just uses `atScale` and lets the floor win.
 
 Small rats are where the resolution rules bite, so below size 1 the body keeps floors: lower legs and
 feet stay over 2 voxels across and the first part of the tail over 1.5; there is no fat layer; and

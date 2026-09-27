@@ -91,8 +91,8 @@ For more than a few dozen models, generate them on workers and cache them; see
 ## Scale: voxels per metre
 
 Generator parameters are written in **10 voxels per metre**: a 120-voxel oak is 12 m tall. That is
-also the scale every share code means. The same design can be asked for finer, at 50 or 100 voxels
-per metre (every entity generator lists `scales: [50, 100]`):
+also the scale every share code means. The same design can be asked for finer, at 20, 50 or 100
+voxels per metre (every entity generator except the creature lists `scales: [20, 50, 100]`):
 
 ```ts
 const fine = generateTree(PRESETS.oak, seededRandom(42), "oak", { voxelsPerMetre: 100 }).entity;
@@ -115,7 +115,9 @@ What finer scales cost you:
   still one grounded piece.
 
 The creature is authored close to real scale already: use `atScale(params, voxelsPerMetre)` from
-`@voxolith/gen-creature` to size a rat for a world with a fixed unit.
+`@voxolith/gen-creature` to size a rat for a world with a fixed unit, and `realSizeAt` to check
+the result is real size (a rat is from about 84 voxels per metre; below, it comes out larger than
+life). See [sizing for a world](/docs/generators/creature/#sizing-for-a-world).
 
 ## Terrain is different
 

@@ -103,7 +103,8 @@ and the river, lakes, banks and slopes stay exactly where they were. What the fi
   steps become slopes, with a little micro relief;
 - organic boundaries between surface roles and paths, looked up a little off each column by noise;
 - grass blades one voxel across and a few to fifteen tall, in clumps with bare patches, on grassy
-  ground (`grass`, the blades per grassy column, default 0.22; `bladeHeight`, default 1.4k);
+  ground (`grass`, the blades per grassy column, default 0.22; `bladeHeight`, default 1.4k and
+  at least 4, so blades at k = 2, 20 voxels per metre, still vary in height);
 - pebbles on beds, banks and paths;
 - only a skin of ground below the surface (`skin`, default 6 fine voxels), since it is seen from
   above: a 128 m valley at 1 cm voxels costs its surface, not its volume.
@@ -129,8 +130,9 @@ renderer.editMany(boxes, (cells, ox, oy, oz) => ground.fillBrick(cells, ox, oy, 
 On a [`FineTerrain`](/docs/generators/api/gen-terrain/interfaces/FineTerrain/), `top` is looked up
 on coarse columns (the settlement's paths and yards) and applies to the top two fine voxels, with no
 blades. `heightAt`, `waterAt`, `waterTop`, `maxY`, `spanOf` and `pick` work in fine voxels. Its GPU
-cost is hundreds of MB for a whole valley: the valley example measures about 130 MB at 50 voxels
-per metre and about 560 MB at 100, which is why it defaults to 50.
+cost for a whole valley grows fast with `k`: the valley example measures about 19 MB at 20 voxels
+per metre, 126 MB at 50 and 560 MB at 100, which is why it defaults to 50 on a desktop and 20 on a
+phone.
 
 ## Development
 

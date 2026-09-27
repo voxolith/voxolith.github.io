@@ -80,7 +80,7 @@ this for a settlement.
 
 ## Streaming fine terrain
 
-At 50 or 100 voxels per metre the ground no longer fits in memory at once, so it has to stream.
+At 20, 50 or 100 voxels per metre the ground no longer fits in memory at once, so it has to stream.
 `refineTerrain(terrain, k, { seed })` from `@voxolith/gen-terrain` is the same terrain `k` times
 finer, answered a brick at a time. The coarse heightfield stays the source of truth: levelled pads
 stay flat, the river stays put. The fine one adds a smooth surface, grass blades and pebbles, and
@@ -116,8 +116,8 @@ Fine models are sparse, so the valley example draws every house, tree and rock a
 
 ## Costs
 
-- The GPU cost of a fine valley is hundreds of MB: the valley example measures about 130 MB at its
-  default 50 voxels per metre and about 560 MB at 100. It defaults to three model variants per
+- The GPU cost of a fine valley grows fast with the scale: the valley example measures about
+  19 MB at 20 voxels per metre (a phone's default), 126 MB at 50 (a desktop's) and 560 MB at 100. It defaults to three model variants per
   species (`?variants=3`) for that reason; ten match the coarse page exactly but need over a
   gigabyte at 100.
 - A soft fog at the streaming radius hides the edge. The valley example adds a light haze whatever

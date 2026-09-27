@@ -1,6 +1,6 @@
 ---
 title: nightwood
-description: "A first-person night in a misty forest at 50 or 100 voxels per metre: moonlight, a cottage with lit windows through the trees, fireflies, and fog as the view distance."
+description: "A first-person night in a misty forest at 20, 50 or 100 voxels per metre: moonlight, a cottage with lit windows through the trees, fireflies, and fog as the view distance."
 ---
 
 **[Open the live page](/examples/nightwood/)** ·
@@ -17,8 +17,9 @@ world-space light will be measured against it.
 
 ## What it shows
 
-- **2 cm or 1 cm voxels close up.** Every model is generated at 50 voxels per metre by default,
-  or 100 with the HUD's scale button (which reloads the scene), on the generator workers (the world page's worker, with its model cache in production builds) and drawn as
+- **5, 2 or 1 cm voxels close up.** Every model is generated at 50 voxels per metre by default
+  on a desktop and 20 on a phone (a touch-only pointer, or storage bindings under 512 MiB), or one
+  scale finer with the HUD's scale button (which reloads the scene), on the generator workers (the world page's worker, with its model cache in production builds) and drawn as
   instances: about 250 trees, 850 shrubs and 900 plants from 12 models. See
   [Scales and refinement](/docs/generators/scales-and-refinement/).
 - **Mist.** The weather is the engine's `fog` preset
@@ -66,23 +67,28 @@ const lights = (t: number): PointLight[] => [
 
 ## Cost
 
-Rays through foliage at 1 cm step voxel by voxel wherever an instance may be, and each step
-transforms into the instances there. So this page is expensive. At 1280 × 720 on a desktop Radeon
-with the adaptive render scale, it runs at about 30 fps at 50 voxels per metre and about 16 at
-100. Phones get 12 fireflies and the Medium preset. `renderer.setDebug(10)` shows the
+Rays through foliage step voxel by voxel wherever an instance may be, and each step transforms
+into the instances there. So this page is expensive, and the cost follows the voxel size. At
+1280 × 720 on a desktop Radeon with the adaptive render scale, it runs at about 30 fps at 50
+voxels per metre and about 16 at 100. At render scale 1 (1280 × 720) a frame takes about 59 ms at 20
+against 144 ms at 50, which is why phones start at 20. Phones also get 12 fireflies and the
+Medium preset. `renderer.setDebug(10)` shows the
 steps each ray took; `?renderScale=` fixes the scale for measuring.
 
 ## Controls
 
 Drag (or click for mouse look) to look around; Q/E turn and R/F look up and down; a gamepad's
-right stick works too. The button in the HUD switches between 2 cm and 1 cm voxels.
+right stick works too. The button in the HUD steps between the device's default scale and one
+finer: 2 cm and 1 cm on a desktop, 5 cm and 2 cm on a phone. From any other scale it goes back to
+the default. It reloads the page and keeps every other URL option. The HUD title names the voxel
+size.
 
 ## URL options
 
 | option | default (phone) | effect |
 |---|---|---|
 | `?full` | | desktop settings on a phone |
-| `?vpm=` | 50 | voxels per metre: 50 or 100 (the HUD's scale button) |
+| `?vpm=` | 50 (20) | voxels per metre: 20, 50 or 100; anything else snaps to the nearest (the HUD's scale button) |
 | `?weather=` | `fog` | any [`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/) name; `clear` for no mist |
 | `?mist=` | 0.8 | the weather's fog thickness, times the engine's |
 | `?view=` | 24 | view distance in metres, 8 to 40 |
