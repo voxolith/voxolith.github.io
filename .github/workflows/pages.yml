@@ -50,10 +50,12 @@ jobs:
         with:
           bun-version: latest
       - name: Assemble a workspace root
+        # A member's "overrides" only apply from the workspace root, so the site's are carried over.
         run: |
-          cat > package.json <<'JSON'
-          { "name": "pages-workspace", "private": true, "workspaces": ["voxolith.github.io", "renderer", "engine", "generators/*"] }
-          JSON
+          bun -e 'const site = require("./voxolith.github.io/package.json");
+          require("fs").writeFileSync("package.json", JSON.stringify({ name: "pages-workspace", private: true,
+            workspaces: ["voxolith.github.io", "renderer", "engine", "generators/*"], overrides: site.overrides ?? {} }, null, 2));'
+          cat package.json
       - run: bun install
       - working-directory: voxolith.github.io
         run: bun run typecheck
