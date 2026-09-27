@@ -1,0 +1,84 @@
+---
+title: bench
+description: "The renderer benchmark: one fixed, deterministic scene at 20, 50 or 100 voxels per metre that takes every expensive renderer path, seen from four fixed views."
+---
+
+**[Open the live page](/examples/bench/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/bench/main.ts)
+
+<ImageZoom src="/shots/bench.webp" alt="The bench example at 20 voxels per metre, view 2: a pond in the grass at dusk, rats and stones beside it, a cottage with lit windows behind and a spruce at the wood's edge" width={960} height={540} />
+
+Not a showcase: a test scene for measuring the renderer. It is small enough to build in a few
+seconds at 20 voxels per metre and still tolerable at 100, and it takes every expensive path the
+renderer has, so one run at each scale settles whether a renderer change is faster or slower.
+Every length is in metres, so the scene is the same at every scale.
+
+## What the scene holds
+
+A 40 m square of low ground at dusk:
+
+- **A dense instanced wood.** Oak, birch and spruce (four tree models), with 220 bushes and 360
+  ferns and grasses underneath: long, overlapping [instance lists](/docs/renderer/instances/#crowded-cells).
+- **Stamped and instanced things side by side.** Boulders are stamped into the world; the cottage
+  is an instance, with its windows lit (emissive glass).
+- **Water.** A pond, animated from the frame's time.
+- **Point lights.** Two shadowed ones (a lantern at the cottage door, a lamp in the wood) and four
+  unshadowed ones.
+- **Fog with a view distance.** [`fog.distance`](/docs/renderer/atmosphere/#fog) stops every
+  primary ray within 32 m.
+- **Things that move.** Four small stones circle the pond as a dynamic instance set, and six rats
+  walk a circle beside it, [posed on the GPU](/docs/renderer/instances/#posed-on-the-gpu)
+  (`makeCrowd` rigged). They are sized with gen-creature's `atScale` at every scale, so below 100
+  voxels per metre they are larger than life.
+
+Nothing depends on the clock. The seed is fixed, nothing calls `Math.random`, and whatever moves
+(stones, rats, water) advances a fixed 1/60 s per drawn frame, so two runs draw the same frames.
+The render scale is fixed (there is no `makePerf`), every frame is drawn, and there is no phone
+profile: the page runs as asked everywhere.
+
+## The four views
+
+| `?view=` | the camera |
+|---|---|
+| 0 | inside the wood, towards its heart: canopies and undergrowth |
+| 1 | across the open ground: the boulders, the pond and the cottage |
+| 2 | close on the pond, the stones, the rats and the cottage |
+| 3 | up past the wood's edge into the sky |
+
+## URL options
+
+| option | default | effect |
+|---|---|---|
+| `?vpm=` | 20 | voxels per metre: 20, 50 or 100; anything else snaps to the nearest |
+| `?view=` | 0 | one of the four views; `all` starts at 0, and `bench.setView()` with no argument steps to the next |
+| `?renderScale=` | 0.5 | the fixed render scale |
+| `?quality=` | `high` (`low` on a CPU adapter) | `low`, `medium` or `high`; `maxSteps` is 1024 in every preset, since `fog.distance` bounds the rays |
+| `?anim=1` | | move things by the wall clock instead of the frame counter |
+| `?e2e` | | expose `window.bench`, below |
+
+Plus the [common ones](/docs/examples/#common-url-options). The HUD shows the scale, the view, the
+preset, the GPU time and the fps.
+
+## The test hook
+
+With `?e2e`, `window.bench` gives a tool what it needs:
+
+| member | does |
+|---|---|
+| `ready()` | true once everything is generated, placed and streamed, and a frame is drawn |
+| `setView(i?)` | one of the four views; with no argument, the next one |
+| `frames(n)` | a promise that resolves once `n` more frames are drawn and the GPU has finished them |
+| `stats()` | `vpm`, `view`, `fps`, `gpuMs` (GPU ms per pass), `width`, `height`, `models`, `instances` and `loadMs` (`generate`, `upload`, `place`, `ground`, `total`) |
+| `setDebug(v)` | `renderer.setDebug(v)` |
+| `setQuality(patch)` | `renderer.setQuality(patch)`; `null` restores the page's own (its preset with `maxSteps` 1024) |
+| `freeze(on)` | while on, nothing advances: the crowd and the dynamic set stay put and the water holds still, and frames are still drawn; `freeze(false)` resumes from the same state |
+| `setViewDistance(v)` | caps the frame's `fog.distance` (voxels) at the smaller of the page's and `v`, so a no-skip walk's step cap is not reached first; `null` restores the page's |
+
+The maintainers' workspace has a `render-bench` tool that drives this page on a real GPU at 20,
+then 50, then 100 voxels per metre, each scale only if the one below showed no regression against
+a saved baseline. Per view it reports the median GPU time over alternated rounds, and a parity
+check: the pixels that differ between the normal walk and the no-skip walk (`setDebug(1)`), with
+shadows off and motion frozen.
+
+See also [Quality and performance](/docs/renderer/quality-and-performance/),
+[Instances](/docs/renderer/instances/) and the [nightwood](/docs/examples/nightwood/) example.

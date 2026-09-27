@@ -39,10 +39,14 @@ example has the toggle), and world-space light comes next.
   unshadowed one with a halo, wandering its own slow path and pulsing, up to 28 of the renderer's
   32 lights. The window glass is emissive, which lights only itself (see
   [Lighting](/docs/manual/lighting/)).
-- **Crowded instance cells.** Canopies overlap, so at 100 voxels per metre each 64³ cell of the wood lists about 20
-  instances. The renderer splits those lists by 16³ sub-cell (see
-  [crowded cells](/docs/renderer/instances/#crowded-cells)), which makes this page about 8 times
-  faster.
+- **Crowded instance cells.** Canopies overlap, so at 100 voxels per metre each 64³ cell of the
+  wood lists about 20 instances. The renderer splits those lists by 16³ sub-cell, listing only the
+  instances whose voxels can be there (see
+  [crowded cells](/docs/renderer/instances/#crowded-cells)). The first, looser tables made this
+  page about 8 times faster at 100 voxels per metre than walking whole lists; marking them from
+  what each model actually draws took another 29 to 47% off a frame, more at finer scales. The price is a pause
+  while the scene is placed: the tables are built on the main thread, about 0.65 s at 20 voxels
+  per metre, 5 s at 50 and 20 s at 100.
 
 ## The interesting part
 
@@ -71,11 +75,11 @@ const lights = (t: number): PointLight[] => [
 
 Rays through foliage step voxel by voxel wherever an instance may be, and each step transforms
 into the instances there. So this page is expensive, and the cost follows the voxel size. At
-1280 × 720 on a desktop Radeon with the adaptive render scale, it runs at about 30 fps at 50
-voxels per metre and about 16 at 100. At render scale 1 (1280 × 720) a frame takes about 59 ms at 20
-against 144 ms at 50, which is why phones start at 20. Phones also get 12 fireflies and the
-Medium preset. `renderer.setDebug(10)` shows the
-steps each ray took; `?renderScale=` fixes the scale for measuring.
+1280 × 720 on a desktop Radeon at render scale 1, a frame takes about 39 ms of GPU time at 20
+voxels per metre against 86 ms at 50, which is why phones start at 20; the adaptive render scale
+brings that down to what the device can keep up with. Phones also get 12 fireflies and the Medium
+preset. `renderer.setDebug(10)` shows the steps each ray took; `?renderScale=` fixes the scale for
+measuring.
 
 ## Controls
 

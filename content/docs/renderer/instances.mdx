@@ -60,13 +60,39 @@ A cell lists at most 255 instances; entries beyond that are dropped with a conso
 ### Crowded cells
 
 Overlapping boxes make long lists: in a dense wood at 100 voxels per metre a 64³ cell lists about
-20 instances, up to 75, and every step of a ray through a canopy would test them all. So a static
-cell with 8 or more gets a table instead, built once with the static set. Each of its 4³ sub-cells
-(16³ voxels) lists only the instances whose occupied model bricks can show a voxel there, in the
-cell list's order, so the same instance wins. It also masks which of its eight bricks they reach.
-A step then tests two or three instances, and a ray skips bricks and sub-cells nothing reaches
-without asking any model. On the nightwood page that is about 8 times faster. Cells a dynamic
-instance touches fall back to their whole list while it is there.
+20 instances, up to 75, and every step of a ray through a canopy would test them all. So every
+static cell with a list also gets a table, built once with the static set. Each of its 4³
+sub-cells (16³ voxels) lists only the instances that can draw a voxel there, in the cell list's
+order, so the same instance wins, and masks which of its eight bricks they reach. A step then
+tests two or three instances, and a ray skips bricks and sub-cells nothing reaches without asking
+any model.
+
+What an instance reaches is tight. Every occupied 2³ sub-cell of its model is turned into world
+space, and a brick is marked, and the instance listed, only where a world voxel centre can sample
+one of them (with a little slack for the shader's f32 rounding). A turned brick box would reach
+far more of the world than its voxels do: marked from boxes, 58% of nightwood's fine steps were in
+bricks marked "an instance may be here" that held no voxel.
+
+Measured on the [nightwood](/docs/examples/nightwood/) page at 1280 × 720 on a desktop GPU, the
+tight marks on every listed cell take a frame down by:
+
+| voxels per metre | render scale 1 | render scale 0.5 |
+|---|---|---|
+| 20 | 31% | 29% |
+| 50 | 41% | 37% |
+| 100 | | 47% |
+
+That is on top of the first tables, which were built only for cells of 8 or more instances and
+marked from occupied model bricks, and which already made nightwood at 100 voxels per metre about
+8 times faster than walking whole lists (2.4 fps against 0.3 at full scale).
+
+The cost is build time. The tables are built on the main thread in `setInstances`: on nightwood
+about 0.65 s at 20 voxels per metre, 5 s at 50 and 20 s at 100 (it was 0.17, 1.3 and 6 s with
+brick marks). Their index region ("subs") stays about the same size at 20 and 50 (1.5 and
+14.5 MiB) and grows from 83 to 93 MiB at 100.
+
+Cells a dynamic instance touches fall back to their whole list while it is there, as does any cell
+over the 255 cap.
 
 ### Matching stamped orientations
 
@@ -80,7 +106,7 @@ what stamping with orientation `o` would; the engine's
 There are two sets of instances, sent separately:
 
 - **Static** (the default), for scenery: `setInstances(list)` replaces the static set and builds its
-  per-cell lists (and the sub-cell tables of crowded cells) once.
+  per-cell lists and their sub-cell tables once.
 - **Dynamic**, for a crowd: `setInstances(list, { dynamic: true })` replaces only the moving set,
   every frame. Its cost is the moving instances and the cells they touch, however much scenery
   there is: moving instances go after the static ones, each cell they touch gets a fresh list (its
@@ -176,5 +202,10 @@ tilted placement.
 - Chih-Chen Kao, Grzegorz Makowski, Shin Fujieda, Takahiro Harada. *Voxel Deformation-Aware Neural
   Intersection Function.* Eurographics 2026 Short Papers.
   [doi:10.2312/egs.20261026](https://doi.org/10.2312/egs.20261026)
+- Atsushi Yoshimura, Takahiro Harada. *Subspace Culling for Ray–Box Intersection.* Proc. ACM
+  Comput. Graph. Interact. Tech. 6(1) (I3D 2023).
+  [doi:10.1145/3585503](https://doi.org/10.1145/3585503) The idea of tight occupancy instead of
+  loose boxes behind the [crowded-cell tables](#crowded-cells); their technique itself was tried
+  and not kept.
 
 What Voxolith took from them and what is its own: [Research and credits](/docs/credits/).

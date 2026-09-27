@@ -74,10 +74,12 @@ point lights and water treat it like any other voxel.
   stamping the same forest would cost (`?stamp`).
 - Instance sampling is compiled out of the shader until the first instance is placed, so a scene
   that never uses them pays nothing. The first placement builds the instanced pipeline.
-- Static placements cost once. A dynamic set costs its members and the cells they touch every
-  commit, so keep only what actually moves in it.
-- A ray step through a crowded cell tests only the instances that can be in its 16³ sub-cell (see
-  [crowded cells](/docs/renderer/instances/#crowded-cells)), but each of those is still a
+- Static placements cost once, but that once is on the main thread: `setInstances` builds a
+  sub-cell table for every listed cell, about 0.65 s for the nightwood forest at 20 voxels per
+  metre, 5 s at 50 and 20 s at 100. Place scenery once, not per frame. A dynamic set costs its
+  members and the cells they touch every commit, so keep only what actually moves in it.
+- A ray step through a static cell tests only the instances that can draw a voxel in its 16³
+  sub-cell (see [crowded cells](/docs/renderer/instances/#crowded-cells)), but each of those is still a
   transform and a model lookup per voxel. Rays cost by how far they travel through foliage, so a
   close-up scene at a fine scale wants a view distance (`fog.distance`, see
   [atmosphere](/docs/renderer/atmosphere/#fog)); `renderer.setDebug(10)` shows the steps each ray

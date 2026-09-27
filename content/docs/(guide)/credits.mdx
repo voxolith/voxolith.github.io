@@ -55,6 +55,35 @@ lists, with a small grid of 32-bit part masks per 8³ brick so a sample tests on
 ray skips the empty bricks of the creature's box; joints are welded as baking does; and the rig's
 cover (fur over flesh a pose uncovers) is precomputed into the rest model.
 
+## Tight occupancy for instance cells
+
+The [sub-cell tables](/docs/renderer/instances/#crowded-cells) of static instance cells list, per
+16³ sub-cell, only the instances that can draw a voxel there, so a ray through a dense wood tests
+two or three instances a step and skips the bricks none of them reaches.
+
+<Cards>
+  <Card
+    title="Subspace Culling for Ray–Box Intersection"
+    href="https://doi.org/10.1145/3585503"
+    description="Atsushi Yoshimura, Takahiro Harada (AMD). Proc. ACM Comput. Graph. Interact. Tech. 6(1) (I3D 2023)."
+  />
+</Cards>
+
+- **Yoshimura and Harada** observe that a bounding box is a loose fit for what it holds, so many
+  rays that hit the box miss everything inside, and cull those rays against a coarse occupancy of
+  sub-volumes within each box. Voxolith took the idea and the analysis: measure how much of the
+  traversal is spent in space that only a loose box claims, and mark tight occupancy instead. On
+  nightwood, marked from turned model brick boxes, 58% of the fine steps were in such space.
+- **Their technique itself was tried and not kept.** A sub-cell mask per box with a ray-mask table
+  was implemented and measured on nightwood: over the tables below it saved another 2.5 to 8
+  points at 20, 50 and 100 voxels per metre, for 4, 44 and 245 MiB of masks, and masks on world
+  bricks made the world page 4 to 12% slower.
+
+**What is Voxolith's own:** the tables are marked from each model's occupied 2³ sub-cells, turned
+into world space, so a brick is marked and an instance listed only where a world voxel centre can
+sample one of them; and every listed static cell gets a table, not only crowded ones. With the
+shader unchanged, that took nightwood's frame down by 29 to 47% depending on the scale.
+
 ## Temporal accumulation of shadows
 
 [Temporal accumulation](/docs/renderer/quality-and-performance/#temporal-accumulation)
