@@ -35,5 +35,8 @@
     "serve": "^14.2.6",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "mdast-util-to-markdown": "2.1.2"
   }
 }
