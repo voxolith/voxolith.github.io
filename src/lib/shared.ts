@@ -34,7 +34,7 @@ export const demos = [
     title: 'Nightwood',
     href: '/examples/nightwood/',
     image: '/shots/nightwood.webp',
-    text: 'A dense forest at night at 1 cm voxels: moonlight through the canopy, a lit cottage and fireflies. Look around; fog sets the view distance.',
+    text: 'A misty forest at night in 2 cm or 1 cm voxels: moonlight through the canopy, a lit cottage and fireflies. Look around; fog sets the view distance.',
   },
   {
     title: 'Demolition Shot',

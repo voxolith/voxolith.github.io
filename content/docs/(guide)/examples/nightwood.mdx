@@ -1,14 +1,14 @@
 ---
 title: nightwood
-description: "A first-person night in a dense forest at 100 voxels per metre: moonlight, a cottage with lit windows through the trees, fireflies, and fog as the view distance."
+description: "A first-person night in a misty forest at 50 or 100 voxels per metre: moonlight, a cottage with lit windows through the trees, fireflies, and fog as the view distance."
 ---
 
 **[Open the live page](/examples/nightwood/)** ·
 [Source](https://github.com/voxolith/examples/blob/main/src/nightwood/main.ts)
 
-<ImageZoom src="/shots/nightwood.webp" alt="The nightwood example: a cottage with lit windows and a lantern at the door, seen across a flowering clearing between dark trunks at night" width={960} height={540} />
+<ImageZoom src="/shots/nightwood.webp" alt="The nightwood example: a cottage with lit windows and a lantern at the door, seen across a flowering clearing between dark trunks fading into mist at night" width={960} height={540} />
 
-You stand in a clearing in a dense wood at night. Oak, birch and spruce close in on every side,
+You stand in a clearing in a dense, misty wood at night. Oak, birch and spruce close in on every side,
 bushes, bracken and grass grow underneath, and through a gap in the trees a cottage has its windows
 lit and a lantern at the door. Fireflies drift between the trunks. You can look around but not
 walk. The camera stands still, so the world only has to reach as far as the fog lets you see.
@@ -17,10 +17,15 @@ world-space light will be measured against it.
 
 ## What it shows
 
-- **1 cm voxels close up.** Every model is generated at 100 voxels per metre on the generator
-  workers (the world page's worker, with its model cache in production builds) and drawn as
+- **2 cm or 1 cm voxels close up.** Every model is generated at 50 voxels per metre by default,
+  or 100 with the HUD's scale button (which reloads the scene), on the generator workers (the world page's worker, with its model cache in production builds) and drawn as
   instances: about 250 trees, 850 shrubs and 900 plants from 12 models. See
   [Scales and refinement](/docs/generators/scales-and-refinement/).
+- **Mist.** The weather is the engine's `fog` preset
+  ([`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/)) through
+  [`atmosphereFrame`](/docs/engine/api/atmosphere/functions/atmosphereFrame/), thinning with
+  height, recoloured to a pale moonlit grey: the night horizon it would take is almost black
+  and reads as darkness, not mist. The lamps glow through it.
 - **Fog as the view distance.** [`fog.distance`](/docs/renderer/atmosphere/#fog) stops every
   primary ray at 24 m and closes the fog over its last quarter, so nothing past it is traced and
   the edge of the 60 m world never shows.
@@ -31,7 +36,7 @@ world-space light will be measured against it.
   unshadowed one with a halo, wandering its own slow path and pulsing, up to 28 of the renderer's
   32 lights. The window glass is emissive, which lights only itself (see
   [Lighting](/docs/manual/lighting/)).
-- **Crowded instance cells.** Canopies overlap, so each 64³ cell of the wood lists about 20
+- **Crowded instance cells.** Canopies overlap, so at 100 voxels per metre each 64³ cell of the wood lists about 20
   instances. The renderer splits those lists by 16³ sub-cell (see
   [crowded cells](/docs/renderer/instances/#crowded-cells)), which makes this page about 8 times
   faster.
@@ -62,22 +67,24 @@ const lights = (t: number): PointLight[] => [
 ## Cost
 
 Rays through foliage at 1 cm step voxel by voxel wherever an instance may be, and each step
-transforms into the instances there. So this page is expensive: about 60 ms a frame at 1280 × 720
-on a desktop Radeon, with the adaptive render scale at its floor. Phones get 50 voxels per metre
-(an eighth of the voxels), 12 fireflies and the Medium preset. `renderer.setDebug(10)` shows the
+transforms into the instances there. So this page is expensive. At 1280 × 720 on a desktop Radeon
+with the adaptive render scale, it runs at about 30 fps at 50 voxels per metre and about 16 at
+100. Phones get 12 fireflies and the Medium preset. `renderer.setDebug(10)` shows the
 steps each ray took; `?renderScale=` fixes the scale for measuring.
 
 ## Controls
 
 Drag (or click for mouse look) to look around; Q/E turn and R/F look up and down; a gamepad's
-right stick works too.
+right stick works too. The button in the HUD switches between 2 cm and 1 cm voxels.
 
 ## URL options
 
 | option | default (phone) | effect |
 |---|---|---|
 | `?full` | | desktop settings on a phone |
-| `?vpm=` | 100 (50) | voxels per metre: 50 or 100 |
+| `?vpm=` | 50 | voxels per metre: 50 or 100 (the HUD's scale button) |
+| `?weather=` | `fog` | any [`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/) name; `clear` for no mist |
+| `?mist=` | 0.8 | the weather's fog thickness, times the engine's |
 | `?view=` | 24 | view distance in metres, 8 to 40 |
 | `?fireflies=` | 24 (12) | fireflies, 0 to 28 |
 | `?trees=`, `?shrubs=`, `?plants=` | 1 | density of each, 0 to 1 |
