@@ -1,0 +1,285 @@
+---
+title: Loading screens
+description: Show what a Voxolith page is loading with makeLoadTracker, the engine's per-phase load events, and time the load with formatTimeline.
+---
+
+A big scene takes a while to load: shaders link, models are generated or read from the cache,
+instances are uploaded and indexed, the ground streams in. The engine **reports** what is loading;
+it draws nothing. There is no loading screen in the engine, no weighting of one phase against
+another, and no display strings: the app decides what to show, and whether to show anything.
+
+Everything goes through one object, a [`LoadTracker`](/docs/engine/api/engine/interfaces/LoadTracker/)
+from [`makeLoadTracker()`](/docs/engine/api/engine/functions/makeLoadTracker/). The engine's
+loaders report into it when you hand it to them, your own steps report into it the same way, and
+the same records read back as a load timeline for measuring.
+
+## What is reported
+
+Work is grouped into **phases**, plain strings. The engine's own loaders use the names in
+[`LOAD_PHASES`](/docs/engine/api/engine/variables/LOAD_PHASES/):
+
+| phase | reported by | one item is | notes |
+|---|---|---|---|
+| `shaders` | the renderer, through `trackRenderer` | the WESL link in `createRenderer` | cached for every renderer on the page, so short after the first |
+| `pipelines` | the renderer, through `trackRenderer` | the shader module or one pipeline variant (the label names it, e.g. `"fragment+instances"`) | variants a later frame needs compile then, and reopen the phase |
+| `models` | `makeGeneratorPool({ load })` | one generation request (the label is the generator id) | `cached` counts results the worker's model cache served |
+| `upload` | `makeInstanceLayer(renderer, { load })` (or `makeModelLibrary`) | a model uploaded the first time it is seen | uploads in one synchronous run form one span |
+| `placement` | `makeInstanceLayer(renderer, { load })` | one static placement | ticked all at once, since `setInstances` builds them in one call |
+| `ground` | `makeChunkedWorld({ load })` | one chunk | `focus` adds what it queues, `step` ticks what it builds |
+
+Each change reaches listeners as a [`LoadEvent`](/docs/engine/api/engine/interfaces/LoadEvent/):
+the `phase`, a `kind` (`start` when the phase goes from idle to busy, `progress` when a count
+changes, `end` when its last open task ends), the phase's running `done`, `total` and `cached`
+counts (totals over its whole life, not deltas), an optional `label` for the item that just
+finished, and `t`, milliseconds since the tracker was made.
+
+Phases count different things (one shader link, forty models, three thousand placements), so the
+tracker never adds them into one percentage for you. `snapshot().done` and `.total` are plain sums;
+if you want a single bar, weigh the phases yourself.
+
+## Wiring it up
+
+One tracker per page, passed to every loader that should report:
+
+```ts
+import { createRenderer } from "@voxolith/renderer";
+import { makeChunkedWorld, makeInstanceLayer, makeLoadTracker, trackRenderer } from "@voxolith/engine";
+import { makeGeneratorPool } from "@voxolith/engine/worker";
+
+const load = makeLoadTracker();
+
+const renderer = await createRenderer(gpu, scene, { onLoad: trackRenderer(load) });
+const pool = makeGeneratorPool({ spawn, load });
+const layer = makeInstanceLayer(renderer, { load });
+const world = makeChunkedWorld({ target: renderer, size, chunk: 64, seed, generate, load });
+```
+
+The renderer does not depend on the engine, so it takes a plain callback,
+[`RendererOptions.onLoad`](/docs/renderer/api/renderer/interfaces/RendererOptions/#property-onload);
+[`trackRenderer(load)`](/docs/engine/api/engine/functions/trackRenderer/) turns the tracker into
+one.
+
+Steps of your own are phases too. Open a task, tick it, end it:
+
+```ts
+const layout = load.task("layout");             // no total: just busy until it ends
+planVillage();
+layout.end();
+
+const houses = load.task("houses", sites.length); // a known total
+for (const site of sites) {
+  build(site);
+  houses.tick(1, { label: site.kind });
+}
+houses.end();
+```
+
+A [`LoadTask`](/docs/engine/api/engine/interfaces/LoadTask/) can `add(n)` to what it expects as it
+learns more, and `tick` past its total simply grows it. `end()` drops anything it expected but
+never ticked, so a cancelled load counts only what it finished and an idle phase always reads
+`done === total`. Several tasks may share a phase (two pools both reporting `models`): their
+counts add up and the phase is busy while any of them is open.
+
+## A consumer
+
+The smallest useful loading display: one row per phase, with its counts and a bar. Replace it with
+whatever your game looks like; nothing in the engine assumes this shape.
+
+```ts
+import type { LoadTracker } from "@voxolith/engine";
+
+/** One row per phase in `list`, updated on every event. Returns an unsubscribe. */
+export function showPhases(load: LoadTracker, list: HTMLElement, names: Record<string, string> = {}): () => void {
+  const rows = new Map<string, { text: HTMLElement; bar: HTMLProgressElement }>();
+  return load.on((e) => {
+    let row = rows.get(e.phase);
+    if (!row) {
+      const li = list.appendChild(document.createElement("li"));
+      row = { text: li.appendChild(document.createElement("span")), bar: li.appendChild(document.createElement("progress")) };
+      rows.set(e.phase, row);
+    }
+    const cached = e.cached > 0 ? ` (${e.cached} cached)` : "";
+    row.text.textContent = `${names[e.phase] ?? e.phase} ${e.done}/${e.total}${cached}`;
+    if (e.total > 0) {
+      row.bar.max = e.total;
+      row.bar.value = e.done;
+    } else row.bar.removeAttribute("value"); // no count yet: an indeterminate bar
+  });
+}
+```
+
+Phase names are identifiers, so map them to your own words (`{ models: "Growing trees" }`) rather
+than showing them raw. `snapshot()` gives every phase at once, if you would rather redraw the whole
+list from scratch on each event.
+
+## Knowing when it is done
+
+`load.idle()` resolves when every phase is idle; `load.idle("models")` waits for one. It resolves
+**at once** when nothing is busy, including when nothing has started yet, so call it after the
+load has been kicked off:
+
+```ts
+const trees = pool.generateMany(specs); // queued: `models` is busy now
+await load.idle();                       // waits for it
+const forest = await trees;
+```
+
+The tracker only knows about work that has been reported. Between two steps (the models are in and
+the layout has not opened its task yet) every phase is idle, and an `idle()` called then resolves.
+So your own code is what knows the load is over; `idle()` is for waiting on the loaders you have
+already started. The examples wait for `idle()`, then two frames (the first frame compiles
+pipelines lazily, which reopens `pipelines`), then `idle()` again, before they report the load.
+
+## Growing totals and reopening phases
+
+Totals are what has been asked for so far, not a promise of what is coming. A generator pool adds
+one item per request as it is queued, so its total grows while you queue more. A chunked world adds
+the chunks each `focus` newly queues; freed chunks are not counted back, and revisiting one queues
+and counts it again. When the queue empties, `ground` ends; when the camera moves on, it starts
+again with a new `start` event and its counts carry on from where they were.
+
+So a phase that ended is not finished for good. A display that should go away after the first
+load unsubscribes (the function `on` returns) once the page is up, rather than waiting for every
+phase to end forever; streaming ground after that is the page's business, not the loading screen's.
+
+## The main thread stalls
+
+Events are sent synchronously, from inside the loader's own call. A step that blocks the main
+thread (an upload, the static placement, a pipeline compile, a layout of your own) still sends its
+`start` and its `end`, but the page only repaints after it has finished: a "placing..." line
+written from the `start` event appears together with the `end`, or not at all.
+
+To get a message on screen before a blocking step, open its phase, let the browser paint, then run
+the step:
+
+```ts
+/** Resolves after the next frame has been painted. */
+const painted = () => new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
+const scenery = load.task("scenery");
+await painted();  // the "scenery" line is on screen now
+layer.setStatic(statics);
+layer.commit();   // uploads and placement: blocks for seconds at fine scales
+scenery.end();
+```
+
+<Callout type="warn" title="One animation frame is not enough">
+  Code that resumes from a `requestAnimationFrame` callback still runs before that frame is
+  painted, so `await new Promise(requestAnimationFrame)` followed by a blocking step paints the
+  message only after the step. Wait for the next task after the frame (`setTimeout` inside the
+  callback, as above) or for a second frame. Measured in headless Chrome with a 600 ms stall: text
+  written before a single frame's wait was first painted after the stall; with either of the two
+  waits it was painted as the stall began.
+</Callout>
+
+An app phase around several blocking engine steps (as `scenery` wraps `upload` and `placement`
+above) is the way to put one message up for all of them.
+
+The `pipelines` phase times only the synchronous `createShaderModule` and `create*Pipeline` calls.
+Chrome compiles a pipeline when it is first used, so the long stall of a first frame lands in
+that frame and is not in `pipelines` yet. Expect a pause after the last phase ends and before
+the first picture; hold the loading screen until the first frame is drawn if the pause matters.
+
+Moving these steps off the main thread later will not change the API.
+
+## Measuring
+
+The same records are a load timeline. [`timeline()`](/docs/engine/api/engine/interfaces/LoadTracker/#timeline)
+returns one [`TimelineEntry`](/docs/engine/api/engine/interfaces/TimelineEntry/) per phase, in the
+order they first started: its first `start`, latest `end`, how long it was actually `busy`, in how
+many `spans` (a reopened phase stretches one entry), and its counts.
+[`formatTimeline`](/docs/engine/api/engine/functions/formatTimeline/) prints it as a table for a
+log:
+
+```ts
+await load.idle();
+console.log(formatTimeline(load.timeline()));
+// phase         start      took    done/total  cached
+// shaders          0 ms    41 ms         1/1
+// models          52 ms  1830 ms       12/12      12
+```
+
+In the [examples](/docs/examples/), the pages with a perf overlay (world, valley, nightwood,
+creature, instances and swarm) log that table to the console under `?perf` and put the total load
+time and the longest phase in the overlay's label. Every example page exposes
+`window.loadTimeline()` once it has loaded, for benches and scripts.
+
+## The examples' loading screen
+
+The [example pages](/docs/examples/) are one fuller way to consume these events. It is the
+examples' own code, not an engine feature: copy it, restyle it or replace it. It lives in
+[`examples/src/shared/`](https://github.com/voxolith/examples/tree/main/src/shared):
+
+- [`loading-screen.ts`](https://github.com/voxolith/examples/blob/main/src/shared/loading-screen.ts)
+  draws the screen from a tracker;
+- [`loading-labels.ts`](https://github.com/voxolith/examples/blob/main/src/shared/loading-labels.ts)
+  holds the words: `PHASE_LABELS` (phase name to text), `PAGE_BLURBS` (the line under each
+  page's title) and `phaseLabel(phase)`, which falls back to the raw name;
+- [`loading.ts`](https://github.com/voxolith/examples/blob/main/src/shared/loading.ts) has
+  `nextFrame` (a frame, then a task: the wait from [above](#the-main-thread-stalls)),
+  `step(load, phase, fn)`, which opens an app phase, lets a frame paint, runs `fn` and always
+  closes the phase, and `reportLoadTimeline` for [measuring](#measuring).
+
+```ts
+export const SHOW_AFTER_MS = 150;
+export interface LoadingScreenOptions { title: string; blurb?: string; parent?: HTMLElement }
+export interface LoadingScreen { ready(): void; fail(err: unknown): void; dispose(): void }
+export const NO_SCREEN: LoadingScreen;
+export function showLoadingScreen(load: LoadTracker, opts: LoadingScreenOptions): LoadingScreen;
+```
+
+The pages' shared startup, `boot(name)`, makes the tracker and the screen and returns them with
+the GPU context: `{ gpu, canvas, info, load, screen }`. A page passes `load` to its loaders and
+calls `screen.ready()` when its first picture is up (the valley calls it once 60% of the first
+ground is built, and streams the rest behind it).
+
+What it shows:
+
+- **Nothing, for a quick page.** The overlay covers the canvas but only fades in after
+  `SHOW_AFTER_MS` (150 ms), so a light page is up before it would appear.
+- **One row per phase**, in the order the phases started, in words from `PHASE_LABELS`:
+
+  | phase | shown as |
+  |---|---|
+  | `device` (from `boot`) | Starting WebGPU |
+  | `shaders` | Linking shaders |
+  | `pipelines` | Compiling pipelines |
+  | `models` | Generating models |
+  | `upload` | Uploading models |
+  | `placement` | Placing instances |
+  | `ground` | Building the ground |
+
+  The pages' own phases have entries too (`model`, `region`, `terrain`, `houses`, `layout`,
+  `creatures`, `trees`, `scene`, `scenery`, `wood`). A counted phase has a bar, `done/total`,
+  `n cached` and its time; an uncounted one (`total` 0) has an indeterminate bar. Finished rows
+  are dimmed.
+- **An overall bar**, with no number: the unweighted mean of the phases' `done / total`. It can move backwards
+  when a new phase starts or a total grows. That is deliberate: it reports what is known, rather
+  than guessing a weighting, and it shows no percentage because a mean of unlike phases would
+  claim a precision it lacks.
+- **At `ready()`**, the overlay stops taking input at once and fades out. A small corner pill,
+  which never blocks input, then lists phases still busy for more than 150 ms (streaming ground,
+  say) and goes away when the tracker is idle.
+- **Errors**: an uncaught error or unhandled rejection before `ready()`, or a call to
+  `fail(err)`, shows "Loading failed: …" on the overlay (or in the pill after `ready()`).
+
+It uses only the brand tokens, so it follows the dark and light themes, and it respects
+`prefers-reduced-motion`. A page that waits for the user before loading anything
+(minecraft-region) passes `boot(name, { loading: false })`, gets `NO_SCREEN`, and opens a screen
+of its own for each dropped file.
+
+## See also
+
+- [Engine: load events](/docs/engine/loading/)
+- [Workers and caching](/docs/manual/workers-and-caching/) for the `models` phase and its cache hits
+- [Streaming](/docs/manual/streaming/) for the `ground` phase
+- [Instances](/docs/manual/instances/) for `upload` and `placement`
+- [Performance](/docs/manual/performance/#load-time) for making the load shorter
+- API: [`makeLoadTracker`](/docs/engine/api/engine/functions/makeLoadTracker/),
+  [`LoadTracker`](/docs/engine/api/engine/interfaces/LoadTracker/),
+  [`LoadTask`](/docs/engine/api/engine/interfaces/LoadTask/),
+  [`LoadEvent`](/docs/engine/api/engine/interfaces/LoadEvent/),
+  [`LoadSnapshot`](/docs/engine/api/engine/interfaces/LoadSnapshot/),
+  [`trackRenderer`](/docs/engine/api/engine/functions/trackRenderer/),
+  [`formatTimeline`](/docs/engine/api/engine/functions/formatTimeline/),
+  [`RendererLoadHook`](/docs/renderer/api/renderer/type-aliases/RendererLoadHook/)

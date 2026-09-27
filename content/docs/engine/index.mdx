@@ -17,7 +17,7 @@ are [`@voxolith/gen-kit`](/docs/generators/gen-kit/), beside the generators.
 
 | import | contents |
 |---|---|
-| `@voxolith/engine` | entity and generator contracts, registry, share codes, palette allocation, orientation, placement, chunked worlds, instance layers, brick stamping. Runtime-safe: no DOM, no GPU, no filesystem |
+| `@voxolith/engine` | entity and generator contracts, registry, share codes, palette allocation, orientation, placement, chunked worlds, instance layers, brick stamping, load events. Runtime-safe: no DOM, no GPU, no filesystem |
 | `@voxolith/engine/vox` | MagicaVoxel import and export of entities |
 | `@voxolith/engine/worker` | an off-thread generator pool, with an optional IndexedDB model cache |
 | `@voxolith/engine/animation` | rigs and clips: play, pose, bake posed models at any heading, wound and sever, pose cache, crowds. Headless and pure |
@@ -61,6 +61,9 @@ renderer.updatePalette(palette.buildPalette());
   </Card>
   <Card title="Workers" href="/docs/engine/workers/">
     The generator pool and the IndexedDB model cache.
+  </Card>
+  <Card title="Load events" href="/docs/engine/loading/">
+    One tracker the loaders report their phases into, for a loading screen and a load timeline.
   </Card>
   <Card title="Input" href="/docs/engine/input/">
     One input per surface, gestures, actions, touch controls and camera controllers.

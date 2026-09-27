@@ -49,6 +49,7 @@ their real size roam the village.
 - **A model cache.** Production builds keep the generated models in IndexedDB, keyed by the
   worker's hashed URL, so a second visit loads in seconds and a new build never reads an old
   model.
+- **Load progress.** One [load tracker](/docs/manual/loading-screens/) collects the renderer, the generator workers, the instance layer, the streamed ground and the page's own steps; the [loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) shows each phase while the page loads, and `?perf` also logs the load timeline to the console.
 
 ## The interesting part
 

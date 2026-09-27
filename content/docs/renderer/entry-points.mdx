@@ -151,6 +151,17 @@ hand, spread [`timeOfDay(phase)`](/docs/engine/api/atmosphere/functions/timeOfDa
 `@voxolith/engine/atmosphere`. The loop and the scale knobs are covered in
 [Quality and performance](/docs/renderer/quality-and-performance/).
 
+### Load reporting
+
+`createRenderer(gpu, scene, { onLoad })` reports its loading steps to a callback,
+[`RendererLoadHook`](/docs/renderer/api/renderer/type-aliases/RendererLoadHook/): `"start"` and
+`"end"` around linking the shaders (phase `"shaders"`) and around creating the shader module and
+each pipeline (phase `"pipelines"`, labelled with the variant, e.g. `"fragment+instances"`).
+Variants that a later frame needs are created in that frame's `render`, so they report then. The
+calls are synchronous and time only the synchronous create calls; a hook that throws is logged
+once and never breaks rendering. The engine's load tracker takes it directly:
+`{ onLoad: trackRenderer(load) }` (see [Loading screens](/docs/manual/loading-screens/)).
+
 ## Cameras
 
 The renderer takes a camera as a ray basis, a

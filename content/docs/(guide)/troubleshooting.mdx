@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Fixes for WebGPU missing or slow, software adapters, lost devices, HTTPS on phones, blank canvases, share codes and big worlds on phones.
+description: Fixes for WebGPU missing or slow, software adapters, lost devices, HTTPS on phones, blank canvases, share codes, big worlds on phones and loading text that does not update.
 ---
 
 Most problems with a Voxolith page come down to WebGPU: whether the browser offers it, on which
@@ -209,6 +209,29 @@ seven times the memory). The nightwood example uses the same test and the same s
 The same approach works in your own app: read `gpu.limits.maxStorageBufferBindingSize` and
 `matchMedia("(pointer: coarse)")` once at startup and size the world from them. See
 [Mobile and PWA](/docs/manual/mobile-and-pwa/) and [Performance](/docs/manual/performance/).
+
+</Accordion>
+
+<Accordion id="loading-text-stuck" title="The loading text doesn't update during a step">
+
+Load events are sent synchronously, from inside the step that reports them. When that step
+blocks the main thread (uploading models, the static instance placement, a pipeline compile, a
+layout of your own), the browser cannot repaint until it returns, so the `start` message and the
+`end` reach the screen together, and the text seems stuck on the phase before.
+
+Open the phase, let a frame paint, then run the step:
+
+```ts
+const scenery = load.task("scenery");
+await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+layer.commit();
+scenery.end();
+```
+
+A single `await new Promise(requestAnimationFrame)` is not enough: the code after it still runs
+before that frame is painted. The first frame after loading also stalls while the browser compiles
+the pipelines it uses, and that stall is not in the `pipelines` phase. See
+[Loading screens](/docs/manual/loading-screens/#the-main-thread-stalls).
 
 </Accordion>
 

@@ -1,0 +1,41 @@
+---
+title: Load events
+description: "makeLoadTracker: the engine's loaders report their phases (shaders, pipelines, models, upload, placement, ground) into one tracker, for an app's loading screen and a load timeline."
+---
+
+The engine's loaders can say what they are doing. Give them a
+[`LoadTracker`](/docs/engine/api/engine/interfaces/LoadTracker/) and they report work by
+**phase**, with running counts; an app reads the same tracker to draw its own loading screen and,
+afterwards, to time the load. The tracker draws nothing, weighs nothing and holds no display
+strings. It is in the barrel and runtime-safe: no DOM, no GPU, only `performance.now()`.
+
+| reporter | option | phase |
+|---|---|---|
+| the renderer | `createRenderer(gpu, scene, { onLoad: trackRenderer(load) })` | `shaders`, `pipelines` |
+| [`makeGeneratorPool`](/docs/engine/api/worker/functions/makeGeneratorPool/) | `load` in [`GeneratorPoolOptions`](/docs/engine/api/worker/interfaces/GeneratorPoolOptions/) | `models` (with `cached`) |
+| [`makeInstanceLayer`](/docs/engine/api/engine/functions/makeInstanceLayer/) | `load` in [`InstanceLayerOptions`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/) | `upload`, `placement` |
+| [`makeModelLibrary`](/docs/engine/api/engine/functions/makeModelLibrary/) | `load` in [`ModelLibraryOptions`](/docs/engine/api/engine/interfaces/ModelLibraryOptions/) | `upload` |
+| [`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/) | `load` in [`ChunkedWorldOptions`](/docs/engine/api/engine/interfaces/ChunkedWorldOptions/) | `ground` |
+| the app | `load.task("layout")` | any name of its own |
+
+The engine's phase names are [`LOAD_PHASES`](/docs/engine/api/engine/variables/LOAD_PHASES/).
+
+- [`makeLoadTracker()`](/docs/engine/api/engine/functions/makeLoadTracker/) makes the tracker.
+  `task(phase, total?)` opens a [`LoadTask`](/docs/engine/api/engine/interfaces/LoadTask/)
+  (`add`, `tick`, `end`); `on(fn)` subscribes to every
+  [`LoadEvent`](/docs/engine/api/engine/interfaces/LoadEvent/); `snapshot()` is every phase
+  now ([`LoadSnapshot`](/docs/engine/api/engine/interfaces/LoadSnapshot/)); `idle(phase?)`
+  resolves when nothing (or that phase) is busy; `timeline()` gives one
+  [`TimelineEntry`](/docs/engine/api/engine/interfaces/TimelineEntry/) per phase.
+- [`trackRenderer(load)`](/docs/engine/api/engine/functions/trackRenderer/) adapts the tracker to
+  the renderer's [`onLoad`](/docs/renderer/api/renderer/interfaces/RendererOptions/#property-onload)
+  callback, which is typed by shape
+  ([`RendererLoadCallback`](/docs/engine/api/engine/type-aliases/RendererLoadCallback/)) so the
+  engine does not need a particular renderer version.
+- [`formatTimeline(entries)`](/docs/engine/api/engine/functions/formatTimeline/) prints the
+  timeline as a plain-text table for logs.
+
+Events are synchronous, sent from inside the reporting call, so a step that blocks the main thread
+reaches the screen only after it has finished. How to work with that, what `idle()` does and does
+not promise, and a small consumer are in the manual's
+[Loading screens](/docs/manual/loading-screens/).

@@ -47,6 +47,7 @@ example has the toggle), and world-space light comes next.
   what each model actually draws took another 29 to 47% off a frame, more at finer scales. The price is a pause
   while the scene is placed: the tables are built on the main thread, about 0.65 s at 20 voxels
   per metre, 5 s at 50 and 20 s at 100.
+- **Load progress.** One [load tracker](/docs/manual/loading-screens/) collects the renderer, the generator workers, the instance layer, the streamed ground and the page's own steps; the [loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) shows each phase while the page loads, and `?perf` also logs the load timeline to the console.
 
 ## The interesting part
 
