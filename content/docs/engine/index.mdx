@@ -19,7 +19,7 @@ are [`@voxolith/gen-kit`](/docs/generators/gen-kit/), beside the generators.
 |---|---|
 | `@voxolith/engine` | entity and generator contracts, registry, share codes, palette allocation, orientation, placement, chunked worlds, instance layers, brick stamping, load events. Runtime-safe: no DOM, no GPU, no filesystem |
 | `@voxolith/engine/vox` | MagicaVoxel import and export of entities |
-| `@voxolith/engine/worker` | an off-thread generator pool, with an optional IndexedDB model cache |
+| `@voxolith/engine/worker` | an off-thread generator pool with queue controls, an optional IndexedDB model cache and its controls, and a placement worker for static instance sets |
 | `@voxolith/engine/animation` | rigs and clips: play, pose, bake posed models at any heading, wound and sever, pose cache, crowds. Headless and pure |
 | `@voxolith/engine/atmosphere` | time of day and weather as configuration, translated into renderer settings. Headless and optional |
 | `@voxolith/engine/input` | pointers, keys, wheel, pointer lock, gamepad, gestures, actions, on-screen touch controls, orbit and look cameras. DOM only |
@@ -60,10 +60,10 @@ renderer.updatePalette(palette.buildPalette());
     Moving things through a brick world, and many animated members on a budget.
   </Card>
   <Card title="Workers" href="/docs/engine/workers/">
-    The generator pool and the IndexedDB model cache.
+    The generator pool, the IndexedDB model cache and the placement worker.
   </Card>
   <Card title="Load events" href="/docs/engine/loading/">
-    One tracker the loaders report their phases into, for a loading screen and a load timeline.
+    One tracker the loaders report their phases into, for a loading screen and a load timeline, and the controls an app steers its load with.
   </Card>
   <Card title="Input" href="/docs/engine/input/">
     One input per surface, gestures, actions, touch controls and camera controllers.

@@ -44,16 +44,23 @@ const specs = Array.from({ length: 8 }, (_, i) => ({
   seed: seed + i,
   ctx: { voxelsPerMetre: 100 },
 }));
-const oaks = await pool.generateMany(specs, (done, total) => {
-  status.textContent = `generating ${done}/${total}${pool.cached ? ` (${pool.cached} from the cache)` : ""}`;
+const oaks = await pool.generateMany(specs, {
+  onDone: (done, total) => {
+    status.textContent = `generating ${done}/${total}${pool.cached ? ` (${pool.cached} from the cache)` : ""}`;
+  },
 });
-pool.destroy();
+void pool.destroy(); // lets idle workers finish their cache writes first
 ```
 
 - The pool runs one worker per core less one, capped at 4 (`size` overrides). Generation is
   memory-heavy and the main thread still needs a core to draw.
 - `generateMany` resolves in the order given, not the order they finish, and reports progress as
   each lands. `generate(spec)` does one.
+- Without options the queue is first in, first out. Requests can take a `priority`, an
+  `AbortSignal` and `cache: false`, and the pool can `pause()`, `resume()` and `reprioritise()`
+  its queue: see [generation queue controls](/docs/manual/managing-loading/#generation-queue-controls).
+- `destroy()` returns a promise: pending requests reject at once, and idle workers finish their
+  cache writes before they are terminated, so the models just made are kept for the next visit.
 - Sparse models come back as their bricks, transferred rather than copied.
 - `ctx` passes through to the generator, so fine models are generated on workers too.
 
@@ -70,9 +77,15 @@ generator code never reads a model the old code made, and entries from any other
 when the cache opens. In development the URL does not change with the code, which is why the
 example above turns the cache off under `import.meta.env.DEV`.
 
+Give each worker script its own database name: opening the cache deletes the entries of every
+other salt, so two workers sharing a name would delete each other's models.
+
 Where there is no IndexedDB or `CompressionStream` (bun, some private windows), the cache is simply
 off and everything is generated. `openModelCache`, `packEntity` and `unpackEntity` are exported if
 you want the same storage for models of your own.
+
+Nothing is evicted unless you ask. To see what the cache holds, clear it, trim it or cap its size,
+see [the model cache](/docs/manual/managing-loading/#the-model-cache) under Managing loading.
 
 ## Falling back
 
@@ -86,7 +99,7 @@ try {
 } catch (err) {
   console.warn("worker generation failed, falling back to the main thread:", err);
 } finally {
-  pool.destroy();
+  void pool.destroy();
 }
 ```
 
@@ -100,9 +113,13 @@ try {
 
 ## See also
 
+- [Managing loading](/docs/manual/managing-loading/) for queue priorities, aborts, the
+  placement worker and the cache controls
 - [Engine: workers](/docs/engine/workers/)
 - [Using generators](/docs/manual/using-generators/) for variant pools and scales
 - API: [`makeGeneratorPool`](/docs/engine/api/worker/functions/makeGeneratorPool/),
   [`serveGenerators`](/docs/engine/api/worker/functions/serveGenerators/),
   [`GenerateSpec`](/docs/engine/api/worker/interfaces/GenerateSpec/),
-  [`openModelCache`](/docs/engine/api/worker/functions/openModelCache/)
+  [`openModelCache`](/docs/engine/api/worker/functions/openModelCache/),
+  [`openModelCacheControls`](/docs/engine/api/worker/functions/openModelCacheControls/),
+  [`GenerateOptions`](/docs/engine/api/worker/interfaces/GenerateOptions/)

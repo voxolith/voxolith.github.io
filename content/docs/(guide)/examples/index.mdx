@@ -54,7 +54,7 @@ Every example reads a few options through the shared startup code (`src/shared/b
 | `?perf` | where the example uses `makePerf`: show the frame-time and render-scale overlay; all but the bench also log the [load timeline](/docs/manual/loading-screens/#measuring) to the console, with the load time in the overlay's label |
 | `?e2e` | expose test hooks on `window` for the end-to-end input checks; not for normal use |
 
-Every page also shows the same [loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) while it loads: one row per phase and an overall bar, then a corner pill for anything still streaming. A load that fails says so on that screen.
+Every page also shows the same [loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) while it loads: one row per step the page lists and an overall bar, then a corner pill for anything that continues in the background. A load that fails says so on that screen.
 
 GPU validation errors and a lost device are shown in the page too, since a phone has no console.
 

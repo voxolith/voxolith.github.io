@@ -131,6 +131,10 @@ Generation was 89.6% of the examples' forest build time, placement 2%. In order:
 3. Build only what is near the camera with a [chunked world](/docs/manual/streaming/), and show the
    page once the middle of the view is in.
 
+What is left can move behind the loading screen instead of into the first frames: compile the
+pipelines with `prepare`, bake the static placement on a worker, and put the models the first view
+needs at the front of the generation queue (see [Managing loading](/docs/manual/managing-loading/)).
+
 ## See also
 
 - [Renderer: quality and performance](/docs/renderer/quality-and-performance/)

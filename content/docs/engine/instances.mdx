@@ -43,6 +43,25 @@ layer.commit();                                     // scenery is sent once; cal
   [`InstancePlacement`](/docs/engine/api/engine/interfaces/InstancePlacement/)s by model id.
 - `commit()`: sends the static set if it changed and the dynamic set always. Cheap to call every
   frame: the renderer keeps the two apart, so the scenery is not re-sent with each move.
+- `commitAsync()`: `commit()`, with the static set baked on a placement worker (below). `baking`
+  is true while a bake is in flight.
+
+```ts
+import { makeInstanceLayer } from "@voxolith/engine";
+
+const layer = makeInstanceLayer(renderer, { load, placement }); // both optional
+const oakBase = layer.palettes.of("oak", oak.model.roles);
+layer.setStatic(sites.map((s) => ({ model: oak.model, x: s.x, y: s.y, z: s.z, yaw: s.yaw, base: oakBase })));
+
+layer.commit();            // places the static set here and now: blocks for a big set
+// or
+await layer.commitAsync(); // bakes it on `placement`, resolves once it draws (commit() without a worker)
+
+// Moving things: ids from the library, every frame.
+const ratId = layer.models.id(rat.model);
+layer.setDynamic(rats.map((r) => ({ model: ratId, x: r.x, y: r.y, z: r.z, yaw: r.yaw, anchor: rat.model.anchor, base: ratBase })));
+layer.commit();            // the static set is unchanged, so only the moving set is sent
+```
 
 `target` is an [`InstanceTarget`](/docs/engine/api/engine/interfaces/InstanceTarget/), which
 [`Renderer`](/docs/renderer/api/renderer/classes/Renderer/) implements; the layer and libraries
@@ -52,6 +71,42 @@ and [`makePaletteLibrary`](/docs/engine/api/engine/functions/makePaletteLibrary/
 A placement puts the model's `anchor` at `x, y, z` in world voxels (fractions are fine), turns it
 by `yaw` radians about +y and optionally mirrors it along the model's x first. `base` is the palette
 slot of role 1.
+
+## Baking on a worker
+
+`commit()` places a changed static set on the main thread, which takes seconds for a fine scene.
+Given a placement worker ([`makePlacementWorker`](/docs/engine/api/worker/functions/makePlacementWorker/),
+see [Workers](/docs/engine/workers/#the-placement-worker)),
+[`commitAsync()`](/docs/engine/api/engine/interfaces/InstanceLayer/#commitasync) bakes it there:
+
+```ts
+import { makeInstanceLayer } from "@voxolith/engine";
+
+const layer = makeInstanceLayer(renderer, { load, placement });
+layer.setStatic(scenery);   // uploads new models here, on the main thread
+await layer.commitAsync();  // bakes on the worker; the page keeps drawing
+loop.invalidate();
+```
+
+- It resolves once the static set of this call, or a newer one, is drawing (at once when it had
+  not changed). The moving set is sent at once, `commit()` calls meanwhile send only the moving
+  set, and the old static set draws until the new one is applied.
+- With `load`, the `placement` phase counts up with the worker's progress while the bake runs
+  (one short of the total until the apply).
+- Only the newest bake is applied: a newer static set supersedes one in flight, whose result is
+  dropped. A model removed or replaced during a bake makes the layer bake again. A superseded or aborted
+  bake is discarded from the `placement` phase, so its `done` can drop.
+- `commitAsync({ signal })` aborts: the worker skips the bake if it has not started (a started one
+  runs to the end), the promise rejects with `signal.reason`, and the static set counts as unsent,
+  so the next `commit()` or `commitAsync()` sends it again. A failed bake does the same.
+- The layer sends each model to the worker once, after its upload, and drops it when the model is
+  released. The target needs the optional
+  [`InstanceTarget`](/docs/engine/api/engine/interfaces/InstanceTarget/) methods `placementModel`,
+  `placementInput` and `applyPlacement` (the renderer has them); without them, or without a worker,
+  `commitAsync()` is `commit()`.
+
+The manual's [placement off the main thread](/docs/manual/managing-loading/#placement-off-the-main-thread)
+covers it at length.
 
 ## Matching stamped orientations
 

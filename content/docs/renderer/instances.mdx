@@ -86,7 +86,8 @@ That is on top of the first tables, which were built only for cells of 8 or more
 marked from occupied model bricks, and which already made nightwood at 100 voxels per metre about
 8 times faster than walking whole lists (2.4 fps against 0.3 at full scale).
 
-The cost is build time. The tables are built on the main thread in `setInstances`: on nightwood
+The cost is build time. The tables are built on the main thread in `setInstances` (or on a worker,
+see [below](#baking-the-static-set-on-a-worker)): on nightwood
 about 0.65 s at 20 voxels per metre, 5 s at 50 and 20 s at 100 (it was 0.17, 1.3 and 6 s with
 brick marks). Their index region ("subs") stays about the same size at 20 and 50 (1.5 and
 14.5 MiB) and grows from 83 to 93 MiB at 100.
@@ -112,9 +113,126 @@ There are two sets of instances, sent separately:
   there is: moving instances go after the static ones, each cell they touch gets a fresh list (its
   static entries, then the moving ones), and cells they left get their static entry back.
 
+```ts
+// Once, behind the loading screen: the scenery (lists and sub-cell tables built here).
+// oakId and ratId come from addModel, the palettes from addPalette.
+renderer.setInstances(trees.map((t) => ({ model: oakId, x: t.x, y: t.y, z: t.z, yaw: t.yaw, anchor: oakAnchor, base: oakPalette })));
+
+// Every frame: only what moves. The static set is left as it is.
+renderer.setInstances(
+  rats.map((r) => ({ model: ratId, x: r.x, y: r.y, z: r.z, yaw: r.yaw, anchor: ratAnchor, base: ratPalette })),
+  { dynamic: true },
+);
+```
+
 Instance sampling is a pipeline constant. A scene that never places an instance runs a shader with
 that code compiled away (it costs even when never taken: several times the frame on SwiftShader),
-and the instanced pipeline is built the first time one is placed.
+and the instanced pipeline is built the first time one is placed, in the next frame's `render`.
+[`prepare()`](/docs/renderer/api/renderer/classes/Renderer/#prepare) compiles it ahead instead (see
+[Entry points](/docs/renderer/entry-points/#warming-the-pipelines-up)).
+
+### Baking the static set on a worker
+
+A static `setInstances(list)` is a headless **bake** (the instance records, packed poses, per-cell
+lists and sub-cell tables) followed by a cheap **apply** that copies the result into the
+renderer's buffers. The two halves are public, so the bake can run on a worker while the main
+thread keeps drawing:
+
+| step | where | API |
+|---|---|---|
+| send each model's placement data once, after `addModel` | main thread → worker | [`placementModel(id)`](/docs/renderer/api/renderer/classes/Renderer/#placementmodel) → [`PlacementModel`](/docs/renderer/api/renderer/interfaces/PlacementModel/) |
+| take the bake's input for a static set (a cheap copy of the list) | main thread | [`placementInput(list)`](/docs/renderer/api/renderer/classes/Renderer/#placementinput) → [`PlacementInput`](/docs/renderer/api/renderer/interfaces/PlacementInput/) |
+| bake it | worker | [`PlacementBaker`](/docs/renderer/api/renderer/classes/PlacementBaker/)`.bake(input, opts?)` or [`bakePlacement(input, lookup, opts?)`](/docs/renderer/api/renderer/functions/bakePlacement/) → [`PlacementBake`](/docs/renderer/api/renderer/interfaces/PlacementBake/) |
+| report progress (optional) | worker → main thread | [`PlacementBakeOptions`](/docs/renderer/api/renderer/interfaces/PlacementBakeOptions/)`.onProgress(done, total)` |
+| send it back without copying | worker → main thread | `postMessage(bake, placementTransferables(bake))` ([`placementTransferables`](/docs/renderer/api/renderer/functions/placementTransferables/)) |
+| draw it | main thread | [`applyPlacement(bake)`](/docs/renderer/api/renderer/classes/Renderer/#applyplacement) |
+
+`setInstances` runs this same code on the main thread, so both paths upload the same bytes. The
+bake half imports nothing that needs a DOM, a GPU or a bundler: import it from
+`@voxolith/renderer/core` in the worker. Model data is sent once per model, keyed by a
+registration key that is unique on the page and never reused; `applyPlacement` checks those keys
+and throws when a model the bake names was removed or replaced since `placementInput` (bake again
+then), or when the bake is for another renderer's grid. The moving set stays and is redrawn on
+top, and the old static set draws until the apply.
+
+<Tabs items={["main thread", "placement.worker.ts"]}>
+<Tab value="main thread">
+
+```ts
+import type { Instance, PlacementBake } from "@voxolith/renderer";
+
+const worker = new Worker(new URL("./placement.worker.ts", import.meta.url), { type: "module" });
+
+// Each model once, after addModel; its key again after removeModel.
+const oak = renderer.addModel({ size: tree.model.size, data: tree.model.data });
+worker.postMessage({ type: "model", model: renderer.placementModel(oak) });
+function removeTree(id: number): void {
+  const key = renderer.placementModel(id)?.key;
+  renderer.removeModel(id);
+  if (key !== undefined) worker.postMessage({ type: "drop", key });
+}
+
+// The static set: take the input here, bake there, apply the newest result.
+let latest = 0;
+let scenery: Instance[] = [];
+function placeStatic(list: Instance[]): void {
+  scenery = list;
+  worker.postMessage({ type: "bake", id: ++latest, input: renderer.placementInput(list) });
+}
+type Reply = { id: number; done: number; total: number } | { id: number; bake: PlacementBake };
+worker.onmessage = ({ data }: MessageEvent<Reply>) => {
+  if (data.id !== latest) return; // superseded
+  if (!("bake" in data)) {
+    bar.value = data.done / data.total; // opaque units: only the fraction means anything
+    return;
+  }
+  try {
+    renderer.applyPlacement(data.bake);
+    loop.invalidate();
+  } catch {
+    placeStatic(scenery);          // a model it names was removed meanwhile: bake without it
+  }
+};
+```
+
+</Tab>
+<Tab value="placement.worker.ts">
+
+```ts title="placement.worker.ts"
+import { PlacementBaker, placementTransferables, type PlacementInput, type PlacementModel } from "@voxolith/renderer/core";
+
+type Message =
+  | { type: "model"; model: PlacementModel }
+  | { type: "drop"; key: number }
+  | { type: "bake"; id: number; input: PlacementInput };
+
+const baker = new PlacementBaker();
+self.onmessage = ({ data }: MessageEvent<Message>) => {
+  if (data.type === "model") baker.register(data.model);
+  else if (data.type === "drop") baker.unregister(data.key);
+  else {
+    const onProgress = (done: number, total: number) => self.postMessage({ id: data.id, done, total });
+    const bake = baker.bake(data.input, { onProgress }); // (0, total) first, (total, total) last
+    self.postMessage({ id: data.id, bake }, { transfer: placementTransferables(bake) });
+  }
+};
+```
+
+</Tab>
+</Tabs>
+
+`onProgress` counts opaque work units, so only `done / total` means anything: the first call is
+`(0, total)`, the last `(total, total)` just before the bake returns, and in between at most one
+every 50 ms or so. The count moves only between instances, so at fine scales it advances in steps
+(about 190 ms apart at 100 voxels per metre). Without `onProgress` the bake does no progress work.
+
+Messages to one worker are handled in order, so a `drop` or a new `model` posted before a `bake`
+is seen before it. The engine's [`servePlacement`](/docs/engine/api/worker/functions/servePlacement/)
+adds cancelling a bake that has not started, and error replies.
+
+The engine wraps all of it: `makePlacementWorker` and `makeInstanceLayer(renderer, { placement })`
+with `commitAsync()` (see [From the engine](#from-the-engine) and the manual's
+[placement off the main thread](/docs/manual/managing-loading/#placement-off-the-main-thread)).
 
 ## Instance palettes
 
@@ -152,7 +270,9 @@ layer.setStatic([{ model: tree.model, x: 120, y: 14, z: 88, yaw: 0.4, base }]);
 layer.commit(); // sends the static and moving sets; cheap to call every frame
 ```
 
-`setStatic` takes entity models rather than ids and places each on the model's own anchor.
+`setStatic` takes entity models rather than ids and places each on the model's own anchor. Given a
+placement worker, `layer.commitAsync()` bakes the static set there
+([Engine: instances](/docs/engine/instances/#baking-on-a-worker)).
 
 See [Instances](/docs/engine/instances/) in the engine section for the layer, and
 [Stamping and crowds](/docs/engine/stamping-and-crowds/) for when to stamp instead.

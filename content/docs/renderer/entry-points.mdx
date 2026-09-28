@@ -40,7 +40,7 @@ opening the dev server over a LAN address sees no `navigator.gpu` without it.
 | import | use from | contents |
 |---|---|---|
 | `@voxolith/renderer` | browser code | everything: `initGpu`, `createRenderer`, `makeFrameLoop`, `observeResize`, plus all of `core` |
-| `@voxolith/renderer/core` | Node and bun tools | everything that does not touch the GPU: formats, bricks and sparse volumes, cameras, lights, `makePerf`, ray helpers, `seededRandom`, `GridStamper`, effects |
+| `@voxolith/renderer/core` | Node and bun tools, workers | everything that does not touch the GPU: formats, bricks and sparse volumes, cameras, lights, `makePerf`, ray helpers, `seededRandom`, `GridStamper`, effects, the static placement bake (`bakePlacement`, `PlacementBaker`) |
 | `@voxolith/renderer/vox` | Node and bun tools | `parseVox`, `parseVoxScene`, `writeVox`, `decodeVoxRotation` |
 | `@voxolith/renderer/ray` | Node and bun tools | `rayAABB`, `makeRay`, `voxelRaycast` |
 
@@ -110,7 +110,7 @@ WESL modules into WGSL (once, cached for every renderer on the page) and builds 
 dense voxel array, a 256-entry RGBA palette and optionally per-slot materials.
 
 ```ts
-import { initGpu, createRenderer, makeCamera, makeFrameLoop, observeResize, resizeToDisplay } from "@voxolith/renderer";
+import { initGpu, createRenderer, makeCamera, makeFrameLoop, observeResize, resizeToDisplay, type CameraFrame, type FrameParams } from "@voxolith/renderer";
 
 const canvas = document.querySelector("canvas")!;
 const gpu = await initGpu(canvas);
@@ -130,7 +130,7 @@ const LIGHTING = {
   sunDir: sun, moonDir: [0, -1, 0], sunColor: [1, 0.96, 0.85], moonColor: [0, 0, 0],
   skyTop: [0.35, 0.55, 0.9], skyHorizon: [0.75, 0.82, 0.92],
   nightFactor: 0, sunIntensity: 1, moonIntensity: 0,
-} as const;
+} satisfies Omit<FrameParams, keyof CameraFrame>;
 
 const loop = makeFrameLoop({
   render() {
@@ -157,10 +157,66 @@ hand, spread [`timeOfDay(phase)`](/docs/engine/api/atmosphere/functions/timeOfDa
 [`RendererLoadHook`](/docs/renderer/api/renderer/type-aliases/RendererLoadHook/): `"start"` and
 `"end"` around linking the shaders (phase `"shaders"`) and around creating the shader module and
 each pipeline (phase `"pipelines"`, labelled with the variant, e.g. `"fragment+instances"`).
-Variants that a later frame needs are created in that frame's `render`, so they report then. The
-calls are synchronous and time only the synchronous create calls; a hook that throws is logged
-once and never breaks rendering. The engine's load tracker takes it directly:
+Variants that a later frame needs are created in that frame's `render`, so they report then. For
+pipelines made synchronously these time only the create calls, which return before the browser
+has compiled (Chrome compiles on first use); the variants `prepare` compiles (below) report from
+the call to the pipeline being ready, which is the real compile. A hook that throws is logged once
+and never breaks rendering. The engine's load tracker takes it directly:
 `{ onLoad: trackRenderer(load) }` (see [Loading screens](/docs/manual/loading-screens/)).
+
+Without the engine, a callback of your own pairs each start with its end:
+
+```ts
+import { createRenderer, type RendererLoadHook } from "@voxolith/renderer";
+
+const started = new Map<string, number>();
+const onLoad: RendererLoadHook = (phase, kind, label) => {
+  const step = label ? `${phase} ${label}` : phase; // e.g. "pipelines fragment+instances"
+  if (kind === "start") started.set(step, performance.now());
+  else console.log(`${step}: ${(performance.now() - (started.get(step) ?? 0)).toFixed(1)} ms`);
+};
+
+const renderer = await createRenderer(gpu, scene, { onLoad, deferPipelines: true });
+await renderer.prepare(); // logs each variant as it becomes ready
+```
+
+Starts and ends carry the same label, and the variants `prepare` compiles may overlap, so key the
+timings by label rather than assuming one step at a time.
+
+### Warming the pipelines up
+
+Every variant beyond the base pipelines (instances, posed instances, temporal accumulation, the
+offscreen kernels) is compiled by the first frame that needs it, which stalls that frame.
+[`renderer.prepare(needs?)`](/docs/renderer/api/renderer/classes/Renderer/#prepare) compiles them
+ahead with the asynchronous pipeline calls and resolves when they are ready, so a loading screen
+can await the compile:
+
+```ts
+import { createRenderer } from "@voxolith/renderer";
+import { trackRenderer } from "@voxolith/engine";
+
+const renderer = await createRenderer(gpu, scene, { onLoad: trackRenderer(load), deferPipelines: true });
+renderer.setInstances(trees);
+renderer.setQuality(saved ?? "medium");
+await renderer.prepare({ parts: true }); // posed instances come later
+```
+
+- [`PrepareNeeds`](/docs/renderer/api/renderer/interfaces/PrepareNeeds/) (`instances`, `parts`,
+  `temporal`, `target`) says which variants to compile; a field left out is read from the current
+  state (what is placed now, the quality's `temporal`; `target` defaults to false). What that
+  compiles depends on the `pipeline` mode: fragment passes, compute kernels (plus temporal ones),
+  or for `"auto"` the compute kernels and the fragment pass for posed instances.
+- [`deferPipelines`](/docs/renderer/api/renderer/interfaces/RendererOptions/#property-deferpipelines)
+  leaves the base pipelines out of the constructor, so `prepare` compiles and times them too.
+  Without it the constructor makes them synchronously, as it always has.
+- Variants already made are skipped and compiles in flight are shared, so calling it again costs
+  only what is new. A frame that needs a variant still compiling makes it synchronously, as without
+  `prepare`, and the asynchronous result is dropped; a failed compile rejects, and `render` falls
+  back to the synchronous path.
+
+An app that never calls `prepare` behaves as before. The manual's
+[pipeline warm-up](/docs/manual/managing-loading/#awaitable-pipeline-warm-up) has the per-mode
+table.
 
 ## Cameras
 

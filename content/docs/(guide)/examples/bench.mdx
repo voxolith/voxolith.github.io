@@ -68,7 +68,7 @@ With `?e2e`, `window.bench` gives a tool what it needs:
 | `ready()` | true once everything is generated, placed and streamed, and a frame is drawn |
 | `setView(i?)` | one of the four views; with no argument, the next one |
 | `frames(n)` | a promise that resolves once `n` more frames are drawn and the GPU has finished them |
-| `stats()` | `vpm`, `view`, `fps`, `gpuMs` (GPU ms per pass), `width`, `height`, `models`, `instances` and `loadMs` (`generate`, `upload`, `place`, `ground`, `total`) |
+| `stats()` | `vpm`, `view`, `fps`, `gpuMs` (GPU ms per pass), `width`, `height`, `models`, `instances` and `loadMs` (`generate`, `upload`, `place`, `ground`, `pipelines`, `total`; `place` is a synchronous `setInstances` on purpose, so it stays the renderer's own cost rather than a worker's) |
 | `setDebug(v)` | `renderer.setDebug(v)` |
 | `setQuality(patch)` | `renderer.setQuality(patch)`; `null` restores the page's own (its preset with `maxSteps` 1024) |
 | `freeze(on)` | while on, nothing advances: the crowd and the dynamic set stay put and the water holds still, and frames are still drawn; `freeze(false)` resumes from the same state |

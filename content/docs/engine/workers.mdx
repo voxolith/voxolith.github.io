@@ -1,6 +1,6 @@
 ---
 title: Workers
-description: "Running Voxolith generators off the main thread with makeGeneratorPool and serveGenerators, zero-copy transfer, and the IndexedDB model cache."
+description: "Running Voxolith generators off the main thread with makeGeneratorPool and serveGenerators: zero-copy transfer, queue priorities and aborts, the IndexedDB model cache and its controls, and the placement worker."
 ---
 
 Generation is the most expensive part of building a scene, and it is pure CPU work with no DOM
@@ -39,6 +39,7 @@ pure and take all their randomness from the injected rng, so they are worker-saf
 
 ```ts
 import { makeGeneratorPool } from "@voxolith/engine/worker";
+import { PRESETS } from "@voxolith/gen-tree";
 
 const pool = makeGeneratorPool({
   spawn: () => new Worker(new URL("./gen.worker.ts", import.meta.url), { type: "module" }),
@@ -49,9 +50,9 @@ const oak = await pool.generate({ generator: "voxolith/tree.broadleaf", params: 
 
 const forest = await pool.generateMany(
   Array.from({ length: 12 }, (_, n) => ({ generator: "voxolith/tree.broadleaf", params: PRESETS.oak, seed: 100 + n, entityId: `oak-${n}` })),
-  (done, total) => (progress.textContent = `${done} / ${total}`),
+  { onDone: (done, total) => (progress.textContent = `${done} / ${total}`) },
 );
-pool.destroy();
+void pool.destroy();
 ```
 
 - `size` defaults to one worker per core less one, capped at 4: generation is memory-heavy and
@@ -60,10 +61,54 @@ pool.destroy();
   `seed`, an optional `entityId`, and an optional `ctx` passed to the generator
   (`{ voxelsPerMetre: 100 }` for a fine model).
 - `generateMany` resolves in the order given, not the order the models finish; `onDone` reports
-  progress as each lands.
+  progress as each lands. Its options apply to every request (the older
+  `generateMany(specs, onDone)` form still works).
 - A worker that dies fails the request it was running rather than hanging, and the remaining
-  workers carry on. `destroy()` rejects everything outstanding and terminates the workers.
-- `pending` counts requests not yet resolved; `cached` counts results served from the model cache.
+  workers carry on.
+- `destroy()` rejects everything outstanding and resolves once every worker is terminated: workers
+  still generating at once, idle ones after finishing their model cache writes (up to
+  `closeTimeoutMs`, 10 s), so the models just made are kept. Callers need not wait for it.
+- `pending` counts requests not yet settled, `queued` those waiting for a worker; `cached` counts
+  results served from the model cache.
+
+### Queue controls
+
+Without options the queue is first in, first out. Each request can take
+[`GenerateOptions`](/docs/engine/api/worker/interfaces/GenerateOptions/):
+
+- `priority` (default 0): a free worker takes the highest-priority queued request, in queue order
+  within one priority. Running requests are never pre-empted.
+- `signal`: an `AbortSignal`. A queued request leaves the queue; a running one rejects at once and
+  its result is dropped, but the worker finishes it, since a generator cannot be interrupted.
+  [`respawnOnAbort`](/docs/engine/api/worker/interfaces/GeneratorPoolOptions/#property-respawnonabort)
+  terminates and replaces that worker instead (a few hundred ms to reload, and its pending cache
+  writes are lost).
+- `cache: false`: neither read nor write the model cache for this request.
+
+On the pool, [`pause()`](/docs/engine/api/worker/interfaces/GeneratorPool/#pause) stops dispatching
+(running requests finish; `models` stays busy while work is queued),
+[`resume()`](/docs/engine/api/worker/interfaces/GeneratorPool/#resume) starts again, and
+[`reprioritise(fn)`](/docs/engine/api/worker/interfaces/GeneratorPool/#reprioritise) re-sorts the
+queue by new priorities, for streaming models around a moving player. Which models come first is
+the game's call; see [generation queue controls](/docs/manual/managing-loading/#generation-queue-controls)
+in the manual.
+
+```ts
+import { makeGeneratorPool } from "@voxolith/engine/worker";
+
+const pool = makeGeneratorPool({ spawn, respawnOnAbort: true }); // aborted running requests restart their worker
+const region = new AbortController();
+
+const hero = pool.generate(heroSpec, { priority: 10 });            // taken before any priority-0 request
+for (const spec of specsAround(player)) {
+  pool.generate(spec, { priority: -distanceTo(spec), signal: region.signal }).then(place, () => {});
+}
+
+cutscene.addEventListener("start", () => pool.pause());            // running requests still finish
+cutscene.addEventListener("end", () => pool.resume());
+onPlayerMoved(() => pool.reprioritise((spec) => -distanceTo(spec))); // re-sort what is still queued
+onRegionLeft(() => region.abort());                                 // drop the rest of that region
+```
 
 Results come back without copying: the worker transfers the model's buffers (a dense `data`, each
 512-byte brick of a sparse model, and `bones`), copying only arrays that are views into a larger
@@ -96,12 +141,112 @@ Refined models at 100 voxels per metre take seconds each on a phone, and a valle
   `import.meta.env.DEV ? undefined : "..."` above.
 </Callout>
 
+- Give each worker script its own database name: two scripts (or two apps on one origin) sharing
+  one would delete each other's entries every time either opens it.
+- The database is at version 2, which added a small per-entry record; upgrading drops the
+  version-1 records, so the first visit after the upgrade is cold once.
+
+The object form, `serveGenerators({ cache: { name, maxBytes } })`
+([`ServeCacheOptions`](/docs/engine/api/worker/interfaces/ServeCacheOptions/)), caps the cache:
+after each write the least recently used entries are evicted until it fits. `store` replaces
+IndexedDB with a [`CacheStore`](/docs/engine/api/worker/interfaces/CacheStore/) of your own
+([`memoryCacheStore`](/docs/engine/api/worker/functions/memoryCacheStore/) in tests).
+
+[`openModelCacheControls(name)`](/docs/engine/api/worker/functions/openModelCacheControls/) opens
+[`ModelCacheControls`](/docs/engine/api/worker/interfaces/ModelCacheControls/) on the main thread:
+`entries`, `usage`, `clear` and `trim`, each by an optional
+[`ModelCacheFilter`](/docs/engine/api/worker/interfaces/ModelCacheFilter/) (generator id, salt).
+They read only the per-entry records, never the models, and nothing runs by itself; see
+[the model cache](/docs/manual/managing-loading/#the-model-cache) in the manual, phones included.
+
+```ts
+import { openModelCacheControls } from "@voxolith/engine/worker";
+
+const cache = await openModelCacheControls("voxolith-models"); // the name serveGenerators was given
+if (cache) {
+  const all = await cache.usage();
+  const oaks = await cache.usage({ generator: "voxolith/tree.broadleaf" });
+  console.log(`${all.entries} models, ${(all.bytes / 1e6).toFixed(1)} MB; oaks ${(oaks.bytes / 1e6).toFixed(1)} MB`);
+
+  await cache.clear({ generator: "voxolith/tree.broadleaf" }); // after retuning the oak presets
+  await cache.trim(100e6);                                    // least recently used out, down to 100 MB
+  cache.close();
+}
+```
+
 The cache is also usable on its own: [`openModelCache(name, salt)`](/docs/engine/api/worker/functions/openModelCache/)
 returns a [`ModelCache`](/docs/engine/api/worker/interfaces/ModelCache/) with `get` and `put`, or
 `null` where there is none; [`unpackEntity`](/docs/engine/api/worker/functions/unpackEntity/)
 reverses `packEntity`.
 
+## The placement worker
+
+A second worker bakes static instance placements, the per-cell lists and sub-cell tables a static
+set needs, which take seconds on the main thread for a fine scene. The worker file calls
+[`servePlacement()`](/docs/engine/api/worker/functions/servePlacement/); the main thread starts it
+with [`makePlacementWorker({ spawn })`](/docs/engine/api/worker/functions/makePlacementWorker/) and
+gives it to `makeInstanceLayer(renderer, { placement })`, whose
+[`commitAsync()`](/docs/engine/api/engine/interfaces/InstanceLayer/#commitasync) then bakes there
+(see [Instances](/docs/engine/instances/#baking-on-a-worker)).
+
+<Tabs items={["main thread", "placement.worker.ts"]}>
+<Tab value="main thread">
+
+```ts
+import { makeInstanceLayer } from "@voxolith/engine";
+import { makePlacementWorker } from "@voxolith/engine/worker";
+
+const placement = makePlacementWorker({
+  spawn: () => new Worker(new URL("./placement.worker.ts", import.meta.url), { type: "module" }),
+});
+const layer = makeInstanceLayer(renderer, { load, placement });
+layer.setStatic(scenery);
+await layer.commitAsync(); // baked on the worker; the page keeps drawing
+loop.invalidate();
+```
+
+</Tab>
+<Tab value="placement.worker.ts">
+
+```ts title="placement.worker.ts"
+import { servePlacement } from "@voxolith/engine/worker";
+
+servePlacement();
+```
+
+</Tab>
+</Tabs>
+
+It is not a job for the generator pool: a generator worker runs one generation after another, so a
+bake queued behind one would wait for it, and the bake needs every model registered on the worker
+that runs it. Bakes run one at a time; a cancelled bake is skipped if it has not started, and one
+that has started runs to the end. While a bake runs the worker posts `progress` messages, which
+the layer turns into its `placement` count (held one short of the total until the apply; a
+superseded or aborted bake is discarded from the phase, so `done` can drop).
+
+[`PlacementWorker`](/docs/engine/api/worker/interfaces/PlacementWorker/) (`register`, `drop`,
+`bake`) is there for hosts that drive the renderer's `placementInput` / `applyPlacement`
+themselves; `bake(input, { signal, onProgress })` forwards the worker's progress:
+
+```ts
+import { makePlacementWorker } from "@voxolith/engine/worker";
+
+const placement = makePlacementWorker({ spawn });
+const oak = renderer.addModel({ size: tree.model.size, data: tree.model.data });
+placement.register(renderer.placementModel(oak)!);
+
+const leave = new AbortController();
+const bake = await placement.bake(renderer.placementInput(sceneryInstances), {
+  signal: leave.signal,
+  onProgress: (done, total) => (bar.value = done / total), // opaque units: use the fraction
+});
+renderer.applyPlacement(bake);
+loop.invalidate();
+```
+
 The request and response shapes are
 [`WorkerRequest`](/docs/engine/api/worker/type-aliases/WorkerRequest/) and
-[`WorkerResponse`](/docs/engine/api/worker/type-aliases/WorkerResponse/), for hosts that want to
-drive a worker directly.
+[`WorkerResponse`](/docs/engine/api/worker/type-aliases/WorkerResponse/) (and
+[`PlacementRequest`](/docs/engine/api/worker/type-aliases/PlacementRequest/) /
+[`PlacementResponse`](/docs/engine/api/worker/type-aliases/PlacementResponse/) for the placement
+worker), for hosts that want to drive a worker directly.

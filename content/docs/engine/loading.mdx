@@ -1,6 +1,6 @@
 ---
 title: Load events
-description: "makeLoadTracker: the engine's loaders report their phases (shaders, pipelines, models, upload, placement, ground) into one tracker, for an app's loading screen and a load timeline."
+description: "makeLoadTracker: the engine's loaders report their phases (shaders, pipelines, models, upload, placement, ground) into one tracker, for an app's loading screen and a load timeline; and the opt-in controls an app steers its load with."
 ---
 
 The engine's loaders can say what they are doing. Give them a
@@ -13,7 +13,7 @@ strings. It is in the barrel and runtime-safe: no DOM, no GPU, only `performance
 |---|---|---|
 | the renderer | `createRenderer(gpu, scene, { onLoad: trackRenderer(load) })` | `shaders`, `pipelines` |
 | [`makeGeneratorPool`](/docs/engine/api/worker/functions/makeGeneratorPool/) | `load` in [`GeneratorPoolOptions`](/docs/engine/api/worker/interfaces/GeneratorPoolOptions/) | `models` (with `cached`) |
-| [`makeInstanceLayer`](/docs/engine/api/engine/functions/makeInstanceLayer/) | `load` in [`InstanceLayerOptions`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/) | `upload`, `placement` |
+| [`makeInstanceLayer`](/docs/engine/api/engine/functions/makeInstanceLayer/) | `load` in [`InstanceLayerOptions`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/) | `upload`, `placement` (with `commitAsync`, one task from bake request to apply that counts up with the worker's progress) |
 | [`makeModelLibrary`](/docs/engine/api/engine/functions/makeModelLibrary/) | `load` in [`ModelLibraryOptions`](/docs/engine/api/engine/interfaces/ModelLibraryOptions/) | `upload` |
 | [`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/) | `load` in [`ChunkedWorldOptions`](/docs/engine/api/engine/interfaces/ChunkedWorldOptions/) | `ground` |
 | the app | `load.task("layout")` | any name of its own |
@@ -22,7 +22,8 @@ The engine's phase names are [`LOAD_PHASES`](/docs/engine/api/engine/variables/L
 
 - [`makeLoadTracker()`](/docs/engine/api/engine/functions/makeLoadTracker/) makes the tracker.
   `task(phase, total?)` opens a [`LoadTask`](/docs/engine/api/engine/interfaces/LoadTask/)
-  (`add`, `tick`, `end`); `on(fn)` subscribes to every
+  (`add`, `tick`, `end`, and `discard`, which also takes back what the task ticked, so a phase's
+  `done` can drop); `on(fn)` subscribes to every
   [`LoadEvent`](/docs/engine/api/engine/interfaces/LoadEvent/); `snapshot()` is every phase
   now ([`LoadSnapshot`](/docs/engine/api/engine/interfaces/LoadSnapshot/)); `idle(phase?)`
   resolves when nothing (or that phase) is busy; `timeline()` gives one
@@ -39,3 +40,54 @@ Events are synchronous, sent from inside the reporting call, so a step that bloc
 reaches the screen only after it has finished. How to work with that, what `idle()` does and does
 not promise, and a small consumer are in the manual's
 [Loading screens](/docs/manual/loading-screens/).
+
+## Loading controls
+
+The engine also gives an app controls over its load, and picks no policy with them: each is
+opt-in, and without them everything loads as before (a first-in, first-out generation queue, an
+unbounded model cache, placement and pipeline compiles on the main thread). What to load, in what
+order and what to wait for stay the game's decisions.
+
+| control | API | what it gives |
+|---|---|---|
+| pipeline warm-up | [`Renderer.prepare`](/docs/renderer/api/renderer/classes/Renderer/#prepare), [`deferPipelines`](/docs/renderer/api/renderer/interfaces/RendererOptions/#property-deferpipelines) | compile the variants a scene needs ahead of its first frame, awaitable, with `pipelines` timing the real compile |
+| placement on a worker | [`makePlacementWorker`](/docs/engine/api/worker/functions/makePlacementWorker/), [`servePlacement`](/docs/engine/api/worker/functions/servePlacement/), [`InstanceLayer.commitAsync`](/docs/engine/api/engine/interfaces/InstanceLayer/#commitasync) | the static set's bake off the main thread; the newest bake wins, and an aborted one leaves the static set unsent |
+| generation queue | [`GenerateOptions`](/docs/engine/api/worker/interfaces/GenerateOptions/), [`GeneratorPool`](/docs/engine/api/worker/interfaces/GeneratorPool/) `pause` / `resume` / `reprioritise`, [`respawnOnAbort`](/docs/engine/api/worker/interfaces/GeneratorPoolOptions/#property-respawnonabort) | priorities, `AbortSignal`, per-request `cache: false`, pausing and re-sorting the queue |
+| model cache | [`openModelCacheControls`](/docs/engine/api/worker/functions/openModelCacheControls/), [`ServeCacheOptions`](/docs/engine/api/worker/interfaces/ServeCacheOptions/) | list, measure, clear and trim the cache, and cap its size by last use |
+
+A few lines each, together:
+
+```ts
+import { makeInstanceLayer } from "@voxolith/engine";
+import { makeGeneratorPool, makePlacementWorker, openModelCacheControls } from "@voxolith/engine/worker";
+
+// Pipeline warm-up, on a renderer made with { deferPipelines: true, onLoad: trackRenderer(load) }.
+await renderer.prepare({ instances: true });
+
+// Placement on a worker; the worker file calls servePlacement().
+const placement = makePlacementWorker({ spawn: () => new Worker(new URL("./placement.worker.ts", import.meta.url), { type: "module" }) });
+const layer = makeInstanceLayer(renderer, { load, placement });
+layer.setStatic(scenery);
+await layer.commitAsync();
+
+// The generation queue.
+const pool = makeGeneratorPool({ spawn, load });
+const leave = new AbortController();
+const hero = pool.generate(heroSpec, { priority: 10 });                 // ahead of the rest
+const forest = pool.generateMany(treeSpecs, { signal: leave.signal });  // leave.abort() cancels it
+const preview = pool.generate(previewSpec, { cache: false });           // never cached
+pool.pause();                                                           // hold the queue for a cutscene,
+pool.resume();                                                          // then let it go again
+pool.reprioritise((spec) => -distanceTo(spec));                         // re-sort: nearest first
+
+// The model cache; the worker's serveGenerators({ cache: { name, maxBytes } }) caps it.
+const cache = await openModelCacheControls("my-game-models");
+if (cache) {
+  const { entries, bytes } = await cache.usage();
+  if (bytes > 100e6) await cache.trim(50e6);
+  console.log(`${entries} models cached`);
+}
+```
+
+How each behaves, with examples, is in the manual's
+[Managing loading](/docs/manual/managing-loading/).

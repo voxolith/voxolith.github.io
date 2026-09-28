@@ -46,7 +46,8 @@ trunks and watch the shadows move. N runs day into night, W cycles the weather.
 - **Adaptive resolution.** [`makePerf`](/docs/renderer/api/renderer/functions/makePerf/) with
   `retryAfterMs: Infinity` and `perf.reprobe()` on camera moves, since the water keeps the page
   rendering while the view is still.
-- **Load progress.** One [load tracker](/docs/manual/loading-screens/) collects the renderer, the generator workers, the streamed ground and the page's own steps; the [loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) shows each phase while the page loads, and `?perf` also logs the load timeline to the console.
+- **Pipelines compiled while the models generate.** The page creates its renderer with `deferPipelines` and runs [`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up) alongside the generator workers, so the first frame does not stall on a compile.
+- **Load progress.** One [load tracker](/docs/manual/loading-screens/) collects the renderer, the generator workers, the streamed ground and the page's own steps; the [loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) shows the steps the page lists while it loads, and `?perf` also logs the load timeline to the console.
 
 ## The interesting part
 

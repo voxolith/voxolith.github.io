@@ -13,6 +13,10 @@ from [`makeLoadTracker()`](/docs/engine/api/engine/functions/makeLoadTracker/). 
 loaders report into it when you hand it to them, your own steps report into it the same way, and
 the same records read back as a load timeline for measuring.
 
+This page is about seeing the load. Changing it (warming pipelines up, placing on a worker,
+ordering and cancelling generation, managing the model cache) is
+[Managing loading](/docs/manual/managing-loading/).
+
 ## What is reported
 
 Work is grouped into **phases**, plain strings. The engine's own loaders use the names in
@@ -21,10 +25,10 @@ Work is grouped into **phases**, plain strings. The engine's own loaders use the
 | phase | reported by | one item is | notes |
 |---|---|---|---|
 | `shaders` | the renderer, through `trackRenderer` | the WESL link in `createRenderer` | cached for every renderer on the page, so short after the first |
-| `pipelines` | the renderer, through `trackRenderer` | the shader module or one pipeline variant (the label names it, e.g. `"fragment+instances"`) | variants a later frame needs compile then, and reopen the phase |
-| `models` | `makeGeneratorPool({ load })` | one generation request (the label is the generator id) | `cached` counts results the worker's model cache served |
+| `pipelines` | the renderer, through `trackRenderer` | the shader module or one pipeline variant (the label names it, e.g. `"fragment+instances"`) | variants a later frame needs compile then, and reopen the phase; [`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up) compiles them ahead |
+| `models` | `makeGeneratorPool({ load })` | one generation request (the label is the generator id) | `cached` counts results the worker's model cache served; an aborted request leaves the total |
 | `upload` | `makeInstanceLayer(renderer, { load })` (or `makeModelLibrary`) | a model uploaded the first time it is seen | uploads in one synchronous run form one span |
-| `placement` | `makeInstanceLayer(renderer, { load })` | one static placement | ticked all at once, since `setInstances` builds them in one call |
+| `placement` | `makeInstanceLayer(renderer, { load })` | one static placement | `commit()` ticks it all at once; with [`commitAsync`](/docs/manual/managing-loading/#placement-off-the-main-thread) it is one task from the bake request to its apply, and counts up with the worker's progress (one short of the total until the apply). A superseded or aborted bake is discarded, so `done` can drop |
 | `ground` | `makeChunkedWorld({ load })` | one chunk | `focus` adds what it queues, `step` ticks what it builds |
 
 Each change reaches listeners as a [`LoadEvent`](/docs/engine/api/engine/interfaces/LoadEvent/):
@@ -32,6 +36,30 @@ the `phase`, a `kind` (`start` when the phase goes from idle to busy, `progress`
 changes, `end` when its last open task ends), the phase's running `done`, `total` and `cached`
 counts (totals over its whole life, not deltas), an optional `label` for the item that just
 finished, and `t`, milliseconds since the tracker was made.
+
+A renderer linking its shaders and making its shader module, then a pool generating two trees
+(one from the model cache), sends this (times shortened):
+
+```ts
+load.on((e) => console.log(e));
+// { phase: "shaders",   kind: "start",    done: 0, total: 0, cached: 0, t: 0 }
+// { phase: "shaders",   kind: "progress", done: 0, total: 1, cached: 0, t: 0 }
+// { phase: "shaders",   kind: "progress", done: 1, total: 1, cached: 0, t: 41 }
+// { phase: "shaders",   kind: "end",      done: 1, total: 1, cached: 0, t: 41 }
+// { phase: "pipelines", kind: "start",    done: 0, total: 0, cached: 0, t: 42 }
+// { phase: "pipelines", kind: "progress", done: 0, total: 1, cached: 0, t: 42 }
+// { phase: "pipelines", kind: "progress", done: 1, total: 1, cached: 0, t: 44, label: "module" }
+// { phase: "pipelines", kind: "end",      done: 1, total: 1, cached: 0, t: 44 }
+// { phase: "models",    kind: "start",    done: 0, total: 1, cached: 0, t: 52 }
+// { phase: "models",    kind: "progress", done: 0, total: 2, cached: 0, t: 52 }
+// { phase: "models",    kind: "progress", done: 1, total: 2, cached: 1, t: 61, label: "voxolith/tree.broadleaf" }
+// { phase: "models",    kind: "progress", done: 2, total: 2, cached: 1, t: 1830, label: "voxolith/tree.broadleaf" }
+// { phase: "models",    kind: "end",      done: 2, total: 2, cached: 1, t: 1830 }
+```
+
+The renderer's phases start with no count and add one item per step, while the pool's requests
+each open with one; either way the totals are running totals, and `end` always reads
+`done === total`.
 
 Phases count different things (one shader link, forty models, three thousand placements), so the
 tracker never adds them into one percentage for you. `snapshot().done` and `.total` are plain sums;
@@ -80,6 +108,11 @@ never ticked, so a cancelled load counts only what it finished and an idle phase
 `done === total`. Several tasks may share a phase (two pools both reporting `models`): their
 counts add up and the phase is busy while any of them is open.
 
+`discard()` closes a task and takes back what it ticked as well, as if it had never run: for work
+whose progress was shown but whose result is thrown away. The instance layer does this with a
+superseded or aborted placement bake, so its `placement` row's `done` can go **down**. A display
+that assumes counts only grow (an animation that never reverses) should allow for that.
+
 ## A consumer
 
 The smallest useful loading display: one row per phase, with its counts and a bar. Replace it with
@@ -127,7 +160,8 @@ const forest = await trees;
 The tracker only knows about work that has been reported. Between two steps (the models are in and
 the layout has not opened its task yet) every phase is idle, and an `idle()` called then resolves.
 So your own code is what knows the load is over; `idle()` is for waiting on the loaders you have
-already started. The examples wait for `idle()`, then two frames (the first frame compiles
+already started. The examples wait for `idle()`, then two frames (without
+[`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up), the first frame compiles
 pipelines lazily, which reopens `pipelines`), then `idle()` again, before they report the load.
 
 ## Growing totals and reopening phases
@@ -137,6 +171,20 @@ one item per request as it is queued, so its total grows while you queue more. A
 the chunks each `focus` newly queues; freed chunks are not counted back, and revisiting one queues
 and counts it again. When the queue empties, `ground` ends; when the camera moves on, it starts
 again with a new `start` event and its counts carry on from where they were.
+
+```ts
+load.on((e) => e.phase === "ground" && console.log(e.kind, `${e.done}/${e.total}`));
+
+// 64-voxel chunks; a radius of 192 voxels queues 32 of them.
+world.focus(256, 256, 192); // start 0/0, progress 0/32
+while (world.step(8) > 0);  // progress 1/32 ... 32/32, end 32/32
+
+world.focus(448, 256, 192); // the camera moved: start 32/32, progress 32/50 (18 new chunks)
+while (world.step(8) > 0);  // progress 33/50 ... 50/50, end 50/50
+```
+
+A page streaming in its frame loop calls `step` once a frame instead of looping, and the same
+events arrive spread over those frames.
 
 So a phase that ended is not finished for good. A display that should go away after the first
 load unsubscribes (the function `on` returns) once the page is up, rather than waiting for every
@@ -173,14 +221,23 @@ scenery.end();
 </Callout>
 
 An app phase around several blocking engine steps (as `scenery` wraps `upload` and `placement`
-above) is the way to put one message up for all of them.
+above) is the way to put one message up for all of them. This is a generic pattern; the examples
+no longer need it for placement (below).
 
-The `pipelines` phase times only the synchronous `createShaderModule` and `create*Pipeline` calls.
-Chrome compiles a pipeline when it is first used, so the long stall of a first frame lands in
-that frame and is not in `pipelines` yet. Expect a pause after the last phase ends and before
-the first picture; hold the loading screen until the first frame is drawn if the pause matters.
+Two of those steps need not block, if the app opts in (see
+[Managing loading](/docs/manual/managing-loading/)):
 
-Moving these steps off the main thread later will not change the API.
+- **Placement.** With a placement worker, `await layer.commitAsync()` bakes the static set off the
+  main thread, and the page keeps painting while it runs, so its `placement` row counts up like
+  any other while the worker bakes. The upload does not move: `setStatic` still uploads the models it has not seen on the main
+  thread, so keep the paint-first wait in front of it.
+- **Pipelines.** Without [`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up),
+  the `pipelines` phase times only the synchronous `createShaderModule` and `create*Pipeline`
+  calls. Chrome compiles a pipeline when it is first used, so the long stall of a first frame
+  lands in that frame and is not in `pipelines`: expect a pause after the last phase ends and
+  before the first picture, and hold the loading screen until the first frame is drawn if the
+  pause matters. With `deferPipelines` and `await renderer.prepare()`, the compile happens behind
+  the loading screen and `pipelines` measures it, from each call to the pipeline being ready.
 
 ## Measuring
 
@@ -192,6 +249,8 @@ many `spans` (a reopened phase stretches one entry), and its counts.
 log:
 
 ```ts
+import { formatTimeline } from "@voxolith/engine";
+
 await load.idle();
 console.log(formatTimeline(load.timeline()));
 // phase         start      took    done/total  cached
@@ -211,65 +270,123 @@ examples' own code, not an engine feature: copy it, restyle it or replace it. It
 [`examples/src/shared/`](https://github.com/voxolith/examples/tree/main/src/shared):
 
 - [`loading-screen.ts`](https://github.com/voxolith/examples/blob/main/src/shared/loading-screen.ts)
-  draws the screen from a tracker;
-- [`loading-labels.ts`](https://github.com/voxolith/examples/blob/main/src/shared/loading-labels.ts)
-  holds the words: `PHASE_LABELS` (phase name to text), `PAGE_BLURBS` (the line under each
-  page's title) and `phaseLabel(phase)`, which falls back to the raw name;
+  draws the screen from a tracker and the steps a page lists, and holds `STEPS`, the examples'
+  words for the phases every page shares;
 - [`loading.ts`](https://github.com/voxolith/examples/blob/main/src/shared/loading.ts) has
   `nextFrame` (a frame, then a task: the wait from [above](#the-main-thread-stalls)),
   `step(load, phase, fn)`, which opens an app phase, lets a frame paint, runs `fn` and always
-  closes the phase, and `reportLoadTimeline` for [measuring](#measuring).
+  closes the phase, `prepared(renderer.prepare(needs))`, which logs a failed asynchronous compile
+  and leaves it to the first frame so a page never hangs on its screen, and `reportLoadTimeline`
+  for [measuring](#measuring);
+- [`placement.ts`](https://github.com/voxolith/examples/blob/main/src/shared/placement.ts) has
+  `placementWorker()`, the page's one placement worker (its file,
+  [`placement.worker.ts`](https://github.com/voxolith/examples/blob/main/src/shared/placement.worker.ts),
+  calls `servePlacement()`), and `commitStatic(layer)`, which awaits `layer.commitAsync()` and, if
+  the bake fails, logs a warning and places synchronously with `commit()`.
+
+Every page creates its renderer with `deferPipelines: true` and awaits
+`prepared(renderer.prepare(needs))` before its first frame, so the `pipelines` row is the real
+compile. The pages with static scenery (valley, nightwood, instances) bake it with
+`commitStatic`, and wrap only `setStatic` in `step(load, STEPS.upload.phase, ...)`, since the
+upload is the one step there that still blocks.
 
 ```ts
 export const SHOW_AFTER_MS = 150;
-export interface LoadingScreenOptions { title: string; blurb?: string; parent?: HTMLElement }
-export interface LoadingScreen { ready(): void; fail(err: unknown): void; dispose(): void }
+export interface LoadingStep { phase: string; label: string; background?: boolean }
+export const STEPS; // device, shaders, pipelines, models, upload, placement, ground
+export interface LoadingScreenOptions { title: string; blurb?: string; steps: readonly LoadingStep[]; parent?: HTMLElement }
+export interface LoadingScreen { ready(): void; fail(err: unknown): void; setSteps(steps: readonly LoadingStep[]): void; dispose(): void }
 export const NO_SCREEN: LoadingScreen;
 export function showLoadingScreen(load: LoadTracker, opts: LoadingScreenOptions): LoadingScreen;
 ```
 
-The pages' shared startup, `boot(name)`, makes the tracker and the screen and returns them with
-the GPU context: `{ gpu, canvas, info, load, screen }`. A page passes `load` to its loaders and
-calls `screen.ready()` when its first picture is up (the valley calls it once 60% of the first
-ground is built, and streams the rest behind it).
+### Each page lists its steps
 
-What it shows:
+The screen shows what the page says it does, in the page's order and words, next to the page's
+loading code. A [`LoadingStep`](https://github.com/voxolith/examples/blob/main/src/shared/loading-screen.ts)
+names a tracker phase and the label to show for it. `STEPS` has one for each phase the pages share:
+
+| step | phase | label |
+|---|---|---|
+| `STEPS.device` | `device` (from `boot`) | Starting WebGPU |
+| `STEPS.shaders` | `shaders` | Linking shaders |
+| `STEPS.pipelines` | `pipelines` | Compiling pipelines |
+| `STEPS.models` | `models` | Generating models |
+| `STEPS.upload` | `upload` | Uploading models |
+| `STEPS.placement` | `placement` | Placing instances |
+| `STEPS.ground` | `ground` | Building the ground |
+
+A page lists them as they are, spreads one to change it (`{ ...STEPS.ground, background: true }`),
+or writes its own for its app phases. The valley's list, for example:
+
+```ts title="examples/src/valley/main.ts"
+const loadingSteps = (rats: boolean): LoadingStep[] => [
+  STEPS.device,
+  { phase: "terrain", label: "Shaping the terrain" },
+  { phase: "houses", label: "Measuring the houses" },
+  { phase: "layout", label: "Laying out the valley" },
+  STEPS.models,
+  ...(rats ? [{ phase: "creatures", label: "Generating rats" }] : []),
+  STEPS.shaders,
+  STEPS.pipelines,
+  STEPS.upload,
+  STEPS.placement,
+  { ...STEPS.ground, background: true },
+];
+
+const app = await boot("valley", { blurb: "The valley, refined and streamed", steps: loadingSteps(false) });
+// ... later, once the scale (and so whether there are rats) is known:
+if (RAT_COUNT) screen.setSteps(loadingSteps(true));
+```
+
+Other pages list what they do. Nightwood: `device`, `models`, `shaders`, `pipelines`, `upload`,
+`placement`, `ground`. Instances: `device`, `terrain` ("Shaping the terrain"), `trees` ("Growing
+trees"), `creatures` ("Generating rats"), `shaders`, `pipelines`, `ground`, then `upload` and
+`placement`, or with `?stamp` a "Stamping the trees" row instead of those two (that mode uses no
+worker).
+
+Whether the valley has rats depends on its scale, and the scale on the GPU (a phone gets a lighter
+profile), so it boots with the list without them and calls `setSteps` once it knows. Rows of
+phases already under way keep their progress.
+
+The pages' shared startup, `boot(name, { blurb?, steps })`, makes the tracker and the screen and
+returns them with the GPU context: `{ gpu, canvas, info, load, screen }`. A page passes `load` to
+its loaders and calls `screen.ready()` when its first picture is up (the valley calls it once 40%
+of the first ground is built, and streams the rest behind it). A page that waits for the user
+before loading anything (minecraft-region) passes `boot(name, { loading: false })`, gets
+`NO_SCREEN`, and opens a screen of its own for each dropped file.
+
+### What it shows
 
 - **Nothing, for a quick page.** The overlay covers the canvas but only fades in after
   `SHOW_AFTER_MS` (150 ms), so a light page is up before it would appear.
-- **One row per phase**, in the order the phases started, in words from `PHASE_LABELS`:
-
-  | phase | shown as |
-  |---|---|
-  | `device` (from `boot`) | Starting WebGPU |
-  | `shaders` | Linking shaders |
-  | `pipelines` | Compiling pipelines |
-  | `models` | Generating models |
-  | `upload` | Uploading models |
-  | `placement` | Placing instances |
-  | `ground` | Building the ground |
-
-  The pages' own phases have entries too (`model`, `region`, `terrain`, `houses`, `layout`,
-  `creatures`, `trees`, `scene`, `scenery`, `wood`). A counted phase has a bar, `done/total`,
-  `n cached` and its time; an uncounted one (`total` 0) has an indeterminate bar. Finished rows
-  are dimmed.
-- **An overall bar**, with no number: the unweighted mean of the phases' `done / total`. It can move backwards
-  when a new phase starts or a total grows. That is deliberate: it reports what is known, rather
-  than guessing a weighting, and it shows no percentage because a mean of unlike phases would
-  claim a precision it lacks.
+- **One row per listed step, in the listed order.** A step whose phase has not started yet shows
+  as pending: dimmed, with no bar. A counted phase has a bar, `done/total`, `n cached` and its time;
+  an uncounted one (`total` 0) has a sliding bar. Finished rows are dimmed, with a tick.
+- **Only what is listed.** A phase the page does not list is not shown, but it is still on the
+  tracker, so it stays in the timeline for `window.loadTimeline()` and `?perf`. In development
+  builds, `ready()` warns about listed foreground steps that never started, since the list is then
+  out of step with the page.
+- **Background steps.** A step marked `background` is work the page does not wait for (the valley's
+  streamed ground). Its row carries a "continues in the background" note, it does not count
+  towards the overall bar, and after `ready()` it moves to the corner pill.
+- **An overall bar**, with no number: the unweighted mean of the foreground steps' `done / total`,
+  pending ones at 0. It only moves backwards when a counted phase's total grows. That is
+  deliberate: it reports what is known rather than guessing a weighting, and it shows no
+  percentage because a mean of unlike phases would claim a precision it lacks.
 - **At `ready()`**, the overlay stops taking input at once and fades out. A small corner pill,
-  which never blocks input, then lists phases still busy for more than 150 ms (streaming ground,
-  say) and goes away when the tracker is idle.
+  which never blocks input, then lists the listed steps still busy for more than 150 ms (streaming
+  ground, say) and goes away when they are idle.
 - **Errors**: an uncaught error or unhandled rejection before `ready()`, or a call to
   `fail(err)`, shows "Loading failed: …" on the overlay (or in the pill after `ready()`).
 
 It uses only the brand tokens, so it follows the dark and light themes, and it respects
-`prefers-reduced-motion`. A page that waits for the user before loading anything
-(minecraft-region) passes `boot(name, { loading: false })`, gets `NO_SCREEN`, and opens a screen
-of its own for each dropped file.
+`prefers-reduced-motion`.
 
 ## See also
 
+- [Managing loading](/docs/manual/managing-loading/) for the controls: pipeline warm-up, placement
+  on a worker, the generation queue and the model cache
 - [Engine: load events](/docs/engine/loading/)
 - [Workers and caching](/docs/manual/workers-and-caching/) for the `models` phase and its cache hits
 - [Streaming](/docs/manual/streaming/) for the `ground` phase

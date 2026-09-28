@@ -30,6 +30,7 @@ The stars currently draw as large squares: a known renderer bug, being fixed.
 - **Converging on demand.** The page renders on demand. With temporal on, a still view keeps
   drawing until the history has converged, then stops: `makeFrameLoop({ converging })` asks
   `renderer.converging()` after each frame.
+- **Kernels compiled ahead.** The page compiles the pipelines for its starting mode behind the loading screen with [`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up), and, when it starts with accumulation off, the temporal kernels in the background after the first picture, so the first toggle does not stall (a toggle before they are ready compiles synchronously, as without `prepare`).
 - **A fixed render scale.** There is no adaptive scaling, so the numbers from one run compare with
   the next.
 

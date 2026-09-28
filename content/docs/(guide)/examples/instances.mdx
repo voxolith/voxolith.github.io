@@ -25,6 +25,7 @@ GPU memory with what stamping would cost; `?stamp` stamps the trees instead.
 - [`blitModelToBricks`](/docs/engine/api/engine/functions/blitModelToBricks/) for comparison
   (`?stamp`), turned in 90° steps.
 - `renderer.instanceStats()`: models, instances and the GPU bytes they use.
+- A [placement worker](/docs/manual/managing-loading/#placement-off-the-main-thread): the static trees bake off the main thread while the ground builds (not with `?stamp`, which stamps them instead), and the pipelines compile behind the loading screen with [`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up).
 
 ## The interesting part
 

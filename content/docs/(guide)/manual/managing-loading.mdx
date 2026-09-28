@@ -1,0 +1,738 @@
+---
+title: Managing loading
+description: "The controls a Voxolith app has over its load: awaitable pipeline warm-up with prepare, static placement on a worker with commitAsync, a generation queue with priorities, aborts and pausing, and a model cache it can inspect, clear and trim."
+---
+
+What a game generates, in what order and what it waits for before the first picture are the
+game's decisions, and they differ from one game to the next. So the engine takes none of them. It
+offers **controls**, each opt-in: an app that uses none of them loads exactly as before. This page
+is one heading per control, then what stays in your code, then
+[a complete page](#a-complete-page) that uses them together.
+
+[Loading screens](/docs/manual/loading-screens/) covers the other half: how the loaders report
+what they are doing, and how to show it.
+
+## Awaitable pipeline warm-up
+
+Without it, the renderer makes its base pipelines in `createRenderer` and every other variant
+(instances, posed instances, temporal accumulation, the offscreen kernels) in the first `render`
+that needs one. Those are synchronous calls, and Chrome compiles a pipeline when it is first used,
+so the compile lands in a frame: the page freezes on its first picture, for seconds a variant on a
+software adapter.
+
+[`renderer.prepare(needs?)`](/docs/renderer/api/renderer/classes/Renderer/#prepare) compiles the
+variants ahead of use with `createRenderPipelineAsync` / `createComputePipelineAsync`, and resolves
+when they are ready. Call it behind your loading screen, after placing the instances and choosing
+the quality, since those decide which variants a frame will use:
+
+```ts
+import { createRenderer } from "@voxolith/renderer";
+import { makeLoadTracker, trackRenderer } from "@voxolith/engine";
+
+const load = makeLoadTracker();
+const renderer = await createRenderer(gpu, scene, {
+  onLoad: trackRenderer(load),
+  deferPipelines: true, // the base pipelines too, so prepare covers the whole compile
+});
+
+layer.setStatic(scenery);
+layer.commit();
+renderer.setQuality(saved ?? "medium");
+await renderer.prepare({ parts: true }); // rats arrive later, posed on the GPU
+loop.invalidate();
+loadingScreen.ready();
+```
+
+[`RendererOptions.deferPipelines`](/docs/renderer/api/renderer/interfaces/RendererOptions/#property-deferpipelines)
+skips the base pipelines in the constructor (the plain fragment pass, the plain compute kernel and
+the compute path's present pass), so that `prepare` compiles them asynchronously with the rest.
+Without it the constructor still makes them synchronously, and their real compile still lands in
+the first frame. The shader module is made in the constructor either way.
+
+### What `needs` covers
+
+[`PrepareNeeds`](/docs/renderer/api/renderer/interfaces/PrepareNeeds/) says which variants the
+scene will need. A field left out is read from the renderer's state now:
+
+| field | means | default |
+|---|---|---|
+| `instances` | instances will be drawn | any instance is placed now |
+| `parts` | instances posed on the GPU (`Instance.parts`) will be drawn | a placed instance is posed now |
+| `temporal` | temporal accumulation will be on | the quality's `temporal` now; ignored by the fragment pipeline |
+| `target` | frames will go to an offscreen `RenderTarget` as well as the canvas | false |
+
+So pass a field for anything that arrives after the call: rats spawned later, temporal turned on
+from a settings menu, an instance set still baking on a [worker](#placement-off-the-main-thread)
+(placed instances count only once they are applied). Which pipelines that makes depends on the
+renderer's [`pipeline`](/docs/renderer/api/renderer/interfaces/RendererOptions/#property-pipeline)
+mode:
+
+| `pipeline` | `prepare` compiles |
+|---|---|
+| `"fragment"` | the fragment pass for the plain scene and each variant asked for (`+instances`, `+parts`) |
+| `"compute"` | the compute kernel for each of them, plus its temporal kernel when `temporal` is on |
+| `"auto"` (default) | as `"compute"`, except that posed instances also get the fragment `+parts` pass, since `"auto"` draws them as fragments unless temporal accumulation is on |
+
+On the compute path the kernels write the canvas directly when its format allows storage writes;
+with `target`, the kernels that write a frame texture are compiled too, and the present pass
+wherever a kernel writes a frame texture rather than the canvas.
+
+Variants already made are skipped, and calls share compiles already in flight, so calling
+`prepare` again (after adding posed instances, after turning temporal on) costs only what is new.
+
+```ts
+// Nothing is placed yet, but scenery, rats posed on the GPU and a photo mode that renders
+// into an offscreen RenderTarget all come later: compile their variants now.
+await renderer.prepare({ instances: true, parts: true, target: true });
+
+// Temporal accumulation from a settings toggle: compile its kernels first, then switch.
+temporalToggle.addEventListener("change", async () => {
+  if (temporalToggle.checked) await renderer.prepare({ temporal: true }); // only what is new
+  renderer.setQuality({ temporal: temporalToggle.checked });
+  loop.invalidate();
+});
+```
+
+### If a frame comes first
+
+`prepare` does not hold back rendering. A frame that needs a variant still compiling makes it
+synchronously, exactly as without `prepare`, and the asynchronous result is dropped when it
+arrives. So await `prepare` before the first frame that needs a variant; rendering behind the
+loading screen meanwhile is fine, and only brings that variant's stall forward. A compile that
+fails rejects the promise, and `render` then tries synchronously as before. A page that should
+never hang on its loading screen catches it and lets the first frame compile instead, as the
+examples do:
+
+```ts
+// Frames may run meanwhile (a plain scene behind the loading screen needs no new variant).
+const compiled = renderer
+  .prepare({ instances: true })
+  .catch((err) => console.warn("async compile failed; the first frame compiles it:", err));
+loop.invalidate();
+
+await compiled;  // resolves either way
+layer.commit();  // the first instanced frame finds its pipeline ready (or compiles it now)
+loop.invalidate();
+loadingScreen.ready();
+```
+
+### Real compile times
+
+The variants `prepare` compiles report on
+[`onLoad`](/docs/renderer/api/renderer/interfaces/RendererOptions/#property-onload) from the call
+to the pipeline being ready, which is the real compile. So with `deferPipelines` and `prepare`, the
+`pipelines` phase of a [load tracker](/docs/manual/loading-screens/#what-is-reported) measures the
+whole compile. Pipelines made synchronously still report only the create call, which returns
+before the browser has compiled.
+
+```ts
+// Each finished variant is a `progress` event labelled with its name.
+load.on((e) => {
+  if (e.phase === "pipelines" && e.kind === "progress" && e.label) {
+    console.log(`${e.label} ready at ${Math.round(e.t)} ms (${e.done}/${e.total})`);
+  }
+});
+await renderer.prepare({ instances: true });
+
+const pipelines = load.timeline().find((e) => e.phase === "pipelines");
+if (pipelines) console.log(`pipelines busy ${Math.round(pipelines.busy)} ms in ${pipelines.spans} span(s)`);
+```
+
+A second span means a later frame compiled a variant `prepare` was not asked for. To time each
+variant on its own, pair the starts and ends of a raw
+[`onLoad`](/docs/renderer/entry-points/#load-reporting) callback.
+
+## Placement off the main thread
+
+A static instance set is placed by building its per-cell lists and sub-cell tables. That is CPU
+work, and `setInstances` does it on the main thread: on the nightwood forest about 0.65 s at 20
+voxels per metre, 5 s at 50 and 20 s at 100 (see
+[crowded cells](/docs/renderer/instances/#crowded-cells)). The same bake can run on a worker of its
+own while the page keeps drawing.
+
+### Wiring it up
+
+The worker file serves bakes:
+
+```ts title="placement.worker.ts"
+import { servePlacement } from "@voxolith/engine/worker";
+
+servePlacement();
+```
+
+On the main thread, [`makePlacementWorker({ spawn })`](/docs/engine/api/worker/functions/makePlacementWorker/)
+starts it, and an instance layer given it as `placement` bakes its static set there when committed
+with [`commitAsync()`](/docs/engine/api/engine/interfaces/InstanceLayer/#commitasync):
+
+```ts
+import { makeInstanceLayer } from "@voxolith/engine";
+import { makePlacementWorker } from "@voxolith/engine/worker";
+
+const placement = makePlacementWorker({
+  spawn: () => new Worker(new URL("./placement.worker.ts", import.meta.url), { type: "module" }),
+});
+const layer = makeInstanceLayer(renderer, { load, placement });
+
+layer.setStatic(scenery);   // uploads models it has not seen yet, on the main thread
+await layer.commitAsync();  // the bake runs on the worker; the page keeps drawing
+loop.invalidate();          // the new static set is drawing: render it
+```
+
+The layer sends each model a static set names to the worker once, after its upload, and drops it
+there when the model is released. One worker can serve several layers and renderers. It is a
+worker of its own rather than a job for the [generator pool](#generation-queue-controls): a
+generator worker runs one generation after another, so a bake queued behind one would wait for it.
+
+`commit()` still places synchronously, and a layer without `placement` (or a target without the
+placement methods) makes `commitAsync()` the same as `commit()`, resolving at once. Only the bake
+moves: `setStatic` still uploads the models it has not seen on the main thread, and applying the
+finished bake copies its arrays into the renderer's buffers there too.
+
+### What it saved in the examples
+
+Measured on a real GPU as the main thread's long tasks during the load, with the static set
+baked on a worker and the pipelines compiled by `prepare`, against the same pages before. These
+are measurements of those pages, not a promise for yours:
+
+| page | main-thread long tasks |
+|---|---|
+| valley, 50 voxels per metre | 2073 ms → 835 ms |
+| nightwood, 20 voxels per metre | 777 ms → 180 ms |
+| nightwood, 50 voxels per metre | the placement's roughly 5 s freeze ran on the worker, with main-thread tasks of at most 86 ms meanwhile |
+
+What remains in the valley is mostly the model upload in `setStatic`, now its largest stall.
+
+### What it resolves on
+
+`commitAsync()` resolves once the static set of this call, or a newer one, is drawing; at once
+when the static set had not changed. Meanwhile:
+
+- the moving set is sent at once, as by `commit()`, and later `commit()` calls (a crowd's, every
+  frame) keep sending only the moving set, so moving things keep moving;
+- the old static set keeps drawing until the new one is applied (nothing, before the first);
+- [`layer.baking`](/docs/engine/api/engine/interfaces/InstanceLayer/#property-baking) is true while a bake is in
+  flight;
+- the `placement` phase is one task from the bake request to its apply, with the main thread free.
+  Its total is the number of static placements, and its `done` follows the worker's progress (the
+  bake's fraction of that count), held one short of the total until the apply ticks the last. A
+  superseded, aborted or failed bake is [discarded](/docs/engine/api/engine/interfaces/LoadTask/#discard):
+  it leaves the phase, progress included, so `done` can drop. At fine scales the count moves in
+  steps, since it only advances between instances (about 190 ms apart at 100 voxels per metre).
+
+The layer does not redraw for you: a page that renders on demand calls `loop.invalidate()` once it
+resolves.
+
+```ts
+import { makeFrameLoop } from "@voxolith/renderer";
+
+layer.setStatic(forest);
+const placed = layer.commitAsync(); // the bake starts on the worker
+
+const loop = makeFrameLoop({
+  continuous: true, // a crowd is walking, so every frame is drawn anyway
+  render() {
+    layer.setDynamic(walkers());    // the moving set...
+    layer.commit();                 // ...goes out every frame; the static set is left to the bake
+    placing.hidden = !layer.baking; // "Placing the forest..."
+    renderer.render(frame());       // the old static set (here: none) until the bake applies
+  },
+});
+
+await placed; // the forest is drawing from the next frame
+```
+
+### The newest bake wins
+
+Only the newest static set is applied. A `setStatic` followed by `commitAsync()` (or by a
+synchronous `commit()`) while a bake is in flight supersedes it: its result is dropped when it
+lands, and it leaves the `placement` total. If a model the bake names was removed or replaced
+while it ran, the layer takes the input again and re-bakes, rather than drawing the wrong model.
+
+```ts
+layer.setStatic(summerForest);
+const first = layer.commitAsync();  // bake 1 starts
+layer.setStatic(winterForest);      // the season changed before it finished
+const second = layer.commitAsync(); // bake 2 supersedes it
+
+await first;  // resolves too: "this call's set, or a newer one" is drawing
+await second; // the winter forest; bake 1 never drew, its result was dropped when it landed
+```
+
+### Aborting
+
+`commitAsync({ signal })` takes an `AbortSignal`. Aborting drops the pending apply and rejects with
+`signal.reason`, unless another `commitAsync()` is still waiting for the same bake. The worker skips
+the bake if it has not started it; one that has started runs to the end and its result is dropped,
+because a bake is one synchronous call and cannot be interrupted.
+
+Afterwards the static set counts as **unsent**: the next `commit()` places it synchronously, and
+the next `commitAsync()` bakes it again. A bake that fails on the worker rejects with the same
+effect. That makes a fallback short; the examples use this one:
+
+```ts
+try {
+  await layer.commitAsync();
+} catch (err) {
+  console.warn("the worker's bake failed; placing on the main thread:", err);
+  layer.commit();
+}
+```
+
+### Driving it yourself
+
+The layer is a convenience over the renderer's split of `setInstances` into a headless bake and a
+cheap apply:
+[`placementModel(id)`](/docs/renderer/api/renderer/classes/Renderer/#placementmodel) (sent to the
+worker once per model), [`placementInput(list)`](/docs/renderer/api/renderer/classes/Renderer/#placementinput),
+[`bakePlacement`](/docs/renderer/api/renderer/functions/bakePlacement/) or a
+[`PlacementBaker`](/docs/renderer/api/renderer/classes/PlacementBaker/) on the worker, and
+[`applyPlacement(bake)`](/docs/renderer/api/renderer/classes/Renderer/#applyplacement). Both paths
+run the same code, so they upload the same bytes. The
+[renderer's instances page](/docs/renderer/instances/#baking-the-static-set-on-a-worker) has the
+details, and [`PlacementWorker`](/docs/engine/api/worker/interfaces/PlacementWorker/) has
+`register`, `drop` and `bake` for a host that uses the engine's worker without a layer.
+
+Without the engine, the whole round trip is a few messages of your own:
+
+<Tabs items={["main thread", "placement.worker.ts"]}>
+<Tab value="main thread">
+
+```ts
+import type { Instance, PlacementBake } from "@voxolith/renderer";
+
+const worker = new Worker(new URL("./placement.worker.ts", import.meta.url), { type: "module" });
+const oak = renderer.addModel({ size: tree.model.size, data: tree.model.data });
+worker.postMessage({ type: "model", model: renderer.placementModel(oak) }); // once per model
+
+let latest = 0;
+let scenery: Instance[] = [];
+function placeStatic(list: Instance[]): void {
+  scenery = list;
+  worker.postMessage({ type: "bake", id: ++latest, input: renderer.placementInput(list) });
+}
+type Reply = { id: number; done: number; total: number } | { id: number; bake: PlacementBake };
+worker.onmessage = ({ data }: MessageEvent<Reply>) => {
+  if (data.id !== latest) return; // a newer static set was asked for: drop this one
+  if (!("bake" in data)) {
+    bar.value = data.done / data.total; // opaque units: only the fraction means anything
+    return;
+  }
+  try {
+    renderer.applyPlacement(data.bake);
+    loop.invalidate();
+  } catch {
+    placeStatic(scenery); // a model it names was removed meanwhile: bake without it
+  }
+};
+
+placeStatic(sites.map((s) => ({ model: oak, x: s.x, y: s.y, z: s.z, yaw: s.yaw, base: oakPalette })));
+```
+
+</Tab>
+<Tab value="placement.worker.ts">
+
+```ts title="placement.worker.ts"
+import { PlacementBaker, placementTransferables, type PlacementInput, type PlacementModel } from "@voxolith/renderer/core";
+
+type Message =
+  | { type: "model"; model: PlacementModel }
+  | { type: "drop"; key: number } // after renderer.removeModel
+  | { type: "bake"; id: number; input: PlacementInput };
+
+const baker = new PlacementBaker();
+self.onmessage = ({ data }: MessageEvent<Message>) => {
+  if (data.type === "model") baker.register(data.model);
+  else if (data.type === "drop") baker.unregister(data.key);
+  else {
+    const onProgress = (done: number, total: number) => self.postMessage({ id: data.id, done, total });
+    const bake = baker.bake(data.input, { onProgress }); // (0, total) first, (total, total) last
+    self.postMessage({ id: data.id, bake }, { transfer: placementTransferables(bake) }); // no copy
+  }
+};
+```
+
+</Tab>
+</Tabs>
+
+The worker imports only `@voxolith/renderer/core`, which needs no DOM, GPU or bundler plugin.
+
+## Generation queue controls
+
+[`makeGeneratorPool`](/docs/engine/api/worker/functions/makeGeneratorPool/) queues requests and
+hands them to free workers. Without options the queue is a plain FIFO. Each request can take
+[`GenerateOptions`](/docs/engine/api/worker/interfaces/GenerateOptions/), and
+`generateMany(specs, options)` applies them to every request (the older
+`generateMany(specs, onDone)` still works; `onDone` is now an option).
+
+### Priority
+
+`generate(spec, { priority })`: a free worker takes the highest-priority queued request, in the
+order they were queued within one priority (default 0). Running requests are never pre-empted.
+
+```ts
+const hero = pool.generate(heroSpec, { priority: 10 });  // before the scenery
+const scenery = pool.generateMany(scenerySpecs);         // priority 0
+```
+
+### Abort
+
+`generate(spec, { signal })` cancels a request. A queued one leaves the queue. A running one
+rejects at once and its result is discarded when it lands, but the worker still finishes it: a
+generator runs synchronously and cannot be interrupted. Either way the promise rejects with
+`signal.reason` (a `DOMException` named `"AbortError"` unless you gave `abort()` a reason), as
+`fetch` does, and the request leaves the `models` total. A signal already aborted rejects without
+queueing anything; one signal given to `generateMany` rejects the lot.
+
+When single models take seconds (fine scales, phones) and a game cancels often,
+[`GeneratorPoolOptions.respawnOnAbort`](/docs/engine/api/worker/interfaces/GeneratorPoolOptions/#property-respawnonabort)
+terminates the worker running an aborted request and starts a fresh one instead. It is off by
+default, because a new worker reloads its script and generators (a few hundred ms) and any model
+cache writes still in progress on the old one are lost.
+
+```ts
+import { makeGeneratorPool } from "@voxolith/engine/worker";
+
+const pool = makeGeneratorPool({ spawn, load, respawnOnAbort: true }); // opt in, for slow models
+
+const leaving = new AbortController();
+const village = pool.generateMany(houseSpecs, { signal: leaving.signal });
+exitButton.addEventListener("click", () => leaving.abort()); // the player left before it loaded
+
+try {
+  placeVillage(await village);
+} catch (err) {
+  // Our own cancel is not an error; anything else (a generator that threw) still is.
+  if (!(err instanceof DOMException && err.name === "AbortError")) throw err;
+}
+```
+
+### Pause and resume
+
+[`pause()`](/docs/engine/api/worker/interfaces/GeneratorPool/#pause) stops handing queued
+requests to workers: running ones finish and resolve, new requests queue.
+[`resume()`](/docs/engine/api/worker/interfaces/GeneratorPool/#resume) starts again. The `models`
+phase stays busy while anything is queued, since the work is still owed. `pool.paused` and
+`pool.queued` read the state. Pausing is for a game that wants the cores for something else for a
+while (a cutscene, a level transition), not a way to stop work already running.
+
+```ts
+// Hold the queue while the settings menu is open or the tab is hidden.
+const update = () => (menu.open || document.hidden ? pool.pause() : pool.resume());
+menu.addEventListener("close", update);
+document.addEventListener("visibilitychange", update);
+
+openMenuButton.addEventListener("click", () => {
+  menu.showModal();
+  update();
+  console.log(`${pool.queued} requests wait; ${pool.pending - pool.queued} still running`);
+});
+```
+
+### Reprioritise
+
+[`reprioritise(fn)`](/docs/engine/api/worker/interfaces/GeneratorPool/#reprioritise) gives queued
+requests new priorities: `fn(spec, priority)` returns each one's new priority, and the queue is
+re-sorted (keeping queue order within a priority). Running requests are unaffected. One call is a
+sort of the queue, so a game streaming models around the player can call it whenever the player
+has moved far enough:
+
+```ts
+// Near models first; drop the ones the player has walked away from.
+const nearby = new AbortController();
+for (const s of specsAround(player)) pool.generate(s, { priority: -distanceTo(s), signal: nearby.signal }).then(place, () => {});
+
+onPlayerMoved(() => pool.reprioritise((s) => -distanceTo(s)));
+onRegionLeft(() => nearby.abort());
+```
+
+`distanceTo` and the thresholds are yours: the pool knows nothing about players or regions.
+
+### Skipping the cache
+
+`generate(spec, { cache: false })` neither reads nor writes the worker's
+[model cache](#the-model-cache) for that request: for a model you know you will not see again, or
+a debug build of one model.
+
+```ts
+import { PRESETS } from "@voxolith/gen-tree";
+
+// A parameter slider in a tool: each value is seen once, so keep the cache for real content.
+const preview = await pool.generate(
+  { generator: "voxolith/tree.broadleaf", params: { ...PRESETS.oak, ...sliders }, seed: 1 },
+  { cache: false },
+);
+```
+
+### Destroying the pool
+
+[`destroy()`](/docs/engine/api/worker/interfaces/GeneratorPool/#destroy) returns a promise.
+Every pending request rejects at once. Workers still generating are terminated at once; idle ones
+first finish their model cache writes (up to
+[`closeTimeoutMs`](/docs/engine/api/worker/interfaces/GeneratorPoolOptions/#property-closetimeoutms), 10 s by default),
+so the models just made are there on the next visit. It resolves when every worker is gone, and
+you need not wait for it. The wait matters because a worker writes to the cache after it has
+posted its result, often while it is already generating the next model: a pool that terminated
+its workers straight after the last result would lose the last few models' writes, and the next
+visit would generate them again.
+
+```ts
+// Either: leaving a level, nothing waits; idle workers finish their cache writes in the background.
+void pool.destroy();
+
+// Or: a tool or a test that must know the workers are gone (and their writes committed).
+await pool.destroy();
+```
+
+## The model cache
+
+`serveGenerators({ cache })` in the generator worker keeps generated models in IndexedDB and
+serves them from there next time ([Workers and caching](/docs/manual/workers-and-caching/#the-model-cache)
+has the basics). What it caches is each entity a request returns, packed and deflated, under a key
+of the form `salt|generator@version|seed|params|context`, where the salt is the worker's script
+URL. A production build hashes that URL, so new generator code never reads a model the old code
+made, and a worker opening the cache deletes every entry stored under another salt.
+
+### Inspecting, clearing and trimming
+
+[`openModelCacheControls(name)`](/docs/engine/api/worker/functions/openModelCacheControls/) opens
+[`ModelCacheControls`](/docs/engine/api/worker/interfaces/ModelCacheControls/) on the same
+database, from the main thread, while workers use it. It returns `null` where there is no
+IndexedDB. The controls read only a small record per entry, never the models:
+
+| control | does |
+|---|---|
+| [`entries(filter?)`](/docs/engine/api/worker/interfaces/ModelCacheControls/#entries) | every matching [`ModelCacheEntry`](/docs/engine/api/worker/interfaces/ModelCacheEntry/) (key, salt, generator, bytes, created, last used), most recently used first |
+| [`usage(filter?)`](/docs/engine/api/worker/interfaces/ModelCacheControls/#usage) | how many entries match and their approximate bytes |
+| [`clear(filter?)`](/docs/engine/api/worker/interfaces/ModelCacheControls/#clear) | delete the matching entries (all without a filter); resolves to how many went |
+| [`trim(maxBytes)`](/docs/engine/api/worker/interfaces/ModelCacheControls/#trim) | evict least recently used entries until the cache is at most `maxBytes` |
+| [`close()`](/docs/engine/api/worker/interfaces/ModelCacheControls/#close) | close the connection |
+
+A [`ModelCacheFilter`](/docs/engine/api/worker/interfaces/ModelCacheFilter/) matches on
+`generator` (an id such as `"voxolith/tree.broadleaf"`), `salt`, or both. None of this runs by
+itself: the engine clears or trims nothing unless asked, apart from a worker dropping an older
+build's entries and the cap below.
+
+```ts
+import { openModelCacheControls } from "@voxolith/engine/worker";
+
+const cache = await openModelCacheControls("my-game-models");
+if (cache) {
+  const { entries, bytes } = await cache.usage();
+  settings.cacheLabel = `${entries} models, ${(bytes / 1e6).toFixed(1)} MB`;
+  onClearCacheClicked(() => cache.clear());
+}
+```
+
+### A size cap
+
+The object form, `serveGenerators({ cache: { name, maxBytes } })`
+([`ServeCacheOptions`](/docs/engine/api/worker/interfaces/ServeCacheOptions/)), keeps the cache
+under about `maxBytes` compressed: after each write the least recently used entries (of any salt)
+are evicted until it fits, and a model bigger than the cap is not kept at all. A cache hit counts
+as a use. Without a cap the cache grows until the browser's quota stops it; a write that fails
+keeps nothing, and the model still works. `store` swaps IndexedDB for a
+[`CacheStore`](/docs/engine/api/worker/interfaces/CacheStore/) of your own
+([`memoryCacheStore()`](/docs/engine/api/worker/functions/memoryCacheStore/) in tests).
+
+```ts title="gen.worker.ts"
+import { registerTreeGenerators } from "@voxolith/gen-tree";
+import { serveGenerators } from "@voxolith/engine/worker";
+
+registerTreeGenerators();
+serveGenerators({
+  // At most about 200 MB of deflated models, least recently used out first.
+  cache: import.meta.env.DEV ? undefined : { name: "my-game-models", maxBytes: 200e6 },
+});
+```
+
+### Phones
+
+Storage on phones is small, and the browser may evict a whole origin under pressure. Two platform
+calls help an app decide, and both are the app's to make:
+
+- `navigator.storage.estimate()` reports the origin's usage and quota; compare it with
+  `usage()` and `trim()` to a share of the quota you choose.
+- `navigator.storage.persist()` asks the browser not to evict the origin. It may prompt the user
+  or refuse, so ask once the user has shown they will come back, not on the first load.
+
+```ts
+const { quota = Infinity } = (await navigator.storage?.estimate()) ?? {};
+const { bytes } = await cache.usage();
+if (bytes > quota / 4) await cache.trim(quota / 8);
+```
+
+### One database name per worker script
+
+Opening the cache deletes every entry stored under another salt, and the salt is the worker
+script's URL. Two worker scripts sharing one database name therefore delete each other's models
+each time either opens it. Give each worker script its own name. This matters on GitHub Pages,
+which serves every repository of an account from one origin, so two apps there share one
+IndexedDB.
+
+```ts title="scenery.worker.ts"
+import { registerTreeGenerators } from "@voxolith/gen-tree";
+import { registerRockGenerators } from "@voxolith/gen-rock";
+import { serveGenerators } from "@voxolith/engine/worker";
+
+registerTreeGenerators();
+registerRockGenerators();
+serveGenerators({ cache: "my-game-scenery" });
+```
+
+```ts title="creatures.worker.ts"
+import { registerCreatureGenerators } from "@voxolith/gen-creature";
+import { serveGenerators } from "@voxolith/engine/worker";
+
+registerCreatureGenerators();
+serveGenerators({ cache: "my-game-creatures" }); // not "my-game-scenery": each script its own
+```
+
+Controls are opened per name too: `openModelCacheControls("my-game-scenery")` sees only that
+worker script's models.
+
+### The first visit after upgrading is cold
+
+The cache database is at version 2, which added the per-entry records the controls read.
+Version-1 records have none, so the upgrade drops them: the first visit after an app moves to this
+engine version generates everything once, and caches as before from then on.
+
+## What stays game code
+
+The engine gives controls and reports progress; it decides nothing about your load. These are
+yours:
+
+- **What to generate, and when.** Which models, how many variants, at which scale, which first,
+  which to cancel as the player moves, and whether to pause for a cutscene. The pool only runs
+  what it is given, in the order you set.
+- **Which work gets a phase.** The engine's loaders report their own phases; anything else (a
+  layout, a terrain pass, "placing the scenery" around several engine steps) is a `load.task` you
+  open, or not.
+- **Which steps a loading screen lists.** How many rows, in what order and in what words, which
+  ones the page waits for and which continue after the first picture, and when to call it ready.
+  The [examples' loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) is one
+  answer, in the examples' code.
+- **The cache's budget.** Whether it has a cap, when to trim or clear, and whether to ask for
+  persistent storage.
+
+What that looks like in a game's own code: it decides what exists, reports it as a phase of its
+own, and orders the pool by distance to the player. The engine only runs the requests.
+
+```ts
+import type { GenerateSpec } from "@voxolith/engine/worker";
+
+const planning = load.task("village");  // a phase the engine knows nothing about
+const houses = planVillage(seed);        // the game decides what exists...
+planning.end();
+
+const nearFirst = (h: House) => -Math.hypot(h.x - player.x, h.z - player.z);
+const houseOf = new Map<GenerateSpec, House>();
+for (const h of houses) {
+  const spec: GenerateSpec = { generator: "voxolith/house", params: h.params, seed: h.seed };
+  houseOf.set(spec, h);
+  pool.generate(spec, { priority: nearFirst(h) }).then((e) => placeHouse(h, e)); // ...and what comes first
+}
+onPlayerMoved(() => pool.reprioritise((spec) => nearFirst(houseOf.get(spec)!)));
+```
+
+## A complete page
+
+A page with no loading-screen helper of its own: one tracker for every loader, pipelines compiled
+and the forest placed on a worker behind a status line, then ground that keeps streaming after
+the first picture. The names it does not import or define (`worldPalette`, `treeSites`,
+`fillChunk`) are the page's own.
+
+<Tabs items={["main.ts", "gen.worker.ts", "placement.worker.ts"]}>
+<Tab value="main.ts">
+
+```ts title="main.ts"
+import { createRenderer, initGpu, makeCamera, makeFrameLoop, observeResize, resizeToDisplay } from "@voxolith/renderer";
+import { formatTimeline, makeChunkedWorld, makeInstanceLayer, makeLoadTracker, trackRenderer } from "@voxolith/engine";
+import { makeGeneratorPool, makePlacementWorker } from "@voxolith/engine/worker";
+import { timeOfDay } from "@voxolith/engine/atmosphere";
+import { PRESETS } from "@voxolith/gen-tree";
+
+const canvas = document.querySelector("canvas")!;
+const status = document.querySelector<HTMLElement>("#status")!;
+const load = makeLoadTracker();
+const stopListening = load.on((e) => {
+  status.textContent = `${e.phase} ${e.done}/${e.total}${e.cached ? ` (${e.cached} cached)` : ""}`;
+});
+
+const gpu = await initGpu(canvas);
+const size = { x: 1024, y: 128, z: 1024 };
+const renderer = await createRenderer(gpu, { size, palette: worldPalette }, { deferPipelines: true, onLoad: trackRenderer(load) });
+
+const pool = makeGeneratorPool({ spawn: () => new Worker(new URL("./gen.worker.ts", import.meta.url), { type: "module" }), load });
+const placement = makePlacementWorker({ spawn: () => new Worker(new URL("./placement.worker.ts", import.meta.url), { type: "module" }) });
+const layer = makeInstanceLayer(renderer, { load, placement });
+
+// Three oak variants, placed a few hundred times.
+const oaks = await pool.generateMany([1, 2, 3].map((seed) => ({ generator: "voxolith/tree.broadleaf", params: PRESETS.oak, seed })));
+const base = layer.palettes.of("oak", oaks[0].model.roles);
+layer.setStatic(treeSites.map((s, i) => ({ model: oaks[i % 3].model, x: s.x, y: s.y, z: s.z, yaw: s.yaw, base })));
+
+// Compile and bake at once, off the main thread; the status line keeps updating.
+await Promise.all([renderer.prepare({ instances: true }), layer.commitAsync()]);
+
+// The ground streams around the camera from here on, a few ms of chunks per frame.
+const world = makeChunkedWorld({ target: renderer, size, chunk: 64, seed: 7, generate: fillChunk, load });
+world.focus(512, 512, 384);
+const camera = makeCamera({ target: [512, 40, 512], distance: 400, pitchDeg: 30, fovDeg: 45 });
+const loop = makeFrameLoop({
+  render() {
+    if (world.step(6) > 0) loop.invalidate();
+    resizeToDisplay(gpu);
+    renderer.render({ ...camera(35), ...timeOfDay(0.4) });
+  },
+});
+observeResize(canvas, loop);
+loop.invalidate(); // the first picture, with the first chunks
+
+await load.idle(); // the ground around the camera is in
+stopListening();
+status.hidden = true;
+console.log(formatTimeline(load.timeline()));
+```
+
+</Tab>
+<Tab value="gen.worker.ts">
+
+```ts title="gen.worker.ts"
+import { registerTreeGenerators } from "@voxolith/gen-tree";
+import { serveGenerators } from "@voxolith/engine/worker";
+
+registerTreeGenerators();
+serveGenerators({ cache: import.meta.env.DEV ? undefined : "my-page-models" });
+```
+
+</Tab>
+<Tab value="placement.worker.ts">
+
+```ts title="placement.worker.ts"
+import { servePlacement } from "@voxolith/engine/worker";
+
+servePlacement();
+```
+
+</Tab>
+</Tabs>
+
+On a second visit the last `models` event reads `3/3 (3 cached)`, and the logged table shows
+where the time went: which phase was longest, and whether `pipelines` stayed at one span (no frame had to
+compile a variant of its own).
+
+## See also
+
+- [Loading screens](/docs/manual/loading-screens/) for the load events and a display
+- [Workers and caching](/docs/manual/workers-and-caching/) for the pool and the worker file
+- [Instances](/docs/manual/instances/) for static and moving sets
+- [Engine: load events and loading controls](/docs/engine/loading/)
+- API: [`Renderer.prepare`](/docs/renderer/api/renderer/classes/Renderer/#prepare),
+  [`PrepareNeeds`](/docs/renderer/api/renderer/interfaces/PrepareNeeds/),
+  [`makePlacementWorker`](/docs/engine/api/worker/functions/makePlacementWorker/),
+  [`servePlacement`](/docs/engine/api/worker/functions/servePlacement/),
+  [`InstanceLayer.commitAsync`](/docs/engine/api/engine/interfaces/InstanceLayer/#commitasync),
+  [`GenerateOptions`](/docs/engine/api/worker/interfaces/GenerateOptions/),
+  [`GeneratorPool`](/docs/engine/api/worker/interfaces/GeneratorPool/),
+  [`openModelCacheControls`](/docs/engine/api/worker/functions/openModelCacheControls/),
+  [`ServeCacheOptions`](/docs/engine/api/worker/interfaces/ServeCacheOptions/)

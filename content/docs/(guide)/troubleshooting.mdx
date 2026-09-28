@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Fixes for WebGPU missing or slow, software adapters, lost devices, HTTPS on phones, blank canvases, share codes, big worlds on phones and loading text that does not update.
+description: Fixes for WebGPU missing or slow, software adapters, lost devices, HTTPS on phones, blank canvases, share codes, big worlds on phones, loading text that does not update and a model cache that stays cold.
 ---
 
 Most problems with a Voxolith page come down to WebGPU: whether the browser offers it, on which
@@ -229,9 +229,39 @@ scenery.end();
 ```
 
 A single `await new Promise(requestAnimationFrame)` is not enough: the code after it still runs
-before that frame is painted. The first frame after loading also stalls while the browser compiles
-the pipelines it uses, and that stall is not in the `pipelines` phase. See
+before that frame is painted. See
 [Loading screens](/docs/manual/loading-screens/#the-main-thread-stalls).
+
+Two of those steps can stop blocking instead
+([Managing loading](/docs/manual/managing-loading/)):
+
+- **The static placement**: give the instance layer a placement worker and
+  `await layer.commitAsync()`; the page keeps painting while it bakes. Uploading new models in
+  `setStatic` still blocks, so keep the wait in front of that.
+- **The pipeline compile**: without `prepare`, the first frame after loading stalls while the
+  browser compiles the pipelines it uses, and that stall is not in the `pipelines` phase. Create
+  the renderer with `deferPipelines: true` and `await renderer.prepare()` behind the loading
+  screen: the compile then happens there, and `pipelines` measures it.
+
+</Accordion>
+
+<Accordion id="model-cache-cold" title="Every visit generates the models again">
+
+The generator worker's model cache (`serveGenerators({ cache })`) should serve a second visit
+without generating. When it does not, in order of likelihood:
+
+- **It is a dev server.** The cache is meant to be off there (`import.meta.env.DEV ? undefined :
+  "..."`), and a dev worker URL does not change with the code anyway.
+- **Two worker scripts share one database name.** Opening the cache deletes the entries of any
+  other worker script, so two workers (or two apps on one origin, as on GitHub Pages) with the
+  same name delete each other's models. Give each worker script its own name.
+- **The engine was just upgraded.** The cache database moved to version 2, which drops the
+  older records once: the first visit after the upgrade is cold, the next ones are warm.
+- **A new build.** The key is salted with the worker's hashed URL, so a new build starts cold by
+  design.
+- **The browser evicted it**, or it hit the quota or a `maxBytes` cap. Check with
+  `openModelCacheControls(name)` and `usage()`, and see
+  [Managing loading](/docs/manual/managing-loading/#the-model-cache) for phones.
 
 </Accordion>
 

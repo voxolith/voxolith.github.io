@@ -18,6 +18,7 @@
     "file-formats",
     "workers-and-caching",
     "loading-screens",
+    "managing-loading",
     "performance",
     "mobile-and-pwa",
     "deploying"
