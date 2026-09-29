@@ -435,7 +435,7 @@ const app = await boot("valley", { blurb: "The valley, refined and streamed", st
 if (RAT_COUNT || KC > 1) screen.setSteps(loadingSteps(RAT_COUNT > 0, KC > 1));
 ```
 
-At 50 and 100 voxels per metre the valley and nightwood load
+On a desktop at 50 and 100 voxels per metre the valley and nightwood load
 [coarse first](/docs/manual/managing-loading/#coarse-first-one-swap). `COARSE_STEPS` (from the
 examples' `shared/detail.ts`) are the shared steps named for the coarse stage ("Generating coarse
 models", "Uploading coarse models"), and `FINE_STEPS` are three background rows for the fine
@@ -445,8 +445,8 @@ phases `fine.models`, `fine.upload` and `fine.placement`. The page's tracker is 
 page marks `fine` once the swap has applied.
 
 Other pages list what they do. Nightwood: `device`, `models` (or its coarse row), `shaders`,
-`pipelines`, `encodedUpload` (or its coarse row), `placement`, `ground`, and the fine rows at 50
-and 100. Instances: `device`, `terrain` ("Shaping the terrain"), `trees` ("Growing
+`pipelines`, `encodedUpload` (or its coarse row), `placement`, `ground`, and the fine rows with
+the coarse stage. Instances: `device`, `terrain` ("Shaping the terrain"), `trees` ("Growing
 trees"), `creatures` ("Generating rats"), `shaders`, `pipelines`, `ground`, then `encodedUpload` and
 `placement`, or with `?stamp` a "Stamping the trees" row instead of those two (that mode uses no
 worker).

@@ -317,6 +317,7 @@ placement bake reads) and a cheap **apply** that claims pool slots for it and up
 | send it back without copying | worker → main thread | `postMessage(encoded, encodedTransferables(encoded))` ([`encodedTransferables`](/docs/renderer/api/renderer/functions/encodedTransferables/)) |
 | make room for a batch (optional) | main thread | [`reserveBricks(encoded[])`](/docs/renderer/api/renderer/classes/Renderer/#reservebricks) |
 | add it | main thread | [`addEncodedModel(encoded, opts?)`](/docs/renderer/api/renderer/classes/Renderer/#addencodedmodel) → model id (`opts.scale` as for `addModel`) |
+| or add it over several frames | main thread | [`beginEncodedModel(encoded, opts?)`](/docs/renderer/api/renderer/classes/Renderer/#beginencodedmodel) → [`PendingModel`](/docs/renderer/api/renderer/interfaces/PendingModel/), stepped until done |
 
 - **What each half costs.** The encode is about 2.5 µs per stored brick of a sparse model
   (measured on nightwood's models at 100 voxels per metre, which have 27k to 230k), so up to about
@@ -332,6 +333,25 @@ placement bake reads) and a cheap **apply** that claims pool slots for it and up
   batch before its adds. Only the pools' spare capacity differs from adding without it: model ids,
   the index and everything drawn are the same. See
   [growth and limits](/docs/renderer/storage/#growth-and-limits).
+- **In slices.** A whole add of a fine tree at 100 voxels per metre takes 70 to 94 ms, one long
+  task. `beginEncodedModel` claims the slots, index blocks and id at once, as `addEncodedModel`
+  would, and its `PendingModel` does the copy in slices of about 1 MB: `step(budgetMs)` works
+  until the budget is spent (at least one slice) and returns true once the model is added,
+  `progress` is the fraction done by bytes, and `cancel()` gives back what it claimed. The result
+  is byte-identical to `addEncodedModel`; anything may run between steps, pool growth included,
+  but an instance may name `id` only once it is done (`setInstances` throws before). The engine's
+  layer steps big models this way within its `uploadBudgetMs`, and its largest step is about
+  8 ms (measured).
+
+  ```ts
+  const pending = renderer.beginEncodedModel(encoded);
+  const tick = () => {
+    if (!pending.step(4)) return void requestAnimationFrame(tick); // 4 ms a frame
+    renderer.setInstances([{ model: pending.id, base: bark, x: 40, y: 12, z: 60 }]);
+    loop.invalidate();
+  };
+  requestAnimationFrame(tick);
+  ```
 - **Versioned.** An encoding carries [`ENCODED_MODEL_VERSION`](/docs/renderer/api/renderer/variables/ENCODED_MODEL_VERSION/),
   which changes with the payload layout. `addEncodedModel` throws on any other version, so a host
   that caches encodings (in IndexedDB, say) keys them by it. The engine's scene cache keeps

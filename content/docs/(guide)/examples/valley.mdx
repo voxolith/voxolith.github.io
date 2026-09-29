@@ -30,14 +30,17 @@ their real size roam the village.
   ([`orientationYaw`](/docs/engine/api/engine/functions/orientationYaw/)) and at fractional
   positions. Nothing is written into the world, and each species, even each house, has a palette
   of its own (`layer.palettes.of`), outside the world's 256 slots.
-- **Coarse first, one swap.** At 50 and 100 voxels per metre the valley shows first with every
+- **Coarse first, one swap, on desktops.** At 50 and 100 voxels per metre a desktop shows the valley first with every
   model built at the generators' native 10 voxels per metre and drawn 5 or 10 times enlarged
   ([`EntityPlacement.scale`](/docs/engine/instances/#scaled-placements)). The fine models are
   generated, encoded and baked behind it, and swapped in at once, in one frame, when their bake
   applies; the coarse models are released after
-  ([coarse first, one swap](/docs/manual/managing-loading/#coarse-first-one-swap)). At 20 there is
-  one stage, since a coarse one would only add work there. `?coarse=0` goes straight to the fine
-  models. The rats are never coarse: scaled models cannot be posed.
+  ([coarse first, one swap](/docs/manual/managing-loading/#coarse-first-one-swap)). It is an optional routine, and the page's
+  choice: a `COARSE_FIRST = { desktop: true, phone: false }` switch at the top of `main.ts`. The
+  first picture comes much sooner, but a second generation, upload and bake then runs in the
+  scene. Phones load one stage (on a phone the background stage lagged), and so does 20 voxels per
+  metre, where a second stage would only add work. `?coarse=0` or `?coarse=1` overrides the
+  switch. The rats are never coarse: scaled models cannot be posed.
 - **Streamed fine terrain, filled on workers.** [`refineTerrain`](/docs/generators/api/gen-terrain/functions/refineTerrain/)
   turns the coarse terrain into a smooth 5, 2 or 1 cm surface with grass blades and pebbles,
   streamed by a [`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/) of
@@ -59,7 +62,7 @@ their real size roam the village.
   a crowd at any scale, larger than life below 100.
 - **A phone profile.** A touch-only pointer, or a GPU whose storage bindings are under 512 MiB,
   gets a lighter valley: 5 cm voxels (20 per metre), a 2 × 2 tile map, one model per species, a
-  16 m streamed radius, the Low quality preset, and rats (20) only at 100. `?full` gives a phone
+  16 m streamed radius, the Low quality preset, rats (20) only at 100, and one loading stage: the fine models before the first picture, with no coarse stage. `?full` gives a phone
   the desktop settings.
 - **A model cache.** Production builds keep the generated models in IndexedDB, keyed by the
   worker's hashed URL, so a second visit loads in seconds and a new build never reads an old
@@ -71,7 +74,7 @@ their real size roam the village.
   builds only.
 - **Loading off the main thread.** The static scenery's models are encoded and the set baked on a [scene worker](/docs/manual/managing-loading/#the-scene-worker), and the main thread only adds the encoded models, a few per frame, while the ground streams in. The pipelines compile behind the loading screen ([`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up)), both the scaled variant for the coarse stage and the plain one for after the swap. Measured on a real GPU with a warm model cache, the longest main-thread task from the upload to the first frame went from 4.15 s to 74 ms at 100 voxels per metre, and from 0.85 s to 76 ms at 50, when the scene worker came in.
 - **What the load takes now.** Measured on a real GPU in desktop Chrome, a warm visit's first frame is 1.4 s at 50 voxels per metre and 2.5 s at 100, against 4.9 s and 13.6 s with the model cache alone and 3.1 s and 6.4 s with the scene cache as well ([what it gave the examples](/docs/manual/managing-loading/#what-it-gave-the-examples)). Most of it is the 18 m of ground the first picture waits for.
-- **Load progress.** One [load tracker](/docs/manual/loading-screens/) collects the renderer, the generator workers, the instance layer, the streamed ground and the page's own steps; the [loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) shows the steps the page lists while it loads, and `?perf` also logs the load timeline to the console. At 50 and 100 the rows before the first picture are the coarse stage's ("Generating coarse models", "Uploading coarse models", "Placing instances"), and the fine stage follows in the corner pill as "Generating detail", "Uploading detail" and "Placing detail", beside the ground still streaming. The timeline files the fine stage under phases of its own (`fine.models`, `fine.upload`, `fine.placement`) and marks `fine` when the swap has applied.
+- **Load progress.** One [load tracker](/docs/manual/loading-screens/) collects the renderer, the generator workers, the instance layer, the streamed ground and the page's own steps; the [loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) shows the steps the page lists while it loads, and `?perf` also logs the load timeline to the console. With the coarse stage (a desktop at 50 and 100) the rows before the first picture are the coarse stage's ("Generating coarse models", "Uploading coarse models", "Placing instances"), and the fine stage follows in the corner pill as "Generating detail", "Uploading detail" and "Placing detail", beside the ground still streaming. The timeline files the fine stage under phases of its own (`fine.models`, `fine.upload`, `fine.placement`) and marks `fine` when the swap has applied.
 
 ## The interesting part
 
@@ -149,7 +152,7 @@ its scale, and keeps every other URL option. The HUD title names the voxel size.
 | `?rats=` | 60 (20) at 100, else none | rats in the crowd, 0 to 400; a number forces a crowd at any scale, larger than life below 100 |
 | `?radius=` | 24 (16) | streamed radius, in metres (at least 8) |
 | `?near=` | 18 | metres of ground around the view the first picture waits for (at most the radius); less is sooner, with holes at the edge of the first view |
-| `?coarse=0` | | no coarse stage at 50 and 100: the fine models before the first picture |
+| `?coarse=` | on for a desktop at 50 and 100, off on a phone | `0`: no coarse stage, the fine models before the first picture; `1`: a coarse stage at any scale above 10 and on a phone |
 | `?seed=` | `voxolith` | a different valley |
 | `?season=` | `summer` | `spring`, `summer`, `autumn`, `winter` |
 | `?time=night` | | start at midnight by the lamp |

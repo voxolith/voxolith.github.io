@@ -206,15 +206,18 @@ keeps the encodings and bakes in IndexedDB, and a warm visit reads them instead:
 | encode | worker | [`encodeModel`](/docs/renderer/api/renderer/functions/encodeModel/), in the order asked |
 | wait | main thread, idle | `commitAsync()` waits until every model of the set has landed |
 | reserve | main thread | [`reserveBricks`](/docs/renderer/api/renderer/classes/Renderer/#reservebricks) once for the batch, [below](#reserving-the-pools) |
-| add | main thread, paced | [`addEncodedModel`](/docs/renderer/api/renderer/classes/Renderer/#addencodedmodel) per model: claims its slots and copies its bytes in. Each add registers the model for placement on the worker by its keys alone, since the worker kept the sub-cells the encode listed |
+| add | main thread, paced | [`beginEncodedModel`](/docs/renderer/api/renderer/classes/Renderer/#beginencodedmodel) per model, stepped in slices over frames (or [`addEncodedModel`](/docs/renderer/api/renderer/classes/Renderer/#addencodedmodel) on a target without it): claims its slots and copies its bytes in. Each add registers the model for placement on the worker by its keys alone, since the worker kept the sub-cells the encode listed |
 | bake | worker | the static set's per-cell lists and sub-cell tables |
 | apply | main thread | [`applyPlacement`](/docs/renderer/api/renderer/classes/Renderer/#applyplacement) copies the bake into the renderer's buffers |
 
 The adds are paced so that no one frame takes them all.
 [`uploadBudgetMs`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-uploadbudgetms)
-(8 ms by default) is how long `commitAsync` spends adding before it waits for the next frame. It
-adds at least one model per frame, so a big model gets a frame of its own and small ones share
-one. In the examples an add took from 1 to 37 ms per big model (measured).
+(8 ms by default) is how long `commitAsync` spends adding before it waits for the next frame.
+Small models share a frame. A big one is added in slices: the layer starts it with the renderer's
+`beginEncodedModel` and steps it within the budget, so it spans several frames instead of being
+one long task. A whole add of a fine tree at 100 voxels per metre takes 70 to 94 ms; in slices
+the largest step is about 8 ms (measured). A target without `beginEncodedModel` (an
+`InstanceTarget` of your own) gets at least one whole model per frame.
 [`pace`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-pace) replaces that wait:
 by default it is the next painted frame, or 100 ms at most, since a hidden page draws no frames.
 
@@ -389,6 +392,39 @@ import { makeSceneWorker } from "@voxolith/engine/worker"; // was makePlacementW
 
 const worker = makeSceneWorker({ spawn }); // the worker file: serveScene(), was servePlacement()
 const layer = makeInstanceLayer(renderer, { load, worker }); // was { load, placement }
+```
+
+### Adding a big model in slices
+
+[`renderer.beginEncodedModel(encoded, opts?)`](/docs/renderer/api/renderer/classes/Renderer/#beginencodedmodel)
+is `addEncodedModel` spread over frames. It claims the model's pool slots, index blocks and id at
+once, exactly as `addEncodedModel` would there, and returns a
+[`PendingModel`](/docs/renderer/api/renderer/interfaces/PendingModel/):
+
+- `step(budgetMs)` copies and uploads slices of about 1 MB (0.3 to 0.5 ms each, measured in bun)
+  until the budget is spent, at least one per call, and returns true once the model is added; the
+  step that finishes registers it. The result is byte-identical to `addEncodedModel` at the start.
+- `progress` is the fraction copied, by bytes, from 0 to 1; it never goes back.
+- `cancel()` gives back everything it claimed.
+- `id` may be named in instances only once `step` has returned true; before that `setInstances`
+  throws for it.
+
+Anything else may run between steps, other adds and pool growth included. The layer does this for
+you with a scene worker; a host driving the renderer itself steps the model from its frame loop:
+
+```ts
+const pending = renderer.beginEncodedModel(encoded);
+const loop = makeFrameLoop({
+  continuous: true,
+  render() {
+    if (!pending.done && pending.step(4)) {
+      // 4 ms of the add per frame; the frame it finishes, place it
+      renderer.setInstances([{ model: pending.id, x: 40, y: 12, z: 60, base: bark }]);
+    }
+    bar.value = pending.progress;
+    renderer.render(frame());
+  },
+});
 ```
 
 ### Driving it yourself
@@ -1081,15 +1117,31 @@ The deprecated `PlacementWorker` has the same `destroy()`.
 
 ## Coarse first, one swap
 
-A fine scene is slow to show because its models are big: at 100 voxels per metre nightwood's
-twelve models are about 800k bricks, and all of them are generated, encoded and baked before a
-fine picture exists. Every entity generator builds the same design at its native 10 voxels per
-metre in a fraction of that time, with the same extent and anchor as at its finer scales, and
-[the contract](/docs/generators/the-contract/) checks that a finer scale stays within one native
-voxel of the native model. So a page can show the scene with those coarse models drawn enlarged,
-and swap in the fine ones when they are ready.
+This is an optional routine, not something the engine does by default. A page at a fine scale
+(50 or 100 voxels per metre) can show its scene before the fine models exist. It first places
+every model generated at the generators' native 10 voxels per metre, drawn 5 or 10 times
+enlarged, then generates, uploads and bakes the fine set in the background and swaps it in within
+one frame. The first picture comes much sooner, but the load does not get cheaper: a second
+generation, upload and bake runs while the user is already in the scene. The scene finishes
+later, and frames during that work cost more.
 
-It takes three pieces, all opt-in:
+Use it where the first picture matters more than those background seconds and the device has the
+headroom: usually a desktop, at 50 voxels per metre or more. At 20 the fine models are cheap, and
+a second stage only adds work. On a phone it lagged, so the examples leave it off there. Voxolith
+leaves this choice to the developer: the engine gives the pieces below and turns none of them on.
+The examples decide per device with a `COARSE_FIRST = { desktop: true, phone: false }` switch at
+the top of valley and nightwood. It is on for desktops at 50 and 100, and off on phones (the phone
+profile of `shared/scale.ts`), which load their fine models in one stage. `?coarse=0` or
+`?coarse=1` overrides it. The piece to copy is
+[`shared/detail.ts`](https://github.com/voxolith/examples/blob/main/src/shared/detail.ts).
+
+It works because every entity generator builds the same design at 10 voxels per metre in a
+fraction of the time, with the same extent and anchor as at its finer scales, and
+[the contract](/docs/generators/the-contract/) checks that a finer scale stays within one native
+voxel of the native model (at 100 voxels per metre nightwood's twelve fine models are about 800k
+bricks).
+
+It takes three pieces, each opt-in:
 
 - **Scaled placements.** [`EntityPlacement.scale`](/docs/engine/api/engine/interfaces/EntityPlacement/#property-scale)
   draws a model enlarged by an integer factor: each of its voxels covers `scale`³ world voxels.
@@ -1164,10 +1216,11 @@ Things to know before copying it:
 - **It costs a second bake.** The coarse set is baked too, and cached too: its encodings are
   small, but its bake is about as big as the fine one, since the tables are laid out in world
   cells, not model voxels.
-- **It does not pay at every scale.** At 20 voxels per metre the factor is 2 and the fine models
-  cost about a tenth of those at 50, so the examples' pages at 20 are up in about 2 s warm, most of
-  it terrain and ground, which a coarse stage does not shorten. The examples use it at 50 and 100
-  only; their `?coarse=0` turns it off.
+- **It does not pay at every scale or on every device.** At 20 voxels per metre the factor is 2
+  and the fine models cost about a tenth of those at 50, so the examples' pages at 20 are up in
+  about 2 s warm, most of it terrain and ground, which a coarse stage does not shorten. On a phone
+  the background stage made the scene lag. The examples use it on desktops at 50 and 100 only;
+  `?coarse=1` forces it on at any scale and on a phone, and `?coarse=0` off.
 - **Tell the stages apart on the loading screen.** The engine's loaders report both stages under
   the same phases. The examples wrap their tracker so that the fine stage's tasks go under phases
   of their own (`fine.models`, `fine.upload`, `fine.placement`), shown as rows in the corner pill
@@ -1178,7 +1231,8 @@ Things to know before copying it:
 
 Measured on a real GPU in desktop Chrome, the warm first frame (the second visit) with the model
 cache alone, with the scene cache as well, and now: coarse first, the ground filled on workers
-(below) and the terrain sampled on workers. These are measurements of those pages, not a promise
+(below) and the terrain sampled on workers. The last column is the first picture, not the end of
+the load: the fine stage still runs after it. These are measurements of those pages, not a promise
 for yours:
 
 | page | model cache | + scene cache | now |
@@ -1354,8 +1408,9 @@ yours:
 - **What overlaps.** Whether the ground streams while the scene worker encodes, how much of a frame
   its adds may take (`uploadBudgetMs`, `pace`), and what the first frame waits for: how much
   ground around the camera (`whenReady`'s radius), and whether a coarse stage comes first.
-- **The stages.** Whether to show coarse models first, at which scales, and when to swap; the
-  engine gives `scale` and a swap that releases what it replaced, and picks neither.
+- **The stages.** Whether to show coarse models first, on which devices, at which scales, and
+  when to swap; the engine gives `scale` and a swap that releases what it replaced, and turns on
+  neither.
 - **How many workers.** The generator pool, the scene worker and the chunk fill pool share the
   machine; their sizes are yours.
 - **The caches' budget.** Whether the model and scene caches are on, their caps (sized by
