@@ -119,9 +119,82 @@ The rules that make it work:
   set and is cheap to call every frame.
 - **A budget.** `step(budgetMs = 8)` builds queued chunks until the budget is spent;
   `pending` and `resident` report progress.
+- **The queue follows the focus.** When the focus point moves, chunks still queued are re-ranked
+  from it, so the queue stays nearest first to the latest focus.
 
-A chunk can also fill itself with one batched edit rather than `ctx.edit` (the valley example
-sends a box per brick column through `renderer.editMany`, sized to what the column holds).
+A chunk can also fill itself with one batched edit rather than `ctx.edit`:
+[`columnBoxes(box, span)`](/docs/engine/api/engine/functions/columnBoxes/) gives one box per 8 × 8
+brick column, as tall as `span` says the column's contents reach (a fine terrain's
+`columnSpan`), for `ctx.edit` or `renderer.editMany`.
+
+### Ready around a point
+
+A loading screen that waits for the ground around the camera, rather than the whole focus radius,
+asks the world:
+
+- [`pendingWithin(x, z, radius)`](/docs/engine/api/engine/interfaces/ChunkedWorld/#pendingwithin):
+  chunks whose centre lies within `radius` of (x, z) that are not built yet, queued or not; 0 once
+  they all are. It costs one test per chunk in the square around the point.
+- [`readyAround(x, z, radius)`](/docs/engine/api/engine/interfaces/ChunkedWorld/#readyaround):
+  `pendingWithin(...) === 0`.
+- [`whenReady(x, z, radius, { signal })`](/docs/engine/api/engine/interfaces/ChunkedWorld/#whenready):
+  resolves once `readyAround` holds, after the `step` that builds the last missing chunk. The world
+  builds only in `step` and only what `focus` queued, so keep stepping and focus on at least
+  `radius`, or it never resolves. `signal` rejects it with `signal.reason`.
+
+```ts
+world.focus(x, z, 2400);
+// Chunk centres are tested, so half a chunk's diagonal more takes every chunk reaching into 18 m.
+const near = 1800 + 256 * Math.SQRT1_2;
+await world.whenReady(x, z, near); // the frame loop keeps calling world.step meanwhile
+loadingScreen.ready();
+```
+
+### Filling chunks on workers
+
+With [`fill`](/docs/engine/api/engine/interfaces/ChunkedWorldOptions/#property-fill), chunks are
+filled on workers instead of in `generate`, usually by
+[`makeChunkFillPool`](/docs/engine/api/worker/functions/makeChunkFillPool/) from
+`@voxolith/engine/worker` (see [chunk fill workers](/docs/engine/workers/#chunk-fill-workers)).
+`focus` queues chunks as before; the world keeps up to `fill.capacity` requests out, nearest
+first, and `step` copies in the chunks that came back, nearest first, within its budget (at least
+one when any has). The main thread's share is the copy.
+
+```ts
+import { columnBoxes, makeChunkedWorld } from "@voxolith/engine";
+import { makeChunkFillPool } from "@voxolith/engine/worker";
+import { fineTerrainInit } from "@voxolith/gen-terrain";
+
+const world = makeChunkedWorld({
+  target: renderer, // editMany when it has it: one upload per chunk
+  size: SIZE,
+  chunk: 256,       // a multiple of 8 with `fill`
+  seed,
+  load,
+  fill: makeChunkFillPool({ spawn, init: { fine: fineTerrainInit(ground), base: groundBase } }),
+  boxes: ({ box }) => columnBoxes(box, (ox, oz) => ground.columnSpan(ox, oz)),
+  onError: (err, { cx, cz }) => console.warn(`chunk ${cx},${cz} stays empty`, err),
+});
+```
+
+- [`boxes(chunk)`](/docs/engine/api/engine/interfaces/ChunkedWorldOptions/#boxes) gives the boxes
+  to fill for a [`ChunkRef`](/docs/engine/api/engine/interfaces/ChunkRef/), clamped to the chunk
+  (default its whole box). It runs on the main thread when the chunk is sent.
+- `generate` is optional with `fill`. Given, it runs on the main thread after the chunk's bricks
+  are in, for what cannot move to a worker (blitting models, counting).
+- Each brick is filled from empty and replaced by the result, which is what `generate` writes
+  into a new or cleared chunk; `chunk` must therefore be a multiple of the 8-voxel brick.
+- A chunk counts as built (`resident`, `pendingWithin`, `whenReady`, the `ground` phase) once it
+  is applied. `step` and `pending` count the chunks queued, out on a worker, or back and not applied.
+- A chunk freed while it is queued or out is dropped, and its result with it.
+- A request that fails leaves its chunk unbuilt: it goes to
+  [`onError`](/docs/engine/api/engine/interfaces/ChunkedWorldOptions/#onerror) (default
+  `console.error`), is not retried until the chunk has been freed, and a `whenReady` over it
+  rejects with the error.
+
+Measured in bun on a gen-terrain fine ground at 100 voxels per metre (256² chunks, one box per
+brick column): 50 ms per chunk on the main thread synchronously, against 42 ms on a worker plus
+10 ms on the main thread, almost all of it the brick grid encoding what it is given.
 
 ## Scatter
 

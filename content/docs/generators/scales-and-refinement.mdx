@@ -34,6 +34,11 @@ Two rules keep this invisible to everything that already works:
   checks it, so share codes and cached models never change meaning.
 - Parameters are not rescaled. A share code describes the design; the world it is built for is
   the host's business.
+- A finer model stays **within one native voxel** of the native one: every fine voxel, divided by
+  k, lies in or next to an occupied voxel of the model built at 10. The contract checks that too,
+  and it is what lets a page draw the 10 voxels per metre model enlarged as a placeholder and swap
+  in the fine one at the same placement with the outline moving by one coarse voxel at most (see
+  [coarse first, one swap](/docs/manual/managing-loading/#coarse-first-one-swap)).
 
 ## Refine, never generate fine
 

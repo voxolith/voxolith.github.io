@@ -114,12 +114,24 @@ function absoluteLinks(file: string, src: string): string {
 }
 
 /**
+ * A doc comment's code span in a table cell may hold a `|` (a cache key such as `a|b`), which
+ * GFM reads as a cell break, leaving the rest of the span as prose (and a `<version>` in it as
+ * JSX). Inside a table row, escape those pipes: GFM drops the backslash again in code.
+ */
+function tableCodePipes(src: string): string {
+  return src
+    .split("\n")
+    .map((line) => (line.startsWith("|") ? line.replace(/`[^`]*`/g, (code) => code.replace(/(?<!\\)\|/g, "\\|")) : line))
+    .join("\n");
+}
+
+/**
  * typedoc-plugin-markdown writes a page title as the first "# ..." line. Fumadocs wants it in
  * frontmatter (it renders the title itself), so move it there, with the first paragraph as the
  * description.
  */
 function toFumadocs(file: string, fallbackTitle: string) {
-  const src = absoluteLinks(file, readFileSync(file, "utf8"));
+  const src = tableCodePipes(absoluteLinks(file, readFileSync(file, "utf8")));
   const lines = src.split("\n");
   const h = lines.findIndex((l) => l.startsWith("# "));
   let title = fallbackTitle;

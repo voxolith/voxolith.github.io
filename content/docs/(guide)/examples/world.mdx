@@ -37,6 +37,14 @@ trunks and watch the shadows move. N runs day into night, W cycles the weather.
   64-voxel chunks around the view and keeps following it as you pan, with
   [`PaletteAllocator`](/docs/engine/api/engine/classes/PaletteAllocator/) handing out slots as
   species first appear.
+- **Terrain and ground on workers.** The height map is sampled in bands on workers while the page
+  sets up, and the chunks' ground is filled on up to six more
+  ([ground on workers](/docs/manual/managing-loading/#ground-on-workers)) from the levelled
+  terrain ([`terrainInit`](/docs/generators/api/gen-terrain/functions/terrainInit/)) and the paths
+  and yards as data ([`topOverrideData`](/docs/generators/api/gen-terrain/functions/topOverrideData/)).
+  Each chunk's `generate` then only blits the models into it, on the main thread. That took the
+  1.5 s freeze of sampling the terrain on the main thread out of the load; the warm first frame
+  is 2.3 s (measured).
 - **Point lights.** The lamp is two lights, one shadowed and one soft unshadowed spill, set with
   `renderer.setLights`; grabbing it claims the pointer from the orbit camera with `input.claim`.
 - **Time of day and weather.** [`timeOfDay`](/docs/engine/api/atmosphere/functions/timeOfDay/),
@@ -51,16 +59,24 @@ trunks and watch the shadows move. N runs day into night, W cycles the weather.
 
 ## The interesting part
 
-Each chunk writes the terrain, then every house and plant that reaches into it:
+Each chunk's ground is filled on the workers, then its `generate` writes every house and plant
+that reaches into it:
 
 ```ts
+// The ground's bricks from the levelled terrain and the paths and yards as data; ?workers=0 fills here.
+const fill = useWorkers && typeof Worker !== "undefined"
+  ? groundFill({ terrain: terrainInit(terrain), top: topOverrideData(terrain, topOverride), base: terrainBase })
+  : undefined;
 const world = makeChunkedWorld({
   target: renderer,
   size: SIZE,
   chunk: CHUNK,
   seed,
+  load,
+  fill,
+  boxes: ({ box }) => [{ ...box, y1: maxY }],
   generate(ctx) {
-    ctx.edit({ ...ctx.box, y1: maxY }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, terrainBase, topOverride));
+    if (!fill) ctx.edit({ ...ctx.box, y1: maxY }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, terrainBase, topOverride));
 
     for (const hs of houses) {
       if (hs.x1 < ctx.box.x0 || hs.x0 > ctx.box.x1 || hs.z1 < ctx.box.z0 || hs.z0 > ctx.box.z1) continue;
@@ -78,7 +94,10 @@ const world = makeChunkedWorld({
 ```
 
 `ctx.blit` clips each model to the chunk, so a tree standing on a chunk edge is written half by
-each chunk, and the result does not depend on the order chunks are built in.
+each chunk, and the result does not depend on the order chunks are built in. With `fill`, a
+chunk's `generate` runs once its bricks are in, so the models land on the ground the workers
+wrote. `groundFill` is the examples' own wrapper of `makeChunkFillPool`, in
+[`shared/ground.ts`](https://github.com/voxolith/examples/blob/main/src/shared/ground.ts).
 
 The frame folds time of day, weather and the page's ground state into one call:
 
@@ -109,7 +128,7 @@ renderer.render({ ...frame(), ...atm, time: still ? 0 : now / 1000 });
 | `?seed=` | `voxolith` | any string; a different valley |
 | `?season=` | `summer` | `spring`, `summer`, `autumn` or `winter` foliage |
 | `?variants=` | 10 | models generated per species |
-| `?workers=0` | | generate on the main thread instead of workers |
+| `?workers=0` | | generate the models and fill the ground on the main thread instead of workers |
 | `?radius=` | 1.5 × width | streamed radius around the view, in voxels |
 | `?time=night` | | start at midnight, close to the lamp |
 | `?weather=` | `clear` | `clear`, `cloudy`, `rain`, `storm`, `snow`, `fog`; also any other [`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/) name |

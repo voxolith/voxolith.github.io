@@ -1,6 +1,6 @@
 ---
 title: Instances
-description: "Drawing entity models by reference with makeInstanceLayer: static and dynamic placements, any yaw, mirroring, and palettes outside the world's 256 slots."
+description: "Drawing entity models by reference with makeInstanceLayer: static and dynamic placements, any yaw, mirroring, scaled placements for coarse placeholders, and palettes outside the world's 256 slots."
 ---
 
 Stamping writes every voxel of a model into the world's bricks. A forest of the same six trees
@@ -32,30 +32,35 @@ layer.commit();                                     // scenery is sent once; cal
 [`makeInstanceLayer(target)`](/docs/engine/api/engine/functions/makeInstanceLayer/) returns an
 [`InstanceLayer`](/docs/engine/api/engine/interfaces/InstanceLayer/):
 
-- `models`: a [`ModelLibrary`](/docs/engine/api/engine/interfaces/ModelLibrary/). `id(model)`
-  uploads the model the first time it sees that object (by identity) and returns its id;
-  `release(model)` frees it. Dense and sparse models both upload as they are.
+- `models`: a [`ModelLibrary`](/docs/engine/api/engine/interfaces/ModelLibrary/). `id(model, scale?)`
+  uploads the model the first time it sees that object (by identity) at that scale and returns its
+  id; `has(model, scale?)` says whether it is uploaded, without uploading it; `release(model,
+  scale?)` frees it (at every scale without one); `scaleOf(id)` gives the scale an id was uploaded
+  at. Dense and sparse models both upload as they are. A model whose id you asked for is yours:
+  the layer never releases it by itself.
 - `palettes`: a [`PaletteLibrary`](/docs/engine/api/engine/interfaces/PaletteLibrary/), below.
 - `setStatic(list)`: replaces the static placements (scenery), given as
   [`EntityPlacement`](/docs/engine/api/engine/interfaces/EntityPlacement/)s by model rather than
-  id; the model's own anchor is used.
+  id; the model's own anchor is used. Once a new static set is drawing, the models the layer
+  uploaded for earlier sets and no longer needs are released (below).
 - `setDynamic(list)`: replaces the moving placements (a crowd's, every frame), given as
   [`InstancePlacement`](/docs/engine/api/engine/interfaces/InstancePlacement/)s by model id.
 - `commit()`: sends the static set if it changed and the dynamic set always. Cheap to call every
   frame: the renderer keeps the two apart, so the scenery is not re-sent with each move.
-- `commitAsync()`: `commit()`, with the static set baked on a placement worker (below). `baking`
-  is true while a bake is in flight.
+- `commitAsync()`: `commit()`, with the static set's models encoded and the set baked on a scene
+  worker (below). `baking` is true while a static set is in flight there, and `uploads` counts
+  the models sent to be encoded and not yet added.
 
 ```ts
 import { makeInstanceLayer } from "@voxolith/engine";
 
-const layer = makeInstanceLayer(renderer, { load, placement }); // both optional
+const layer = makeInstanceLayer(renderer, { load, worker }); // both optional
 const oakBase = layer.palettes.of("oak", oak.model.roles);
 layer.setStatic(sites.map((s) => ({ model: oak.model, x: s.x, y: s.y, z: s.z, yaw: s.yaw, base: oakBase })));
 
-layer.commit();            // places the static set here and now: blocks for a big set
+layer.commit();            // uploads and places the static set here and now: blocks for a big set
 // or
-await layer.commitAsync(); // bakes it on `placement`, resolves once it draws (commit() without a worker)
+await layer.commitAsync(); // encodes and bakes it on `worker`, resolves once it draws (commit() without one)
 
 // Moving things: ids from the library, every frame.
 const ratId = layer.models.id(rat.model);
@@ -72,41 +77,127 @@ A placement puts the model's `anchor` at `x, y, z` in world voxels (fractions ar
 by `yaw` radians about +y and optionally mirrors it along the model's x first. `base` is the palette
 slot of role 1.
 
-## Baking on a worker
+## Scaled placements
 
-`commit()` places a changed static set on the main thread, which takes seconds for a fine scene.
-Given a placement worker ([`makePlacementWorker`](/docs/engine/api/worker/functions/makePlacementWorker/),
-see [Workers](/docs/engine/workers/#the-placement-worker)),
-[`commitAsync()`](/docs/engine/api/engine/interfaces/InstanceLayer/#commitasync) bakes it there:
+`scale` on an `EntityPlacement` draws the model enlarged by an integer factor: each of its voxels
+covers `scale`³ world voxels (the renderer's [`ModelOptions.scale`](/docs/renderer/instances/#scaled-models)).
+The factor is the world's resolution over the model's, so a tree generated at 10 voxels per metre
+in a 100 voxels per metre world takes 10. It is how a scene shows coarse placeholders while its
+fine models are made:
 
 ```ts
 import { makeInstanceLayer } from "@voxolith/engine";
 
-const layer = makeInstanceLayer(renderer, { load, placement });
-layer.setStatic(scenery);   // uploads new models here, on the main thread
-await layer.commitAsync();  // bakes on the worker; the page keeps drawing
+// oak10 and oak100: the same oak, generated at 10 and at 100 voxels per metre.
+const layer = makeInstanceLayer(renderer);
+const base = layer.palettes.of("oak", oak100.model.roles); // every scale has the same roles
+
+// A 100 voxels per metre world: the 10 vox/m oak drawn 10 times enlarged, anchored at 10 × anchor.
+layer.setStatic(sites.map((s) => ({ model: oak10.model, scale: 10, x: s.x, y: s.y, z: s.z, yaw: s.yaw, base })));
+layer.commit();
+
+// Later: the fine oak at the same placements. Once it draws, the coarse oak is released.
+layer.setStatic(sites.map((s) => ({ model: oak100.model, x: s.x, y: s.y, z: s.z, yaw: s.yaw, base })));
+layer.commit();
+```
+
+- **The anchor scales.** The layer places the anchor at `scale × model.anchor`, which is the
+  anchor a generator gives the same design built `scale` times finer, so a coarse placeholder and
+  its fine model share a placement.
+- **The scale is explicit.** It is not read from the model, since only the app knows the world's
+  resolution. It must be an integer of at least 1, or `setStatic` throws.
+- **One upload per model and scale.** The same `EntityModel` at two scales is two renderer
+  models, each costing its bricks once. With a scene worker it is encoded once, and the encoding
+  is added at every scale the set names.
+- **Drawn at rest.** A scaled model cannot be posed: `setDynamic` throws for a posed placement
+  (`parts`) naming a model the layer holds at a scale above 1.
+- **Its own pipeline variant.** Scaled models are drawn by a variant a scene without them does
+  not compile; with `deferPipelines`, prepare it with `renderer.prepare({ instances: true, scaled: true })`.
+
+### Replacing a set releases its models
+
+Once a new static set is drawing (after `commit()` places it, or when `commitAsync()` applies its
+bake), the layer releases the models it uploaded for earlier sets that nothing needs any more,
+freeing their bricks. Never before, so the old set never draws a freed model. Kept are the models
+the drawn set names, those of a `setStatic` not committed yet or still in flight, and any whose id
+the host asked for with `models.id`.
+[`keepUnused: true`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-keepunused)
+keeps them all, for a host that switches between the same sets and would rather not upload them
+again.
+
+That makes a coarse-to-fine swap one call pair. Place the coarse models first (`scale`), commit and
+show the scene; then give the fine set to `setStatic` and `await commitAsync()` **in the same
+task**. The coarse set keeps drawing while the fine models encode, upload and bake, the fine set
+replaces it in one apply, and the coarse models are released right after. A `commit()` in between
+(a crowd's, every frame) would place the fine set synchronously. With `deferPipelines`, prepare
+both variants up front (`prepare({ instances: true, scaled: true })` and
+`prepare({ instances: true })`), or the first frame after the swap compiles the plain one. The
+manual's [coarse first, one swap](/docs/manual/managing-loading/#coarse-first-one-swap) has the
+whole pattern and what it gave the examples.
+
+<span id="baking-on-a-worker" />
+
+## Encoding and baking on a worker
+
+On the main thread, `setStatic` uploads each model it has not seen (`addModel` encodes its
+bricks), and `commit()` places the changed static set. Both take seconds for a fine scene. Given a
+scene worker ([`makeSceneWorker`](/docs/engine/api/worker/functions/makeSceneWorker/), see
+[Workers](/docs/engine/workers/#the-scene-worker)), `setStatic` only sends new models to be
+encoded, and [`commitAsync()`](/docs/engine/api/engine/interfaces/InstanceLayer/#commitasync) does
+the rest:
+
+```ts
+import { makeInstanceLayer } from "@voxolith/engine";
+
+const layer = makeInstanceLayer(renderer, { load, worker, modelKey: pool.modelKey });
+layer.setStatic(scenery);   // returns at once: new models go to the worker
+await layer.commitAsync();  // encodes, adds, bakes; the page keeps drawing
 loop.invalidate();
 ```
 
-- It resolves once the static set of this call, or a newer one, is drawing (at once when it had
-  not changed). The moving set is sent at once, `commit()` calls meanwhile send only the moving
-  set, and the old static set draws until the new one is applied.
-- With `load`, the `placement` phase counts up with the worker's progress while the bake runs
-  (one short of the total until the apply).
-- Only the newest bake is applied: a newer static set supersedes one in flight, whose result is
-  dropped. A model removed or replaced during a bake makes the layer bake again. A superseded or aborted
-  bake is discarded from the `placement` phase, so its `done` can drop.
-- `commitAsync({ signal })` aborts: the worker skips the bake if it has not started (a started one
-  runs to the end), the promise rejects with `signal.reason`, and the static set counts as unsent,
-  so the next `commit()` or `commitAsync()` sends it again. A failed bake does the same.
-- The layer sends each model to the worker once, after its upload, and drops it when the model is
-  released. The target needs the optional
-  [`InstanceTarget`](/docs/engine/api/engine/interfaces/InstanceTarget/) methods `placementModel`,
-  `placementInput` and `applyPlacement` (the renderer has them); without them, or without a worker,
-  `commitAsync()` is `commit()`.
+- **Encodes, then adds.** `commitAsync()` waits for the encodes the set needs, calls the target's
+  `reserveBricks` once for all of them, and adds them with `addEncodedModel`, paced:
+  [`uploadBudgetMs`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-uploadbudgetms)
+  of adds per frame (8 by default), at least one, so a big model gets a frame of its own;
+  [`pace`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-pace) replaces the wait
+  for the next frame. Each add registers the model for placement on the worker by its keys, so the
+  bake that follows needs nothing sent.
+- **Then the bake.** It resolves once the static set of this call, or a newer one, is drawing (at
+  once when it had not changed). The moving set is sent at once, `commit()` calls meanwhile send
+  only the moving set, and the old static set draws until the new one is applied.
+- **Load phases.** With `load`, `upload` counts each model in bricks from its encode request to its
+  add (one short until the add), and `placement` counts up with the bake (one short of the total
+  until the apply). Without a scene worker, `upload` is one tick per model.
+- **The newest set wins.** A newer static set supersedes one in flight: its bake result is
+  dropped, models it already added stay added, and encodes of models the new set does not name are
+  cancelled. A model removed or replaced during a bake makes the layer bake again. A superseded or
+  aborted job is discarded from its phase, so its `done` can drop.
+- **A synchronous `commit()`** after `setStatic` does not wait: it adds the encodings that have
+  landed, uploads the rest with `addModel` and places the set. `models.id(model)` for a model
+  still being encoded uploads it there and then.
+- **Aborting.** `commitAsync({ signal })`: the encodes carry on, the worker skips the bake if it
+  has not started (a started one runs to the end), the promise rejects with `signal.reason`, and
+  the static set counts as unsent, so the next `commit()` or `commitAsync()` sends it again. A
+  failed encode or bake does the same.
+- **What the target needs.** The optional
+  [`InstanceTarget`](/docs/engine/api/engine/interfaces/InstanceTarget/) methods `addEncodedModel`
+  and `reserveBricks` for the encodes, and `placementModel`, `placementInput` and `applyPlacement`
+  for the bake (the renderer has all five). A target without `addEncodedModel` only bakes on the
+  worker; without the placement methods, or without a worker, `commitAsync()` is `commit()`.
+- **Cached.** With a scene worker that has a cache (`serveScene({ cache })`), a warm visit reads
+  the bake and the encodings instead of computing them. Bakes need nothing from you. Encodings need
+  the model's identity:
+  [`modelKey`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-modelkey)
+  (`pool.modelKey`, for generated models; a hit never sends the bricks) or
+  [`hashModels: true`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-hashmodels)
+  (a hash of the bytes on the worker, for models you built; saves the encode only). What the cache
+  served ticks its phase with `cached: true`.
+- **Bake only.** The deprecated [`makePlacementWorker`](/docs/engine/api/worker/functions/makePlacementWorker/),
+  given as `placement`, bakes as before and leaves the uploads in `setStatic`. `worker` takes the
+  place of `placement` when both are given.
 
-The manual's [placement off the main thread](/docs/manual/managing-loading/#placement-off-the-main-thread)
-covers it at length.
+The manual's [scene worker](/docs/manual/managing-loading/#the-scene-worker) section covers it at
+length, with what it saved in the examples.
 
 ## Matching stamped orientations
 

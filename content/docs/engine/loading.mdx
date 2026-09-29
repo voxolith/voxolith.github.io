@@ -13,9 +13,9 @@ strings. It is in the barrel and runtime-safe: no DOM, no GPU, only `performance
 |---|---|---|
 | the renderer | `createRenderer(gpu, scene, { onLoad: trackRenderer(load) })` | `shaders`, `pipelines` |
 | [`makeGeneratorPool`](/docs/engine/api/worker/functions/makeGeneratorPool/) | `load` in [`GeneratorPoolOptions`](/docs/engine/api/worker/interfaces/GeneratorPoolOptions/) | `models` (with `cached`) |
-| [`makeInstanceLayer`](/docs/engine/api/engine/functions/makeInstanceLayer/) | `load` in [`InstanceLayerOptions`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/) | `upload`, `placement` (with `commitAsync`, one task from bake request to apply that counts up with the worker's progress) |
+| [`makeInstanceLayer`](/docs/engine/api/engine/functions/makeInstanceLayer/) | `load` in [`InstanceLayerOptions`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/) | `upload` (one per model; with a scene worker, in bricks per model from encode request to add), `placement` (with `commitAsync`, one task from bake request to apply that counts up with the worker's progress); both tick as `cached` what a [scene cache](/docs/manual/managing-loading/#caching-encodings-and-bakes) served |
 | [`makeModelLibrary`](/docs/engine/api/engine/functions/makeModelLibrary/) | `load` in [`ModelLibraryOptions`](/docs/engine/api/engine/interfaces/ModelLibraryOptions/) | `upload` |
-| [`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/) | `load` in [`ChunkedWorldOptions`](/docs/engine/api/engine/interfaces/ChunkedWorldOptions/) | `ground` |
+| [`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/) | `load` in [`ChunkedWorldOptions`](/docs/engine/api/engine/interfaces/ChunkedWorldOptions/) | `ground` (with `fill`, one item per chunk, ticked when its bricks are applied; a chunk dropped before that leaves the total) |
 | the app | `load.task("layout")` | any name of its own |
 
 The engine's phase names are [`LOAD_PHASES`](/docs/engine/api/engine/variables/LOAD_PHASES/).
@@ -27,48 +27,61 @@ The engine's phase names are [`LOAD_PHASES`](/docs/engine/api/engine/variables/L
   [`LoadEvent`](/docs/engine/api/engine/interfaces/LoadEvent/); `snapshot()` is every phase
   now ([`LoadSnapshot`](/docs/engine/api/engine/interfaces/LoadSnapshot/)); `idle(phase?)`
   resolves when nothing (or that phase) is busy; `timeline()` gives one
-  [`TimelineEntry`](/docs/engine/api/engine/interfaces/TimelineEntry/) per phase.
+  [`TimelineEntry`](/docs/engine/api/engine/interfaces/TimelineEntry/) per phase and per mark
+  (`kind` tells them apart). `now()` is the tracker's time base and `origin` the
+  `performance.now()` it started at.
+- **Marks** are moments, not work: `mark(name, t?)` records one, `marks()` lists them and
+  `onMark(fn)` hears them ([`LoadMark`](/docs/engine/api/engine/interfaces/LoadMark/)).
+  [`LOAD_MARKS`](/docs/engine/api/engine/variables/LOAD_MARKS/) names `firstFrame` and
+  `converged` ([`LoadMarkName`](/docs/engine/api/engine/type-aliases/LoadMarkName/)); the engine
+  never records them itself, since when a page counts as drawn is the page's call. They do not
+  go through `on()`: a mark is not a phase, so it never makes the tracker busy or shows in
+  `snapshot()`, and a loading screen written against phase events sees no change.
 - [`trackRenderer(load)`](/docs/engine/api/engine/functions/trackRenderer/) adapts the tracker to
   the renderer's [`onLoad`](/docs/renderer/api/renderer/interfaces/RendererOptions/#property-onload)
   callback, which is typed by shape
   ([`RendererLoadCallback`](/docs/engine/api/engine/type-aliases/RendererLoadCallback/)) so the
   engine does not need a particular renderer version.
 - [`formatTimeline(entries)`](/docs/engine/api/engine/functions/formatTimeline/) prints the
-  timeline as a plain-text table for logs.
+  timeline as a plain-text table for logs, with a `mark` line per mark.
 
 Events are synchronous, sent from inside the reporting call, so a step that blocks the main thread
 reaches the screen only after it has finished. How to work with that, what `idle()` does and does
-not promise, and a small consumer are in the manual's
-[Loading screens](/docs/manual/loading-screens/).
+not promise, a small consumer, and reading "first frame" and "interactive at" off the timeline
+are in the manual's [Loading screens](/docs/manual/loading-screens/#marks-first-frame-and-converged).
 
 ## Loading controls
 
 The engine also gives an app controls over its load, and picks no policy with them: each is
 opt-in, and without them everything loads as before (a first-in, first-out generation queue, an
-unbounded model cache, placement and pipeline compiles on the main thread). What to load, in what
+unbounded model cache, model uploads, placement, ground fills and pipeline compiles on the main thread). What to load, in what
 order and what to wait for stay the game's decisions.
 
 | control | API | what it gives |
 |---|---|---|
 | pipeline warm-up | [`Renderer.prepare`](/docs/renderer/api/renderer/classes/Renderer/#prepare), [`deferPipelines`](/docs/renderer/api/renderer/interfaces/RendererOptions/#property-deferpipelines) | compile the variants a scene needs ahead of its first frame, awaitable, with `pipelines` timing the real compile |
-| placement on a worker | [`makePlacementWorker`](/docs/engine/api/worker/functions/makePlacementWorker/), [`servePlacement`](/docs/engine/api/worker/functions/servePlacement/), [`InstanceLayer.commitAsync`](/docs/engine/api/engine/interfaces/InstanceLayer/#commitasync) | the static set's bake off the main thread; the newest bake wins, and an aborted one leaves the static set unsent |
+| scene worker | [`makeSceneWorker`](/docs/engine/api/worker/functions/makeSceneWorker/), [`serveScene`](/docs/engine/api/worker/functions/serveScene/), [`InstanceLayer.commitAsync`](/docs/engine/api/engine/interfaces/InstanceLayer/#commitasync), [`uploadBudgetMs`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-uploadbudgetms) | the static set's model encodes and its bake off the main thread, the adds paced over frames after one pool reservation; the newest set wins, and an aborted one leaves the static set unsent (`makePlacementWorker` / `servePlacement` are the deprecated, bake-only names) |
 | generation queue | [`GenerateOptions`](/docs/engine/api/worker/interfaces/GenerateOptions/), [`GeneratorPool`](/docs/engine/api/worker/interfaces/GeneratorPool/) `pause` / `resume` / `reprioritise`, [`respawnOnAbort`](/docs/engine/api/worker/interfaces/GeneratorPoolOptions/#property-respawnonabort) | priorities, `AbortSignal`, per-request `cache: false`, pausing and re-sorting the queue |
 | model cache | [`openModelCacheControls`](/docs/engine/api/worker/functions/openModelCacheControls/), [`ServeCacheOptions`](/docs/engine/api/worker/interfaces/ServeCacheOptions/) | list, measure, clear and trim the cache, and cap its size by last use |
+| cache caps | `maxBytes` in [`ServeCacheOptions`](/docs/engine/api/worker/interfaces/ServeCacheOptions/) and [`ServeSceneCacheOptions`](/docs/engine/api/worker/interfaces/ServeSceneCacheOptions/), [`CACHE_CAP_FLOOR`](/docs/engine/api/worker/variables/CACHE_CAP_FLOOR/) | a cap the game sizes by measuring; nonsense throws, and a cap under 16 MiB, above the storage quota or smaller than an entry warns once |
+| coarse first | [`EntityPlacement.scale`](/docs/engine/api/engine/interfaces/EntityPlacement/#property-scale), [`keepUnused`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-keepunused), `PrepareNeeds.scaled` | coarse models drawn enlarged as placeholders, swapped for the fine set in one apply by `setStatic` + `commitAsync`, the replaced models released once the new set draws |
+| ground readiness | [`ChunkedWorld`](/docs/engine/api/engine/interfaces/ChunkedWorld/) `pendingWithin` / `readyAround` / `whenReady` | the chunks still missing around a point, and a promise for when they are in; the queue re-ranked when the focus moves |
+| ground on workers | [`ChunkedWorldOptions`](/docs/engine/api/engine/interfaces/ChunkedWorldOptions/) `fill` / `boxes` / `onError`, [`makeChunkFillPool`](/docs/engine/api/worker/functions/makeChunkFillPool/), [`serveChunks`](/docs/engine/api/worker/functions/serveChunks/), [`columnBoxes`](/docs/engine/api/engine/functions/columnBoxes/) | chunks filled on workers from a description sent once, the main thread only copying bricks in |
 
 A few lines each, together:
 
 ```ts
 import { makeInstanceLayer } from "@voxolith/engine";
-import { makeGeneratorPool, makePlacementWorker, openModelCacheControls } from "@voxolith/engine/worker";
+import { makeGeneratorPool, makeSceneWorker, openModelCacheControls } from "@voxolith/engine/worker";
 
 // Pipeline warm-up, on a renderer made with { deferPipelines: true, onLoad: trackRenderer(load) }.
 await renderer.prepare({ instances: true });
 
-// Placement on a worker; the worker file calls servePlacement().
-const placement = makePlacementWorker({ spawn: () => new Worker(new URL("./placement.worker.ts", import.meta.url), { type: "module" }) });
-const layer = makeInstanceLayer(renderer, { load, placement });
-layer.setStatic(scenery);
-await layer.commitAsync();
+// Encoding and placement on a worker; the worker file calls serveScene().
+const worker = makeSceneWorker({ spawn: () => new Worker(new URL("./scene.worker.ts", import.meta.url), { type: "module" }) });
+const layer = makeInstanceLayer(renderer, { load, worker });
+layer.setStatic(scenery);  // returns at once
+await layer.commitAsync(); // encodes, adds a few models per frame, bakes
 
 // The generation queue.
 const pool = makeGeneratorPool({ spawn, load });
@@ -79,6 +92,15 @@ const preview = pool.generate(previewSpec, { cache: false });           // never
 pool.pause();                                                           // hold the queue for a cutscene,
 pool.resume();                                                          // then let it go again
 pool.reprioritise((spec) => -distanceTo(spec));                         // re-sort: nearest first
+
+// Coarse first: 10 vox/m models drawn 10 times enlarged, then the fine set in one swap.
+layer.setStatic(sites.map((s) => ({ model: coarse[s.variant].model, scale: 10, x: s.x, y: s.y, z: s.z, base: s.base })));
+await layer.commitAsync();
+layer.setStatic(sites.map((s) => ({ model: fine[s.variant].model, x: s.x, y: s.y, z: s.z, base: s.base })));
+await layer.commitAsync(); // same task as the setStatic; the coarse models are released after
+
+// The ground around the camera, before the first picture (the frame loop keeps stepping).
+await world.whenReady(camera.x, camera.z, 1800);
 
 // The model cache; the worker's serveGenerators({ cache: { name, maxBytes } }) caps it.
 const cache = await openModelCacheControls("my-game-models");

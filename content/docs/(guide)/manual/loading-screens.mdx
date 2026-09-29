@@ -1,6 +1,6 @@
 ---
 title: Loading screens
-description: Show what a Voxolith page is loading with makeLoadTracker, the engine's per-phase load events, and time the load with formatTimeline.
+description: Show what a Voxolith page is loading with makeLoadTracker, the engine's per-phase load events, time the load with formatTimeline, and mark the first frame.
 ---
 
 A big scene takes a while to load: shaders link, models are generated or read from the cache,
@@ -13,7 +13,7 @@ from [`makeLoadTracker()`](/docs/engine/api/engine/functions/makeLoadTracker/). 
 loaders report into it when you hand it to them, your own steps report into it the same way, and
 the same records read back as a load timeline for measuring.
 
-This page is about seeing the load. Changing it (warming pipelines up, placing on a worker,
+This page is about seeing the load. Changing it (warming pipelines up, encoding and placing on a worker,
 ordering and cancelling generation, managing the model cache) is
 [Managing loading](/docs/manual/managing-loading/).
 
@@ -27,8 +27,8 @@ Work is grouped into **phases**, plain strings. The engine's own loaders use the
 | `shaders` | the renderer, through `trackRenderer` | the WESL link in `createRenderer` | cached for every renderer on the page, so short after the first |
 | `pipelines` | the renderer, through `trackRenderer` | the shader module or one pipeline variant (the label names it, e.g. `"fragment+instances"`) | variants a later frame needs compile then, and reopen the phase; [`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up) compiles them ahead |
 | `models` | `makeGeneratorPool({ load })` | one generation request (the label is the generator id) | `cached` counts results the worker's model cache served; an aborted request leaves the total |
-| `upload` | `makeInstanceLayer(renderer, { load })` (or `makeModelLibrary`) | a model uploaded the first time it is seen | uploads in one synchronous run form one span |
-| `placement` | `makeInstanceLayer(renderer, { load })` | one static placement | `commit()` ticks it all at once; with [`commitAsync`](/docs/manual/managing-loading/#placement-off-the-main-thread) it is one task from the bake request to its apply, and counts up with the worker's progress (one short of the total until the apply). A superseded or aborted bake is discarded, so `done` can drop |
+| `upload` | `makeInstanceLayer(renderer, { load })` (or `makeModelLibrary`) | a model uploaded the first time it is seen; with a [scene worker](/docs/manual/managing-loading/#the-scene-worker), one **brick** of it | on the main thread, uploads in one synchronous run form one span. With a scene worker, each model is one task from its encode request to its add, weighted by its bricks (millions at 100 voxels per metre), counting up with the encode and held one short until the add; a cancelled or failed encode is discarded. An encoding the [scene cache](/docs/manual/managing-loading/#caching-encodings-and-bakes) served ticks its bricks as `cached` at its add |
+| `placement` | `makeInstanceLayer(renderer, { load })` | one static placement | `commit()` ticks it all at once; with [`commitAsync`](/docs/manual/managing-loading/#the-scene-worker) it is one task from the bake request to its apply, and counts up with the worker's progress (one short of the total until the apply). A superseded or aborted bake is discarded, so `done` can drop. A bake the scene cache served ticks every placement as `cached` at its apply |
 | `ground` | `makeChunkedWorld({ load })` | one chunk | `focus` adds what it queues, `step` ticks what it builds |
 
 Each change reaches listeners as a [`LoadEvent`](/docs/engine/api/engine/interfaces/LoadEvent/):
@@ -222,15 +222,17 @@ scenery.end();
 
 An app phase around several blocking engine steps (as `scenery` wraps `upload` and `placement`
 above) is the way to put one message up for all of them. This is a generic pattern; the examples
-no longer need it for placement (below).
+no longer need it for uploads or placement (below).
 
 Two of those steps need not block, if the app opts in (see
 [Managing loading](/docs/manual/managing-loading/)):
 
-- **Placement.** With a placement worker, `await layer.commitAsync()` bakes the static set off the
-  main thread, and the page keeps painting while it runs, so its `placement` row counts up like
-  any other while the worker bakes. The upload does not move: `setStatic` still uploads the models it has not seen on the main
-  thread, so keep the paint-first wait in front of it.
+- **Uploads and placement.** With a scene worker, `setStatic` only sends the models it has not
+  seen to be encoded, and `await layer.commitAsync()` adds them a few per frame and bakes the
+  static set off the main thread. The page keeps painting throughout, so the `upload` and
+  `placement` rows count up like any other, and neither needs the paint-first wait. With the
+  older placement worker (`{ placement }`) only the bake moves: `setStatic` still uploads on the
+  main thread, so keep the wait in front of it.
 - **Pipelines.** Without [`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up),
   the `pipelines` phase times only the synchronous `createShaderModule` and `create*Pipeline`
   calls. Chrome compiles a pipeline when it is first used, so the long stall of a first frame
@@ -244,7 +246,8 @@ Two of those steps need not block, if the app opts in (see
 The same records are a load timeline. [`timeline()`](/docs/engine/api/engine/interfaces/LoadTracker/#timeline)
 returns one [`TimelineEntry`](/docs/engine/api/engine/interfaces/TimelineEntry/) per phase, in the
 order they first started: its first `start`, latest `end`, how long it was actually `busy`, in how
-many `spans` (a reopened phase stretches one entry), and its counts.
+many `spans` (a reopened phase stretches one entry), and its counts. [Marks](#marks-first-frame-and-converged)
+are rows of the same timeline.
 [`formatTimeline`](/docs/engine/api/engine/functions/formatTimeline/) prints it as a table for a
 log:
 
@@ -256,12 +259,95 @@ console.log(formatTimeline(load.timeline()));
 // phase         start      took    done/total  cached
 // shaders          0 ms    41 ms         1/1
 // models          52 ms  1830 ms       12/12      12
+// first-frame   1904 ms     mark
 ```
 
 In the [examples](/docs/examples/), the pages with a perf overlay (world, valley, nightwood,
 creature, instances and swarm) log that table to the console under `?perf` and put the total load
-time and the longest phase in the overlay's label. Every example page exposes
-`window.loadTimeline()` once it has loaded, for benches and scripts.
+time, the longest phase and "first frame at X s" in the overlay's label. Every example page
+exposes `window.loadTimeline()` once it has loaded, for benches and scripts, and
+`window.loadOrigin` beside it (the tracker's `origin`, [below](#interactive-at)).
+
+### Marks: first frame and converged
+
+Phases say how long each step took; they do not say when the user first saw something. A
+**mark** records that moment: [`load.mark(name, t?)`](/docs/engine/api/engine/interfaces/LoadTracker/#mark)
+stores a name and a time, in the tracker's time base (ms since it was made, as
+[`load.now()`](/docs/engine/api/engine/interfaces/LoadTracker/#now) reads it). The engine never
+records one itself: when a page counts as drawn or settled is the page's call.
+[`LOAD_MARKS`](/docs/engine/api/engine/variables/LOAD_MARKS/) names the two the examples use:
+
+| mark | name | when |
+|---|---|---|
+| `LOAD_MARKS.firstFrame` | `first-frame` | the page's first picture of its scene has been submitted, where the loading screen lifts |
+| `LOAD_MARKS.converged` | `converged` | after the first frame, the picture has stopped converging for the first time (`renderer.converging()` first reads false): what is on screen is the settled image |
+
+A mark is not a phase. It never makes the tracker busy, never shows in `snapshot()`, and does not
+reach `on()` listeners, so a loading screen that redraws on every event and waits on `idle()` is
+unchanged by it. Listen with [`onMark`](/docs/engine/api/engine/interfaces/LoadTracker/#onmark),
+and read them back with [`marks()`](/docs/engine/api/engine/interfaces/LoadTracker/#marks) or as
+rows of `timeline()`, where `kind` is `"mark"`, `start` and `end` are its time and the counts
+are 0:
+
+```ts
+import { LOAD_MARKS } from "@voxolith/engine";
+
+// Where the page draws its first picture:
+renderer.render();
+screen.ready();
+load.mark(LOAD_MARKS.firstFrame);
+const poll = () => {
+  if (renderer.converging()) requestAnimationFrame(poll);
+  else load.mark(LOAD_MARKS.converged);
+};
+requestAnimationFrame(poll);
+
+// Anywhere else:
+const off = load.onMark((m) => {
+  if (m.name === LOAD_MARKS.firstFrame) console.info(`first frame at ${(m.t / 1000).toFixed(1)} s`);
+  if (m.name === LOAD_MARKS.converged) off();
+});
+```
+
+Pass `t` for a moment noticed later than it happened (`load.mark("playable", load.now() - 16)`).
+A name may be marked more than once, and every mark is kept. Marks are plain strings, so add your
+own (`"playable"`) beside these. The `converged` poll needs the page's loop to keep rendering
+while `converging()` holds (`makeFrameLoop`'s `converging` option, or a continuous loop), or the
+mark waits for the next redraw; a view that never settles never marks it.
+
+### Interactive at
+
+The first frame is when the page looks ready. It is interactive once the main thread is free as
+well: a long task after the first frame (a lazily compiled pipeline, a blocking upload) is a
+stall the user feels as a frozen first drag. Long tasks come from a `PerformanceObserver` in
+`performance.now()` time; [`load.origin`](/docs/engine/api/engine/interfaces/LoadTracker/#property-origin)
+is the `performance.now()` at which the tracker was made, so subtracting it puts them on the
+timeline:
+
+```ts
+import { LOAD_MARKS } from "@voxolith/engine";
+
+// Start it early, before the load, so no long task is missed.
+const longTasks: { start: number; ms: number }[] = [];
+new PerformanceObserver((list) => {
+  for (const e of list.getEntries()) longTasks.push({ start: e.startTime, ms: e.duration });
+}).observe({ type: "longtask", buffered: true });
+
+// Later, once the load has settled:
+const timeline = load.timeline();
+const first = timeline.find((e) => e.kind === "mark" && e.phase === LOAD_MARKS.firstFrame);
+if (first) {
+  const after = longTasks.map((t) => ({ start: t.start - load.origin, ms: t.ms })).filter((t) => t.start >= first.start);
+  const interactive = Math.max(first.start, ...after.map((t) => t.start + t.ms));
+  console.info(`first frame ${(first.start / 1000).toFixed(2)} s, interactive ${(interactive / 1000).toFixed(2)} s`);
+}
+```
+
+That definition (the end of the last long task after the first frame) is one choice, and the
+`longtask` entry type is Chromium's only. In the workspace, `bun run gpu-bench <app> --load <pages>`
+does the same from outside the page, with `window.loadTimeline` and `window.loadOrigin`: it
+prints the timeline, the long tasks, and "first frame at X s; after it N long task(s)" with the
+longest.
 
 ## The examples' loading screen
 
@@ -276,24 +362,27 @@ examples' own code, not an engine feature: copy it, restyle it or replace it. It
   `nextFrame` (a frame, then a task: the wait from [above](#the-main-thread-stalls)),
   `step(load, phase, fn)`, which opens an app phase, lets a frame paint, runs `fn` and always
   closes the phase, `prepared(renderer.prepare(needs))`, which logs a failed asynchronous compile
-  and leaves it to the first frame so a page never hangs on its screen, and `reportLoadTimeline`
-  for [measuring](#measuring);
+  and leaves it to the first frame so a page never hangs on its screen, `markFrames(load, renderer)`,
+  called beside `screen.ready()`, which [marks](#marks-first-frame-and-converged) the first frame
+  and convergence, and `reportLoadTimeline` for [measuring](#measuring);
 - [`placement.ts`](https://github.com/voxolith/examples/blob/main/src/shared/placement.ts) has
-  `placementWorker()`, the page's one placement worker (its file,
+  `sceneWorker()`, the page's one scene worker (its file,
   [`placement.worker.ts`](https://github.com/voxolith/examples/blob/main/src/shared/placement.worker.ts),
-  calls `servePlacement()`), and `commitStatic(layer)`, which awaits `layer.commitAsync()` and, if
-  the bake fails, logs a warning and places synchronously with `commit()`.
+  calls `serveScene()`), and `commitStatic(layer)`, which awaits `layer.commitAsync()` and, if an
+  encode or the bake fails, logs a warning, uploads what is missing and places synchronously with
+  `commit()`.
 
 Every page creates its renderer with `deferPipelines: true` and awaits
 `prepared(renderer.prepare(needs))` before its first frame, so the `pipelines` row is the real
-compile. The pages with static scenery (valley, nightwood, instances) bake it with
-`commitStatic`, and wrap only `setStatic` in `step(load, STEPS.upload.phase, ...)`, since the
-upload is the one step there that still blocks.
+compile. The pages with static scenery (valley, nightwood, instances) give their instance layer
+the scene worker, call `setStatic` directly (it no longer blocks) and commit with
+`commitStatic`, so neither the upload nor the placement blocks the main thread. Their upload row
+is `STEPS.encodedUpload`.
 
 ```ts
 export const SHOW_AFTER_MS = 150;
-export interface LoadingStep { phase: string; label: string; background?: boolean }
-export const STEPS; // device, shaders, pipelines, models, upload, placement, ground
+export interface LoadingStep { phase: string; label: string; background?: boolean; count?: boolean }
+export const STEPS; // device, shaders, pipelines, models, upload, encodedUpload, placement, ground
 export interface LoadingScreenOptions { title: string; blurb?: string; steps: readonly LoadingStep[]; parent?: HTMLElement }
 export interface LoadingScreen { ready(): void; fail(err: unknown): void; setSteps(steps: readonly LoadingStep[]): void; dispose(): void }
 export const NO_SCREEN: LoadingScreen;
@@ -304,7 +393,13 @@ export function showLoadingScreen(load: LoadTracker, opts: LoadingScreenOptions)
 
 The screen shows what the page says it does, in the page's order and words, next to the page's
 loading code. A [`LoadingStep`](https://github.com/voxolith/examples/blob/main/src/shared/loading-screen.ts)
-names a tracker phase and the label to show for it. `STEPS` has one for each phase the pages share:
+names a tracker phase and the label to show for it. Two optional fields change how it shows:
+`background: true` for work the page does not wait for ([below](#what-it-shows)), and
+`count: false`, which hides the `done/total` numbers on its row and in the corner pill and keeps
+the bar, the cached count and the time. That is for a phase counted in units nobody reads, such
+as an upload encoded on a scene worker, which the engine counts in bricks; its cached count then
+reads as a share, `cached` when all of it came from a cache, else `30% cached`. `STEPS` has one for
+each phase the pages share:
 
 | step | phase | label |
 |---|---|---|
@@ -313,6 +408,7 @@ names a tracker phase and the label to show for it. `STEPS` has one for each pha
 | `STEPS.pipelines` | `pipelines` | Compiling pipelines |
 | `STEPS.models` | `models` | Generating models |
 | `STEPS.upload` | `upload` | Uploading models |
+| `STEPS.encodedUpload` | `upload`, with `count: false` | Uploading models (the bar only) |
 | `STEPS.placement` | `placement` | Placing instances |
 | `STEPS.ground` | `ground` | Building the ground |
 
@@ -320,28 +416,38 @@ A page lists them as they are, spreads one to change it (`{ ...STEPS.ground, bac
 or writes its own for its app phases. The valley's list, for example:
 
 ```ts title="examples/src/valley/main.ts"
-const loadingSteps = (rats: boolean): LoadingStep[] => [
+const loadingSteps = (rats: boolean, coarse: boolean): LoadingStep[] => [
   STEPS.device,
   { phase: "terrain", label: "Shaping the terrain" },
-  { phase: "houses", label: "Measuring the houses" },
   { phase: "layout", label: "Laying out the valley" },
-  STEPS.models,
+  coarse ? COARSE_STEPS.models : STEPS.models,
   ...(rats ? [{ phase: "creatures", label: "Generating rats" }] : []),
   STEPS.shaders,
   STEPS.pipelines,
-  STEPS.upload,
+  coarse ? COARSE_STEPS.upload : STEPS.encodedUpload,
   STEPS.placement,
   { ...STEPS.ground, background: true },
+  ...(coarse ? FINE_STEPS : []),
 ];
 
-const app = await boot("valley", { blurb: "The valley, refined and streamed", steps: loadingSteps(false) });
-// ... later, once the scale (and so whether there are rats) is known:
-if (RAT_COUNT) screen.setSteps(loadingSteps(true));
+const app = await boot("valley", { blurb: "The valley, refined and streamed", steps: loadingSteps(false, false) });
+// ... later, once the scale (and so the rats and the coarse stage) is known:
+if (RAT_COUNT || KC > 1) screen.setSteps(loadingSteps(RAT_COUNT > 0, KC > 1));
 ```
 
-Other pages list what they do. Nightwood: `device`, `models`, `shaders`, `pipelines`, `upload`,
-`placement`, `ground`. Instances: `device`, `terrain` ("Shaping the terrain"), `trees` ("Growing
-trees"), `creatures` ("Generating rats"), `shaders`, `pipelines`, `ground`, then `upload` and
+At 50 and 100 voxels per metre the valley and nightwood load
+[coarse first](/docs/manual/managing-loading/#coarse-first-one-swap). `COARSE_STEPS` (from the
+examples' `shared/detail.ts`) are the shared steps named for the coarse stage ("Generating coarse
+models", "Uploading coarse models"), and `FINE_STEPS` are three background rows for the fine
+stage, "Generating detail", "Uploading detail" (`count: false`) and "Placing detail", on the
+phases `fine.models`, `fine.upload` and `fine.placement`. The page's tracker is wrapped
+(`stagedLoad`) so that the loaders' tasks for the fine stage are filed under those phases, and the
+page marks `fine` once the swap has applied.
+
+Other pages list what they do. Nightwood: `device`, `models` (or its coarse row), `shaders`,
+`pipelines`, `encodedUpload` (or its coarse row), `placement`, `ground`, and the fine rows at 50
+and 100. Instances: `device`, `terrain` ("Shaping the terrain"), `trees` ("Growing
+trees"), `creatures` ("Generating rats"), `shaders`, `pipelines`, `ground`, then `encodedUpload` and
 `placement`, or with `?stamp` a "Stamping the trees" row instead of those two (that mode uses no
 worker).
 
@@ -351,8 +457,9 @@ phases already under way keep their progress.
 
 The pages' shared startup, `boot(name, { blurb?, steps })`, makes the tracker and the screen and
 returns them with the GPU context: `{ gpu, canvas, info, load, screen }`. A page passes `load` to
-its loaders and calls `screen.ready()` when its first picture is up (the valley calls it once 40%
-of the first ground is built, and streams the rest behind it). A page that waits for the user
+its loaders and calls `screen.ready()` when its first picture is up (the valley calls it once its
+scenery is placed and the ground within 18 m of the view is built, and streams the rest behind
+it). A page that waits for the user
 before loading anything (minecraft-region) passes `boot(name, { loading: false })`, gets
 `NO_SCREEN`, and opens a screen of its own for each dropped file.
 
@@ -361,8 +468,8 @@ before loading anything (minecraft-region) passes `boot(name, { loading: false }
 - **Nothing, for a quick page.** The overlay covers the canvas but only fades in after
   `SHOW_AFTER_MS` (150 ms), so a light page is up before it would appear.
 - **One row per listed step, in the listed order.** A step whose phase has not started yet shows
-  as pending: dimmed, with no bar. A counted phase has a bar, `done/total`, `n cached` and its time;
-  an uncounted one (`total` 0) has a sliding bar. Finished rows are dimmed, with a tick.
+  as pending: dimmed, with no bar. A counted phase has a bar, `done/total` (left out with
+  `count: false`), `n cached` (`cached` or `30% cached` with `count: false`) and its time; an uncounted one (`total` 0) has a sliding bar. Finished rows are dimmed, with a tick.
 - **Only what is listed.** A phase the page does not list is not shown, but it is still on the
   tracker, so it stays in the timeline for `window.loadTimeline()` and `?perf`. In development
   builds, `ready()` warns about listed foreground steps that never started, since the list is then
@@ -399,4 +506,7 @@ It uses only the brand tokens, so it follows the dark and light themes, and it r
   [`LoadSnapshot`](/docs/engine/api/engine/interfaces/LoadSnapshot/),
   [`trackRenderer`](/docs/engine/api/engine/functions/trackRenderer/),
   [`formatTimeline`](/docs/engine/api/engine/functions/formatTimeline/),
+  [`LOAD_MARKS`](/docs/engine/api/engine/variables/LOAD_MARKS/),
+  [`LoadMark`](/docs/engine/api/engine/interfaces/LoadMark/),
+  [`TimelineEntry`](/docs/engine/api/engine/interfaces/TimelineEntry/),
   [`RendererLoadHook`](/docs/renderer/api/renderer/type-aliases/RendererLoadHook/)

@@ -1,6 +1,6 @@
 ---
 title: Terrain
-description: "@voxolith/gen-terrain: hills, a meandering river and lakes as an editable heightfield, filled a brick at a time, with a finer refinement that streams."
+description: "@voxolith/gen-terrain: hills, a meandering river and lakes as an editable heightfield, filled a brick at a time, with a finer refinement that streams, and a data form that rebuilds it on workers."
 ---
 
 <ImageZoom src="/generators/terrain-map.webp" alt="A shaded map of a generated region: hills, a river meandering through its valley, and lakes" width={640} height={640} />
@@ -72,8 +72,10 @@ The returned [`Terrain`](/docs/generators/api/gen-terrain/interfaces/Terrain/):
   map.
 - **`fillBrick(cells, ox, oy, oz, base, top?)`**: writes one 8³ brick at `(ox, oy, oz)` into `cells`
   (`x + y * 8 + z * 64`), mapping role r to `base + r - 1`, and returns whether it wrote anything.
-  `top(x, z)` can override a column's top voxel with an absolute palette slot (a path, a yard);
-  return 0 to keep it.
+  `top` can override a column's top voxel with an absolute palette slot (a path, a yard), 0 to keep
+  it: a function `top(x, z)`, or the same as data, a `Uint8Array` of slots indexed `x + z * width`
+  ([`TopOverride`](/docs/generators/api/gen-terrain/type-aliases/TopOverride/)), which crosses to
+  a worker.
 - **Queries for placement rules**: `heightAt`, `waterAt`, `waterDepth`, `topRole` (the role of a
   column's top voxel) and `roleAt(x, y, z)`; `maxY()` is the highest Y anything is written at.
 - **`pick(origin, dir, { water?, maxT? })`**: the first point where a ray meets the ground, or with
@@ -81,7 +83,11 @@ The returned [`Terrain`](/docs/generators/api/gen-terrain/interfaces/Terrain/):
 
 [`terrainHeight(params, seed)`](/docs/generators/api/gen-terrain/functions/terrainHeight/) is the
 height function on its own, pure in `(x, z)` and exactly what `generateTerrain` samples before any
-editing, for a world that streams columns without ever sampling the whole map.
+editing, for a world that streams columns without ever sampling the whole map. It takes complete
+params: [`completeTerrainParams(params)`](/docs/generators/api/gen-terrain/functions/completeTerrainParams/)
+fills the defaults exactly as `generateTerrain` merges them, and
+[`terrainSize(params)`](/docs/generators/api/gen-terrain/functions/terrainSize/) gives the map size
+it rounds to.
 
 The roles are grass, light grass, dry grass, soil, rock, dark rock, sand, gravel, mud and water. As
 with entities, voxel values are role indices, so the ground restyles (a season, a biome) by palette.
@@ -113,26 +119,79 @@ Edit a box per 8x8 brick column, sized by `columnSpan(ox, oz)`: each column is c
 whole stack of bricks, about 40 ms per 256² chunk. This is how the valley example streams its ground:
 
 ```ts
+import { columnBoxes } from "@voxolith/engine";
 import { refineTerrain } from "@voxolith/gen-terrain";
 
 const ground = refineTerrain(terrain, 10, { seed });
 
-// in the chunked world's generate(ctx):
-const boxes = [];
-for (let oz = ctx.box.z0; oz <= ctx.box.z1; oz += 8)
-  for (let ox = ctx.box.x0; ox <= ctx.box.x1; ox += 8) {
-    const [y0, y1] = ground.columnSpan(ox, oz);
-    boxes.push({ x0: ox, y0, z0: oz, x1: ox + 7, y1, z1: oz + 7 });
-  }
+// in the chunked world's generate(ctx): one box per brick column, as tall as it needs
+const boxes = columnBoxes(ctx.box, (ox, oz) => ground.columnSpan(ox, oz));
 renderer.editMany(boxes, (cells, ox, oy, oz) => ground.fillBrick(cells, ox, oy, oz, base, top));
 ```
 
+The valley example fills these boxes on workers instead ([on workers](#on-workers), below).
+
 On a [`FineTerrain`](/docs/generators/api/gen-terrain/interfaces/FineTerrain/), `top` is looked up
 on coarse columns (the settlement's paths and yards) and applies to the top two fine voxels, with no
-blades. `heightAt`, `waterAt`, `waterTop`, `maxY`, `spanOf` and `pick` work in fine voxels. Its GPU
+blades. It can be passed per call or once in the options, `refineTerrain(terrain, k, { top })`,
+which `fillBrick` then uses when a call passes none. `heightAt`, `waterAt`, `waterTop`, `maxY`, `spanOf` and `pick` work in fine voxels. Its GPU
 cost for a whole valley grows fast with `k`: the valley example measures about 19 MB at 20 voxels
 per metre, 126 MB at 50 and 560 MB at 100, which is why it defaults to 50 on a desktop and 20 on a
 phone.
+
+## On workers
+
+Sampling a height map and filling bricks are pure CPU work, and at fine scales they are most of a
+streamed world's cost on the thread that draws: the valley's 1280 × 1280 height map takes about
+1.5 s in the browser, and a 256² chunk of fine ground 20 to 40 ms in `fillBrick`. Everything a
+terrain is made of can travel as plain data, so a worker can rebuild the same terrain and fill
+its bricks, byte for byte what the main thread would write.
+
+| what | on the main thread | on the worker |
+|---|---|---|
+| the height map, in bands | `terrainSize(params)`, then stitch the bands into one `Int16Array` | [`terrainHeightsBand(params, seed, z0, z1)`](/docs/generators/api/gen-terrain/functions/terrainHeightsBand/): the rows `z0 <= z < z1`, unedited |
+| a coarse terrain | [`terrainInit(terrain)`](/docs/generators/api/gen-terrain/functions/terrainInit/): complete params, seed and a copy of the heights, levelling included | `generateTerrain(init.params, init.seed, { heights: init.heights })`: adopts the heights, samples nothing |
+| the settlement's surface | [`topOverrideData(terrain, top)`](/docs/generators/api/gen-terrain/functions/topOverrideData/): the `top` function evaluated once per column, as a `Uint8Array` | pass it to `fillBrick` as `top` |
+| a fine terrain | [`fineTerrainInit(fine, top?)`](/docs/generators/api/gen-terrain/functions/fineTerrainInit/): the coarse terrain, `k` and the options, `top` as data | [`fineTerrainFrom(init)`](/docs/generators/api/gen-terrain/functions/fineTerrainFrom/): the fine terrain, whose `fillBrick` applies the carried `top` |
+
+- **Heights are adopted, not copied.** `generateTerrain(params, seed, { heights })`
+  ([`TerrainBuild`](/docs/generators/api/gen-terrain/interfaces/TerrainBuild/)) uses the array as
+  the terrain's `heights` and throws a `RangeError` when its length does not match the params.
+  `terrainInit` copies them, so the init can be transferred while the terrain stays usable.
+- **Level first.** An init holds the heights as they are when it is made. Level the pads and
+  settle the paths before, and make a new one after any later edit.
+- **Bands are independent.** Each is exactly what `generateTerrain` samples there, so several
+  workers can each sample one; `heights.set(band, z0 * width)` stitches them.
+
+```ts
+import { generateTerrain, terrainInit, terrainSize, terrainHeightsBand, topOverrideData } from "@voxolith/gen-terrain";
+
+// The height map in two bands, each of which could come from a worker of its own.
+const { width, depth } = terrainSize(params);
+const heights = new Int16Array(width * depth);
+const mid = depth >> 1;
+heights.set(terrainHeightsBand(params, seed, 0, mid), 0);
+heights.set(terrainHeightsBand(params, seed, mid, depth), mid * width);
+const t = generateTerrain(params, seed, { heights }); // byte for byte generateTerrain(params, seed)
+
+// Level the pads, then send the terrain and the paths as data.
+level(t.heights);
+const init = terrainInit(t);
+const top = topOverrideData(t, paths);
+worker.postMessage({ init, top }, [init.heights.buffer, top.buffer]);
+
+// in the worker:
+// const terrain = generateTerrain(init.params, init.seed, { heights: init.heights });
+// terrain.fillBrick(cells, ox, oy, oz, base, top); // the same bricks as with the paths' function
+```
+
+For a streamed ground the engine does the moving: `makeChunkedWorld({ fill })` with a
+`makeChunkFillPool` whose `init` is `{ fine: fineTerrainInit(ground), base }`, and a worker file
+that calls `serveChunks` with `fineTerrainFrom`. The manual's
+[ground on workers](/docs/manual/managing-loading/#ground-on-workers) has the whole wiring. The
+examples sample the valley's height map in up to six bands on workers (about 0.45 s, measured)
+and fill its ground on up to six more, and the world page fills its coarse ground from `terrainInit` plus the
+paths as `topOverrideData`.
 
 ## Development
 

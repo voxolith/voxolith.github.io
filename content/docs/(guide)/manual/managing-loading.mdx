@@ -1,6 +1,6 @@
 ---
 title: Managing loading
-description: "The controls a Voxolith app has over its load: awaitable pipeline warm-up with prepare, static placement on a worker with commitAsync, a generation queue with priorities, aborts and pausing, and a model cache it can inspect, clear and trim."
+description: "The controls a Voxolith app has over its load: awaitable pipeline warm-up with prepare, model encoding and static placement on a scene worker with commitAsync, a generation queue with priorities, aborts and pausing, a model cache and a scene cache sized by the game, coarse models first with one swap to the fine ones, and ground filled on workers with readiness around the camera."
 ---
 
 What a game generates, in what order and what it waits for before the first picture are the
@@ -60,16 +60,17 @@ scene will need. A field left out is read from the renderer's state now:
 | `parts` | instances posed on the GPU (`Instance.parts`) will be drawn | a placed instance is posed now |
 | `temporal` | temporal accumulation will be on | the quality's `temporal` now; ignored by the fragment pipeline |
 | `target` | frames will go to an offscreen `RenderTarget` as well as the canvas | false |
+| `scaled` | instances of models added with a `scale` above 1 will be drawn ([coarse first](#coarse-first-one-swap)) | a placed instance draws one now |
 
 So pass a field for anything that arrives after the call: rats spawned later, temporal turned on
-from a settings menu, an instance set still baking on a [worker](#placement-off-the-main-thread)
+from a settings menu, an instance set still encoding or baking on a [scene worker](#the-scene-worker)
 (placed instances count only once they are applied). Which pipelines that makes depends on the
 renderer's [`pipeline`](/docs/renderer/api/renderer/interfaces/RendererOptions/#property-pipeline)
 mode:
 
 | `pipeline` | `prepare` compiles |
 |---|---|
-| `"fragment"` | the fragment pass for the plain scene and each variant asked for (`+instances`, `+parts`) |
+| `"fragment"` | the fragment pass for the plain scene and each variant asked for (`+instances`, `+parts`, each also `+scaled` with `scaled`) |
 | `"compute"` | the compute kernel for each of them, plus its temporal kernel when `temporal` is on |
 | `"auto"` (default) | as `"compute"`, except that posed instances also get the fragment `+parts` pass, since `"auto"` draws them as fragments unless temporal accumulation is on |
 
@@ -142,65 +143,145 @@ A second span means a later frame compiled a variant `prepare` was not asked for
 variant on its own, pair the starts and ends of a raw
 [`onLoad`](/docs/renderer/entry-points/#load-reporting) callback.
 
-## Placement off the main thread
+<span id="placement-off-the-main-thread" />
 
-A static instance set is placed by building its per-cell lists and sub-cell tables. That is CPU
-work, and `setInstances` does it on the main thread: on the nightwood forest about 0.65 s at 20
-voxels per metre, 5 s at 50 and 20 s at 100 (see
-[crowded cells](/docs/renderer/instances/#crowded-cells)). The same bake can run on a worker of its
-own while the page keeps drawing.
+## The scene worker
+
+Two CPU jobs of an instanced scene run on the main thread by default, and both take seconds for a
+fine one:
+
+- **Encoding the models.** The first time a static set names a model, `setStatic` uploads it with
+  `renderer.addModel`, which encodes its 8³ bricks for the GPU and lists the sub-cells the
+  placement reads.
+- **Baking the static set.** `commit()` builds the set's per-cell lists and sub-cell tables in
+  `setInstances`: on the nightwood forest about 0.65 s at 20 voxels per metre, 5 s at 50 and 20 s
+  at 100 (see [crowded cells](/docs/renderer/instances/#crowded-cells)).
+
+A **scene worker** runs both off the main thread while the page keeps drawing. The main thread
+keeps only the cheap halves: sending each model's bricks, claiming its pool slots, and copying the
+finished bake in.
 
 ### Wiring it up
 
-The worker file serves bakes:
+The worker file serves encodes and bakes:
 
-```ts title="placement.worker.ts"
-import { servePlacement } from "@voxolith/engine/worker";
+```ts title="scene.worker.ts"
+import { serveScene } from "@voxolith/engine/worker";
 
-servePlacement();
+serveScene();
 ```
 
-On the main thread, [`makePlacementWorker({ spawn })`](/docs/engine/api/worker/functions/makePlacementWorker/)
-starts it, and an instance layer given it as `placement` bakes its static set there when committed
-with [`commitAsync()`](/docs/engine/api/engine/interfaces/InstanceLayer/#commitasync):
+On the main thread, [`makeSceneWorker({ spawn })`](/docs/engine/api/worker/functions/makeSceneWorker/)
+starts it. Give it to an instance layer as `worker`, then commit with
+[`commitAsync()`](/docs/engine/api/engine/interfaces/InstanceLayer/#commitasync):
 
 ```ts
 import { makeInstanceLayer } from "@voxolith/engine";
-import { makePlacementWorker } from "@voxolith/engine/worker";
+import { makeSceneWorker } from "@voxolith/engine/worker";
 
-const placement = makePlacementWorker({
-  spawn: () => new Worker(new URL("./placement.worker.ts", import.meta.url), { type: "module" }),
+const worker = makeSceneWorker({
+  spawn: () => new Worker(new URL("./scene.worker.ts", import.meta.url), { type: "module" }),
 });
-const layer = makeInstanceLayer(renderer, { load, placement });
+const layer = makeInstanceLayer(renderer, { load, worker });
 
-layer.setStatic(scenery);   // uploads models it has not seen yet, on the main thread
-await layer.commitAsync();  // the bake runs on the worker; the page keeps drawing
+layer.setStatic(scenery);   // returns at once: new models go to the worker to be encoded
+await layer.commitAsync();  // encodes, adds and bakes; the page keeps drawing
 loop.invalidate();          // the new static set is drawing: render it
 ```
 
-The layer sends each model a static set names to the worker once, after its upload, and drops it
-there when the model is released. One worker can serve several layers and renderers. It is a
-worker of its own rather than a job for the [generator pool](#generation-queue-controls): a
-generator worker runs one generation after another, so a bake queued behind one would wait for it.
+One worker can serve several layers and renderers. It is a worker of its own rather than a job
+for the [generator pool](#generation-queue-controls): a generator worker runs one generation after
+another, so an encode or a bake queued behind one would wait for it. Encodes and bakes share its
+one queue, in the order they were asked for.
 
-`commit()` still places synchronously, and a layer without `placement` (or a target without the
-placement methods) makes `commitAsync()` the same as `commit()`, resolving at once. Only the bake
-moves: `setStatic` still uploads the models it has not seen on the main thread, and applying the
-finished bake copies its arrays into the renderer's buffers there too.
+On its own the worker computes everything again on every visit. With `serveScene({ cache })` it
+keeps the encodings and bakes in IndexedDB, and a warm visit reads them instead: see
+[caching encodings and bakes](#caching-encodings-and-bakes).
+
+### What runs where
+
+| step | where | notes |
+|---|---|---|
+| `setStatic(list)` | main thread | sends each model it has not seen to the worker and returns. A sparse model's bricks go in packed chunks, one task each (`chunkBricks`, 16384 bricks or 8 MiB by default); a dense model's arrays go in one message |
+| encode | worker | [`encodeModel`](/docs/renderer/api/renderer/functions/encodeModel/), in the order asked |
+| wait | main thread, idle | `commitAsync()` waits until every model of the set has landed |
+| reserve | main thread | [`reserveBricks`](/docs/renderer/api/renderer/classes/Renderer/#reservebricks) once for the batch, [below](#reserving-the-pools) |
+| add | main thread, paced | [`addEncodedModel`](/docs/renderer/api/renderer/classes/Renderer/#addencodedmodel) per model: claims its slots and copies its bytes in. Each add registers the model for placement on the worker by its keys alone, since the worker kept the sub-cells the encode listed |
+| bake | worker | the static set's per-cell lists and sub-cell tables |
+| apply | main thread | [`applyPlacement`](/docs/renderer/api/renderer/classes/Renderer/#applyplacement) copies the bake into the renderer's buffers |
+
+The adds are paced so that no one frame takes them all.
+[`uploadBudgetMs`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-uploadbudgetms)
+(8 ms by default) is how long `commitAsync` spends adding before it waits for the next frame. It
+adds at least one model per frame, so a big model gets a frame of its own and small ones share
+one. In the examples an add took from 1 to 37 ms per big model (measured).
+[`pace`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-pace) replaces that wait:
+by default it is the next painted frame, or 100 ms at most, since a hidden page draws no frames.
+
+```ts
+// A tighter frame budget while a crowd is already walking: 4 ms of adds, then the next frame.
+const layer = makeInstanceLayer(renderer, { load, worker, uploadBudgetMs: 4 });
+
+// A test or a headless tool with no frames to wait for: add everything in one go.
+const tool = makeInstanceLayer(renderer, { worker, uploadBudgetMs: Infinity, pace: async () => {} });
+```
+
+### Reserving the pools
+
+The brick pools grow as models are added, in 1.5x steps. A step copies the GPU pools into bigger
+buffers on the GPU (`copyBufferToBuffer`), which costs the main thread 1 ms or less, where
+re-uploading them from the CPU cost 150 to 270 ms at a few hundred MB (measured). What a step
+still costs is the CPU mirror of the pools, which reallocates and copies itself, and a moment in
+which the GPU holds the old buffers and the new ones. So `commitAsync` calls `reserveBricks` with
+every encoding of the batch first, while the pools are still small, and the adds after it only
+copy their own bricks. The only difference from adding without it is the pools' spare capacity:
+model ids, the index and everything drawn are the same.
+
+`reserveBricks` also takes brick counts, `{ bricks4, bricks8 }`, for content that is not encoded
+yet, such as the ground a streamed world is about to edit in. `renderer.stats()` reports `slots4`
+and `slots8` (the bricks the pools hold) and `cap4` and `cap8` (their room), so a comparable
+scene measured once gives the numbers. The headroom is capped at the device's buffer limits, and
+so is the CPU mirror, so a scene that fits the device still fits; one that does not throws, with
+the limit to raise. The [renderer's storage page](/docs/renderer/storage/#growth-and-limits) has
+the details. The examples tried a reservation for their ground up front and measured no gain
+after the first frame, so they leave the ground to grow the pools as it streams.
+
+### What the loading screen sees
+
+The `upload` phase counts differently on the two paths:
+
+- **On the main thread** (no scene worker), one tick per model.
+- **With a scene worker**, in **bricks**: each model is one task from its encode request to its
+  add, weighted by what it costs (its stored bricks, or every brick position of a dense model).
+  `done` follows the encode's progress on the worker but stays one short of the model's count
+  until it is added. A cancelled or failed encode leaves the phase, its progress included. At 100
+  voxels per metre that is millions of units, so show this phase's bar and not its numbers (the
+  examples' [`STEPS.encodedUpload`](/docs/manual/loading-screens/#each-page-lists-its-steps)).
+
+The `placement` phase is the same on both: one task from the bake request to its apply, described
+[below](#what-it-resolves-on). [`layer.uploads`](/docs/engine/api/engine/interfaces/InstanceLayer/#property-uploads)
+counts the models sent to be encoded and not yet added, and
+[`layer.baking`](/docs/engine/api/engine/interfaces/InstanceLayer/#property-baking) is true
+from `commitAsync()` until the set is drawing, encodes and adds included.
 
 ### What it saved in the examples
 
-Measured on a real GPU as the main thread's long tasks during the load, with the static set
-baked on a worker and the pipelines compiled by `prepare`, against the same pages before. These
-are measurements of those pages, not a promise for yours:
+Measured on a real GPU with a warm model cache: the longest main-thread task from the start of the
+upload to the first frame, with the models uploaded in `setStatic` and the set baked on a worker
+(before), against models encoded and the set baked on the scene worker (after). These are
+measurements of those pages, not a promise for yours:
 
-| page | main-thread long tasks |
-|---|---|
-| valley, 50 voxels per metre | 2073 ms → 835 ms |
-| nightwood, 20 voxels per metre | 777 ms → 180 ms |
-| nightwood, 50 voxels per metre | the placement's roughly 5 s freeze ran on the worker, with main-thread tasks of at most 86 ms meanwhile |
+| page | before | after |
+|---|---|---|
+| valley, 100 voxels per metre | 4.15 s | 74 ms |
+| valley, 50 voxels per metre | 0.85 s | 76 ms |
+| nightwood, 100 voxels per metre | 3.43 s | 168 ms (during the bake) |
+| nightwood, 50 voxels per metre | 0.76 s | 78 ms |
 
-What remains in the valley is mostly the model upload in `setStatic`, now its largest stall.
+The first frame barely moved: it waits for the bake, which now gates it. What changed is that
+the page keeps drawing and taking input all the way there. Order matters too: the valley streams
+its ground while the encodes run. Awaiting the uploads first gave the same first frame at 100
+voxels per metre, plus a task of 220 to 240 ms after it.
 
 ### What it resolves on
 
@@ -210,8 +291,7 @@ when the static set had not changed. Meanwhile:
 - the moving set is sent at once, as by `commit()`, and later `commit()` calls (a crowd's, every
   frame) keep sending only the moving set, so moving things keep moving;
 - the old static set keeps drawing until the new one is applied (nothing, before the first);
-- [`layer.baking`](/docs/engine/api/engine/interfaces/InstanceLayer/#property-baking) is true while a bake is in
-  flight;
+- `layer.baking` is true;
 - the `placement` phase is one task from the bake request to its apply, with the main thread free.
   Its total is the number of static placements, and its `done` follows the worker's progress (the
   bake's fraction of that count), held one short of the total until the apply ticks the last. A
@@ -226,13 +306,13 @@ resolves.
 import { makeFrameLoop } from "@voxolith/renderer";
 
 layer.setStatic(forest);
-const placed = layer.commitAsync(); // the bake starts on the worker
+const placed = layer.commitAsync(); // encodes, then the bake, on the worker
 
 const loop = makeFrameLoop({
   continuous: true, // a crowd is walking, so every frame is drawn anyway
   render() {
     layer.setDynamic(walkers());    // the moving set...
-    layer.commit();                 // ...goes out every frame; the static set is left to the bake
+    layer.commit();                 // ...goes out every frame; the static set is left to the worker
     placing.hidden = !layer.baking; // "Placing the forest..."
     renderer.render(frame());       // the old static set (here: none) until the bake applies
   },
@@ -241,77 +321,136 @@ const loop = makeFrameLoop({
 await placed; // the forest is drawing from the next frame
 ```
 
-### The newest bake wins
+A synchronous `commit()` after a `setStatic` does not wait: it adds the encodings that have landed
+(after one reservation for them), uploads the rest with `addModel` and places the set, all on the
+main thread. So does asking for a model's id with `layer.models.id(model)` while its encode is in
+flight: it is uploaded there and then.
+
+### The newest set wins
 
 Only the newest static set is applied. A `setStatic` followed by `commitAsync()` (or by a
-synchronous `commit()`) while a bake is in flight supersedes it: its result is dropped when it
-lands, and it leaves the `placement` total. If a model the bake names was removed or replaced
-while it ran, the layer takes the input again and re-bakes, rather than drawing the wrong model.
+synchronous `commit()`) while one is in flight supersedes it: its bake result is dropped when it
+lands, and it leaves the `placement` total. Models it already added stay added, and encodes of
+models the new set names too carry on, so a change of season that keeps the rocks does not encode
+them again. Encodes of models the new set does not name are cancelled, unless a `commitAsync()`
+still waits for them. If a model the bake names was removed or replaced while it ran, the layer
+takes the input again and re-bakes, rather than drawing the wrong model.
 
 ```ts
 layer.setStatic(summerForest);
-const first = layer.commitAsync();  // bake 1 starts
+const first = layer.commitAsync();  // encodes, then bake 1
 layer.setStatic(winterForest);      // the season changed before it finished
-const second = layer.commitAsync(); // bake 2 supersedes it
+const second = layer.commitAsync(); // supersedes it; models both name are encoded once
 
 await first;  // resolves too: "this call's set, or a newer one" is drawing
-await second; // the winter forest; bake 1 never drew, its result was dropped when it landed
+await second; // the winter forest; the summer set never drew
 ```
 
 ### Aborting
 
 `commitAsync({ signal })` takes an `AbortSignal`. Aborting drops the pending apply and rejects with
-`signal.reason`, unless another `commitAsync()` is still waiting for the same bake. The worker skips
-the bake if it has not started it; one that has started runs to the end and its result is dropped,
-because a bake is one synchronous call and cannot be interrupted.
+`signal.reason`, unless another `commitAsync()` is still waiting for the same set. Encodes carry
+on, since the static set still names their models. The worker skips the bake if it has not
+started it; one that has started runs to the end and its result is dropped, because a bake is one
+synchronous call and cannot be interrupted.
 
-Afterwards the static set counts as **unsent**: the next `commit()` places it synchronously, and
-the next `commitAsync()` bakes it again. A bake that fails on the worker rejects with the same
-effect. That makes a fallback short; the examples use this one:
+Afterwards the static set counts as **unsent**: the next `commit()` uploads what is missing and
+places it synchronously, and the next `commitAsync()` bakes it again. An encode or a bake that
+fails on the worker rejects with the same effect. That makes a fallback short; the examples use
+this one:
 
 ```ts
 try {
   await layer.commitAsync();
 } catch (err) {
-  console.warn("the worker's bake failed; placing on the main thread:", err);
+  console.warn("the scene worker failed; uploading and placing on the main thread:", err);
   layer.commit();
 }
 ```
 
+### Bake only, and the older names
+
+The scene worker used to be a placement worker, which only baked. Its names still work:
+
+| older name | now |
+|---|---|
+| [`makePlacementWorker({ spawn })`](/docs/engine/api/worker/functions/makePlacementWorker/) | deprecated: `makeSceneWorker` typed as the bake-only [`PlacementWorker`](/docs/engine/api/worker/interfaces/PlacementWorker/) |
+| [`servePlacement()`](/docs/engine/api/worker/functions/servePlacement/) | deprecated: `serveScene()`, so an existing `placement.worker.ts` also serves encodes |
+| `makeInstanceLayer(renderer, { placement })` | bakes on the worker as before; `setStatic` still uploads new models on the main thread |
+
+Moving to the new names is two lines, the worker's import and the layer's option. `worker` takes
+the place of `placement` when both are given. A target without
+[`addEncodedModel`](/docs/engine/api/engine/interfaces/InstanceTarget/#addencodedmodel) (an
+`InstanceTarget` of your own) only bakes on a scene worker, and uploads on the main thread.
+
+```ts
+import { makeInstanceLayer } from "@voxolith/engine";
+import { makeSceneWorker } from "@voxolith/engine/worker"; // was makePlacementWorker
+
+const worker = makeSceneWorker({ spawn }); // the worker file: serveScene(), was servePlacement()
+const layer = makeInstanceLayer(renderer, { load, worker }); // was { load, placement }
+```
+
 ### Driving it yourself
 
-The layer is a convenience over the renderer's split of `setInstances` into a headless bake and a
-cheap apply:
-[`placementModel(id)`](/docs/renderer/api/renderer/classes/Renderer/#placementmodel) (sent to the
-worker once per model), [`placementInput(list)`](/docs/renderer/api/renderer/classes/Renderer/#placementinput),
-[`bakePlacement`](/docs/renderer/api/renderer/functions/bakePlacement/) or a
-[`PlacementBaker`](/docs/renderer/api/renderer/classes/PlacementBaker/) on the worker, and
-[`applyPlacement(bake)`](/docs/renderer/api/renderer/classes/Renderer/#applyplacement). Both paths
-run the same code, so they upload the same bytes. The
-[renderer's instances page](/docs/renderer/instances/#baking-the-static-set-on-a-worker) has the
-details, and [`PlacementWorker`](/docs/engine/api/worker/interfaces/PlacementWorker/) has
-`register`, `drop` and `bake` for a host that uses the engine's worker without a layer.
+The layer is a convenience over two splits in the renderer, each a headless half for a worker and
+a cheap half for the main thread:
 
-Without the engine, the whole round trip is a few messages of your own:
+- **Encoding.** `addModel(src)` is
+  [`addEncodedModel`](/docs/renderer/api/renderer/classes/Renderer/#addencodedmodel)`(`[`encodeModel`](/docs/renderer/api/renderer/functions/encodeModel/)`(src))`:
+  encode on the worker, send the result back with
+  [`encodedTransferables`](/docs/renderer/api/renderer/functions/encodedTransferables/), and add it,
+  after one [`reserveBricks`](/docs/renderer/api/renderer/classes/Renderer/#reservebricks) for a
+  batch.
+- **Placement.** `setInstances` is
+  [`placementInput(list)`](/docs/renderer/api/renderer/classes/Renderer/#placementinput) on the main
+  thread, [`bakePlacement`](/docs/renderer/api/renderer/functions/bakePlacement/) or a
+  [`PlacementBaker`](/docs/renderer/api/renderer/classes/PlacementBaker/) on the worker, and
+  [`applyPlacement(bake)`](/docs/renderer/api/renderer/classes/Renderer/#applyplacement). The baker
+  needs each model's placement data: [`placementModel(id)`](/docs/renderer/api/renderer/classes/Renderer/#placementmodel)
+  sends it from the main thread, or, when the same worker encoded the model,
+  [`placementModelOf`](/docs/renderer/api/renderer/functions/placementModelOf/) builds it there from
+  the encoding and the keys the renderer gave it, so the sub-cells never travel back.
 
-<Tabs items={["main thread", "placement.worker.ts"]}>
+Both halves of each run the same code as the one-step calls, so they upload the same bytes. The
+[renderer's instances page](/docs/renderer/instances/#encoding-models-on-a-worker) has the details,
+and [`SceneWorker`](/docs/engine/api/worker/interfaces/SceneWorker/) has `encode`,
+`registerEncoded`, `forget`, `register`, `drop` and `bake` for a host that uses the engine's worker
+without a layer.
+
+Without the engine, the whole round trip is a few messages of your own. This one encodes a batch,
+keeps the sub-cells on the worker, and bakes:
+
+<Tabs items={["main thread", "scene.worker.ts"]}>
 <Tab value="main thread">
 
 ```ts
-import type { Instance, PlacementBake } from "@voxolith/renderer";
+import type { EncodedModel, Instance, ModelSource, PlacementBake } from "@voxolith/renderer";
 
-const worker = new Worker(new URL("./placement.worker.ts", import.meta.url), { type: "module" });
-const oak = renderer.addModel({ size: tree.model.size, data: tree.model.data });
-worker.postMessage({ type: "model", model: renderer.placementModel(oak) }); // once per model
+type Reply =
+  | { id: number; encoded: EncodedModel }
+  | { id: number; done: number; total: number }
+  | { id: number; bake: PlacementBake };
 
+const worker = new Worker(new URL("./scene.worker.ts", import.meta.url), { type: "module" });
+const waiting = new Map<number, (e: EncodedModel) => void>();
+let nextId = 0;
 let latest = 0;
 let scenery: Instance[] = [];
+
+function encode(model: ModelSource): Promise<{ job: number; encoded: EncodedModel }> {
+  const job = ++nextId;
+  worker.postMessage({ type: "encode", id: job, model }); // a big sparse Map clones slowly: chunk it
+  return new Promise((resolve) => waiting.set(job, (encoded) => resolve({ job, encoded })));
+}
+
 function placeStatic(list: Instance[]): void {
   scenery = list;
-  worker.postMessage({ type: "bake", id: ++latest, input: renderer.placementInput(list) });
+  worker.postMessage({ type: "bake", id: (latest = ++nextId), input: renderer.placementInput(list) });
 }
-type Reply = { id: number; done: number; total: number } | { id: number; bake: PlacementBake };
+
 worker.onmessage = ({ data }: MessageEvent<Reply>) => {
+  if ("encoded" in data) return waiting.get(data.id)?.(data.encoded);
   if (data.id !== latest) return; // a newer static set was asked for: drop this one
   if (!("bake" in data)) {
     bar.value = data.done / data.total; // opaque units: only the fraction means anything
@@ -325,24 +464,54 @@ worker.onmessage = ({ data }: MessageEvent<Reply>) => {
   }
 };
 
-placeStatic(sites.map((s) => ({ model: oak, x: s.x, y: s.y, z: s.z, yaw: s.yaw, base: oakPalette })));
+// Encode the batch there, grow the pools once, add here (a page would add one per frame).
+const batch = await Promise.all(trees.map((t) => encode({ size: t.model.size, data: t.model.data })));
+renderer.reserveBricks(batch.map((b) => b.encoded));
+const ids = batch.map(({ job, encoded }) => {
+  const id = renderer.addEncodedModel(encoded);
+  const { key, poseKey } = renderer.placementModel(id)!;
+  worker.postMessage({ type: "keys", id: job, keys: { key, poseKey } }); // register it for the bake
+  return id;
+});
+
+placeStatic(sites.map((s, i) => ({ model: ids[i % ids.length], x: s.x, y: s.y, z: s.z, yaw: s.yaw, base: oakPalette })));
 ```
 
 </Tab>
-<Tab value="placement.worker.ts">
+<Tab value="scene.worker.ts">
 
-```ts title="placement.worker.ts"
-import { PlacementBaker, placementTransferables, type PlacementInput, type PlacementModel } from "@voxolith/renderer/core";
+```ts title="scene.worker.ts"
+import {
+  PlacementBaker,
+  encodeModel,
+  encodedTransferables,
+  placementModelOf,
+  placementTransferables,
+  type EncodedModel,
+  type ModelSource,
+  type PlacementInput,
+  type PlacementKeys,
+} from "@voxolith/renderer/core";
 
 type Message =
-  | { type: "model"; model: PlacementModel }
-  | { type: "drop"; key: number } // after renderer.removeModel
+  | { type: "encode"; id: number; model: ModelSource }
+  | { type: "keys"; id: number; keys: PlacementKeys } // after renderer.addEncodedModel
+  | { type: "drop"; key: number }                     // after renderer.removeModel
   | { type: "bake"; id: number; input: PlacementInput };
 
 const baker = new PlacementBaker();
+const kept = new Map<number, EncodedModel>(); // encodings waiting for their keys
+
 self.onmessage = ({ data }: MessageEvent<Message>) => {
-  if (data.type === "model") baker.register(data.model);
-  else if (data.type === "drop") baker.unregister(data.key);
+  if (data.type === "encode") {
+    const encoded = encodeModel(data.model);
+    // Everything moves to the main thread but the sub-cells, which the bake reads here.
+    self.postMessage({ id: data.id, encoded }, { transfer: encodedTransferables(encoded, { keepPlacement: true }) });
+    kept.set(data.id, encoded);
+  } else if (data.type === "keys") {
+    baker.register(placementModelOf(kept.get(data.id)!, data.keys));
+    kept.delete(data.id);
+  } else if (data.type === "drop") baker.unregister(data.key);
   else {
     const onProgress = (done: number, total: number) => self.postMessage({ id: data.id, done, total });
     const bake = baker.bake(data.input, { onProgress }); // (0, total) first, (total, total) last
@@ -355,6 +524,38 @@ self.onmessage = ({ data }: MessageEvent<Message>) => {
 </Tabs>
 
 The worker imports only `@voxolith/renderer/core`, which needs no DOM, GPU or bundler plugin.
+Messages to one worker are handled in order, so a `keys` posted before a `bake` is seen before it.
+An encoding carries [`ENCODED_MODEL_VERSION`](/docs/renderer/api/renderer/variables/ENCODED_MODEL_VERSION/),
+and `addEncodedModel` throws on any other, so a host that caches encodings keys them by it.
+
+A host that caches **bakes** of its own has one more problem: a bake names models by renderer id,
+and ids differ between visits. [`normalizePlacement(bake)`](/docs/renderer/api/renderer/functions/normalizePlacement/)
+takes them out (models are numbered by first appearance in the set) for storing, and
+[`bindPlacement(stored, input)`](/docs/renderer/api/renderer/functions/bindPlacement/) puts this
+visit's ids and keys back from the input. The result is byte for byte what `bake(input)` would
+give, provided the key under which it was stored covers everything the bake reads: the grid, the
+instances in order with each model named by its content rather than its id, those models'
+placement data, and [`PLACEMENT_BAKE_VERSION`](/docs/renderer/api/renderer/variables/PLACEMENT_BAKE_VERSION/).
+`bindPlacement` checks only what it can without the models (the grid, the instance count and the
+pattern in which the input names its models) and throws otherwise. In the worker above:
+
+```ts
+import { bindPlacement, normalizePlacement, PLACEMENT_BAKE_VERSION, type PlacementBake, type PlacementInput } from "@voxolith/renderer/core";
+
+// `store` is yours (IndexedDB, say); `digestOf` hashes the grid, the instances and their models' content.
+async function bakeCached(input: PlacementInput): Promise<PlacementBake> {
+  const key = `placement|v${PLACEMENT_BAKE_VERSION}|${digestOf(input)}`;
+  const stored = await store.get(key);
+  if (stored) return bindPlacement(stored, input); // this visit's ids; throws on another set
+  const bake = baker.bake(input);
+  await store.put(key, normalizePlacement(bake)); // store it before transferring: they share arrays
+  return bake;
+}
+```
+
+`normalizePlacement` copies only the instance records; the other arrays are the bake's own, so
+store (or copy) the normalised bake before the original is transferred. The engine's
+[scene cache](#caching-encodings-and-bakes) does all of this.
 
 ## Generation queue controls
 
@@ -492,6 +693,10 @@ of the form `salt|generator@version|seed|params|context`, where the salt is the 
 URL. A production build hashes that URL, so new generator code never reads a model the old code
 made, and a worker opening the cache deletes every entry stored under another salt.
 
+It is also what serves models offline. The app's service worker caches its code and fetched
+files, not models; with both, a page opened offline reads its models from here and generates the
+rest in the browser ([Offline and installing](/docs/manual/offline-and-installing/#what-offline-covers)).
+
 ### Inspecting, clearing and trimming
 
 [`openModelCacheControls(name)`](/docs/engine/api/worker/functions/openModelCacheControls/) opens
@@ -539,11 +744,49 @@ import { registerTreeGenerators } from "@voxolith/gen-tree";
 import { serveGenerators } from "@voxolith/engine/worker";
 
 registerTreeGenerators();
-serveGenerators({
-  // At most about 200 MB of deflated models, least recently used out first.
-  cache: import.meta.env.DEV ? undefined : { name: "my-game-models", maxBytes: 200e6 },
-});
+// Measured: every scene of this game stores 106 MB of models. 256 MiB leaves room to grow.
+serveGenerators({ cache: import.meta.env.DEV ? undefined : { name: "my-game-models", maxBytes: 256 * 1024 ** 2 } });
 ```
+
+### Sizing a cap
+
+The engine picks no cap: what a game stores depends on its scenes, scales and variants, so each
+game sizes its own. Measure rather than guess:
+
+1. Build for production (the caches are off in development) and leave `maxBytes` out.
+2. Load each of the game's heaviest scenes once, on an empty cache.
+3. Read what the caches hold from the main thread, and set each cap to that plus headroom for
+   more variants and for generators that grow.
+
+```ts
+import { openModelCacheControls, openSceneCacheControls } from "@voxolith/engine/worker";
+
+// A production build, the caps left out, after loading the heaviest scenes once:
+const models = await openModelCacheControls("my-game-models");
+const scene = await openSceneCacheControls("my-game-scene");
+const mb = (n = 0) => `${(n / 1e6).toFixed(0)} MB`;
+console.log(`models ${mb((await models?.usage())?.bytes)}, scene ${mb((await scene?.usage())?.bytes)}`);
+```
+
+The examples did this for every page at every scale: 106 MB of models under a 256 MiB cap, and
+1816 MB of encodings and bakes under a 2.5 GiB scene cap (measured; the per-page sizes are in the
+comments of their [`gen.worker.ts`](https://github.com/voxolith/examples/blob/main/src/world/gen.worker.ts)
+and [`placement.worker.ts`](https://github.com/voxolith/examples/blob/main/src/shared/placement.worker.ts)).
+A cap below what one session needs evicts the models of the scene the player just left, and the
+next visit to it is cold.
+
+The engine checks the value, the same way for both caches:
+
+| `maxBytes` | what happens |
+|---|---|
+| not a positive, finite number (0, a negative, `NaN`, `Infinity`, a string) | the serve call throws a `RangeError` when the worker starts; leave it out for no cap |
+| under [`CACHE_CAP_FLOOR`](/docs/engine/api/worker/variables/CACHE_CAP_FLOOR/) (16 MiB) | a warning: one model or bake at a fine scale is often bigger, so the cache keeps little |
+| above the origin's quota (`navigator.storage.estimate()`) | a warning: the browser evicts before the cap is reached, so the cap never applies |
+| smaller than an entry | a warning at the first such entry, which is not kept and is rebuilt every visit; later ones are skipped silently |
+
+Each warning comes once per cache, with `console.warn`, and since every worker opens its own
+cache, a pool of four workers may warn four times. The warnings say what to do: size the cap from
+`usage()`, or ask for more room with `navigator.storage.persist()`.
 
 ### Phones
 
@@ -596,6 +839,503 @@ The cache database is at version 2, which added the per-entry records the contro
 Version-1 records have none, so the upgrade drops them: the first visit after an app moves to this
 engine version generates everything once, and caches as before from then on.
 
+### How models come back
+
+A generator worker posts each entity **packed**
+([`PackedEntity`](/docs/engine/api/worker/interfaces/PackedEntity/)): a small header plus one
+byte buffer holding a sparse model's brick keys and bricks (or its dense data) and its bones, and
+it transfers that one buffer. A cache hit posts the stored record as it is, without rebuilding the
+entity on the worker. The pool unpacks it on the main thread into views of that buffer: a `Map`
+entry per brick, no copies.
+
+It used to transfer every 512-byte brick as a buffer of its own, and that, not IndexedDB, was the
+slow part of a warm visit: nightwood's twelve models at 100 voxels per metre are about 800k bricks.
+Measured on the nightwood page at 100 voxels per metre with a warm model cache, the `models` phase
+went from 7.4 s to 0.28 s. Nothing changes for the caller: `generate` still resolves with an
+`Entity`.
+
+## Caching encodings and bakes
+
+The model cache saves the generation. A warm visit still encodes every model for the GPU and bakes
+the static set again, and at 100 voxels per metre that is most of the load: nightwood spends about
+3 s encoding and 20 s baking. Both are pure functions of their inputs, so the
+[scene worker](#the-scene-worker) can keep them too. It is opt-in, in two places:
+
+<Tabs items={["scene.worker.ts", "main thread"]}>
+<Tab value="scene.worker.ts">
+
+```ts title="scene.worker.ts"
+import { serveScene } from "@voxolith/engine/worker";
+
+serveScene({
+  // Sized from usage(): this game's scenes store about 700 MB. Off in development (below).
+  cache: import.meta.env.DEV ? undefined : { name: "my-game-scene", maxBytes: 1024 ** 3 },
+});
+```
+
+</Tab>
+<Tab value="main thread">
+
+```ts
+import { makeInstanceLayer } from "@voxolith/engine";
+import { makeGeneratorPool, makeSceneWorker } from "@voxolith/engine/worker";
+
+const pool = makeGeneratorPool({ spawn: spawnGenerators, load });
+const worker = makeSceneWorker({ spawn: spawnScene });
+// modelKey: a cached encoding is found by what made the model, before any of its bricks are sent.
+const layer = makeInstanceLayer(renderer, { load, worker, modelKey: pool.modelKey });
+
+layer.setStatic(scenery);
+await layer.commitAsync(); // warm: read, not encoded or baked
+```
+
+</Tab>
+</Tabs>
+
+[`ServeSceneCacheOptions`](/docs/engine/api/worker/interfaces/ServeSceneCacheOptions/) is the
+object form: `name`, `maxBytes`, `compress`, and `store` for a
+[`CacheStore`](/docs/engine/api/worker/interfaces/CacheStore/) of your own
+([`memoryCacheStore()`](/docs/engine/api/worker/functions/memoryCacheStore/) in tests). A string is
+the name alone. Where there is no IndexedDB the cache is off and everything is computed as before.
+
+### What is cached, and under which key
+
+| entry | key | what the digest covers | stored |
+|---|---|---|---|
+| an encoding | `encoded\|v<ENCODED_MODEL_VERSION>\|<digest>` | the model's identity (below), its part boxes and its joints | the whole [`EncodedModel`](/docs/renderer/api/renderer/interfaces/EncodedModel/), sub-cells included |
+| a bake | `placement\|v<PLACEMENT_BAKE_VERSION>\|r<record>\|<digest>` | the grid; every instance in order (position, anchor, yaw, rotation, mirror, palette base, parts), each naming its model by the digest of its placement data rather than its id; which instances share poses; and each model's placement data (size, sub-cells, part boxes, joints) | the [`PlacementBake`](/docs/renderer/api/renderer/interfaces/PlacementBake/), normalised |
+
+Every key is prefixed with a **salt**, the scene worker's script URL, as the model cache's is: a
+production build hashes that URL, so new renderer code never reads what older code stored, and
+opening the cache deletes every entry stored under another salt. `r<record>` is the layout of the
+stored record itself.
+
+**Why the ids are left out.** The renderer numbers models by free slot, so the same scene can get
+different ids on another visit: another layer added a model first, an encode landed in another
+order, a model was removed and its slot reused. A key with the ids in it would miss for no
+reason, and a bake stored with them would name the wrong models when applied. So the key names
+each model by its content, the bake is stored with its models numbered by order of first
+appearance in the set (the renderer's
+[`normalizePlacement`](/docs/renderer/api/renderer/functions/normalizePlacement/)), and on a hit the
+worker binds it to this visit's ids and keys
+([`bindPlacement`](/docs/renderer/api/renderer/functions/bindPlacement/)) before posting it. What
+the main thread applies is byte for byte what a fresh bake would be.
+
+A bake needs nothing from the host: the worker already holds the placement data of every model it
+bakes against, so it digests those. An encoding does, because its identity has to be known before
+the model is sent.
+
+### modelKey or hashModels
+
+An encoding is looked up by the identity of the model's voxels. Two ways to give one, and a model
+with neither is not cached (its bake still is):
+
+- **[`modelKey`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-modelkey)**, a
+  function from a model to a string. [`pool.modelKey`](/docs/engine/api/worker/interfaces/GeneratorPool/#property-modelkey)
+  names what made a model the pool returned: the generator worker's URL (hashed in production, so
+  it changes with the generator code), the generator id and version, the seed, the parameters and
+  the context. The layer asks the worker for the key before anything is sent, so on a hit the main
+  thread never packs or posts the model's bricks: one round trip, and the stored encoding comes
+  back.
+- **[`hashModels: true`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-hashmodels)**,
+  for models with no key: the worker hashes the source's bytes (about 30 ms per 100 MB) and looks
+  the encoding up by that. The bricks are sent in full on every visit, so this saves only the
+  encode.
+
+When each is honest:
+
+- A **key** is only as good as its promise that it changes whenever the voxels do. A generated
+  model, as generated, keeps that promise, since generation is deterministic. A model you edited
+  afterwards (carved, wounded, recoloured voxel by voxel) does not: return `undefined` for it.
+  A key two different models share hands the second the first one's encoding, without an error.
+- A **hash** is always honest, since it is the content. Use it for models the page builds itself.
+  The [instances](/docs/examples/instances/) example grows its trees on the main thread, with no
+  pool and so no key, and uses `hashModels`.
+
+```ts
+// Generated models by key, edited ones by hash.
+const layer = makeInstanceLayer(renderer, {
+  load,
+  worker,
+  modelKey: (m) => (edited.has(m) ? undefined : pool.modelKey(m)),
+  hashModels: true, // only for models modelKey gives no key
+});
+```
+
+### Versions
+
+Both formats carry a version in their keys:
+[`ENCODED_MODEL_VERSION`](/docs/renderer/api/renderer/variables/ENCODED_MODEL_VERSION/) and
+[`PLACEMENT_BAKE_VERSION`](/docs/renderer/api/renderer/variables/PLACEMENT_BAKE_VERSION/). The
+renderer bumps them whenever the same input would encode or bake differently; its checks hold a
+digest of a fixed scene's bake next to the version it was recorded under, and fail when the bake
+changes and the version does not. In a production build the salt already changes with any new
+code, so the versions are for builds whose worker URL stays the same. A bump makes the old entries
+unreachable, not gone: they leave by the cap, by the browser, or by a `clear()`.
+
+### Storage against speed
+
+What each example page adds to the scene cache, visited in this order on an empty cache (a
+production build in desktop Chrome, from the comment in the examples'
+[`placement.worker.ts`](https://github.com/voxolith/examples/blob/main/src/shared/placement.worker.ts)).
+At 50 and 100 voxels per metre the pages load [coarse first](#coarse-first-one-swap), so they
+keep two stages: the coarse models' encodings are small, but their bake is about as big as the
+fine one, since the tables are laid out in world cells, not model voxels.
+
+| page | stored |
+|---|---|
+| valley, 20 voxels per metre | 17 MB |
+| valley, 50 voxels per metre | 177 MB |
+| valley, 100 voxels per metre | 824 MB |
+| nightwood, 20 voxels per metre | 13 MB |
+| nightwood, 50 voxels per metre | 129 MB |
+| nightwood, 100 voxels per metre | 655 MB |
+| instances | 1 MB |
+| every page | 1816 MB |
+
+That is much more than the models (which are deflated), because an encoding is what the GPU
+reads. Entries are stored **as they are** by default. With
+[`compress: true`](/docs/engine/api/worker/interfaces/SceneCacheOptions/#property-compress) they
+are deflated, about 6 to 7 times smaller on nightwood at 100 voxels per metre, but deflating them
+takes about 14 s of the worker's time after a first visit (only while it is not baking), and
+inflating adds about 0.8 s to every warm visit, where reading them as they are takes about 0.2 s.
+So compression is for storage that is tight, not for speed; with it, give `makeSceneWorker` a
+longer [`closeTimeoutMs`](/docs/engine/api/worker/interfaces/SceneWorkerOptions/#property-closetimeoutms),
+or a short visit's writes are lost.
+
+The examples chose speed with a cap sized to what they store: `maxBytes` of 2.5 GiB for the
+1816 MB above, which leaves about 45% for `?variants=` above the default and for generators that
+grow. So a visitor who opens every page at every scale evicts nothing. After each write the least
+recently used entries are evicted until the cache fits, and a result bigger than the cap is not
+kept at all. Without a cap the cache grows until the browser's quota stops it, and a write that
+fails keeps nothing. Size a game's own cap [the same way](#sizing-a-cap), and on phones the
+[same advice](#phones) as for the model cache applies.
+
+### What it saved in the examples
+
+Measured on a real GPU in desktop Chrome, warm (the second visit): the first frame with the model
+cache alone (before), and with the scene cache as well (after). These are measurements of those
+pages, not a promise for yours:
+
+| page | before | after |
+|---|---|---|
+| nightwood, 100 voxels per metre | 30.8 s | 13.9 s |
+| valley, 100 voxels per metre | 13.6 s | 6.4 s |
+| nightwood, 50 voxels per metre | 6.6 s | 3.7 s |
+| valley, 50 voxels per metre | 4.9 s | 3.1 s |
+
+A warm `placement` phase took 59 to 127 ms. Warm nightwood at 100 voxels per metre then waited on the
+ground it streams, not on the scene; [coarse first](#what-it-gave-the-examples) and
+[ground on workers](#ground-on-workers) took the first frames down from there.
+
+### Inspecting and clearing it
+
+[`openSceneCacheControls(name)`](/docs/engine/api/worker/functions/openSceneCacheControls/) opens
+[`SceneCacheControls`](/docs/engine/api/worker/interfaces/SceneCacheControls/) on the main thread,
+while the worker uses the cache: `entries`, `usage`, `clear`, `trim` and `close`, as for the model
+cache, with a [`SceneCacheFilter`](/docs/engine/api/worker/interfaces/SceneCacheFilter/) by `kind`
+(`"encoded"` or `"placement"`) and `salt`. They read only the small per-entry records, and it
+returns `null` where there is no IndexedDB.
+[`makeSceneCacheControls(store)`](/docs/engine/api/worker/functions/makeSceneCacheControls/) is
+the same on a `CacheStore` of your own. Nothing runs by itself.
+
+```ts
+import { openSceneCacheControls } from "@voxolith/engine/worker";
+
+const scene = await openSceneCacheControls("my-game-scene"); // the name serveScene was given
+if (scene) {
+  const enc = await scene.usage({ kind: "encoded" });
+  const bakes = await scene.usage({ kind: "placement" });
+  settings.sceneCacheLabel = `${enc.entries} models, ${bakes.entries} scenes, ${((enc.bytes + bakes.bytes) / 1e6).toFixed(0)} MB`;
+  onClearCacheClicked(() => scene.clear());
+}
+```
+
+### Off in development, and one name each
+
+<Callout type="warn" title="Off in development">
+  A dev server's worker URL does not change with the code, so edited renderer code would be served
+  what older code stored. Leave the cache off there (`import.meta.env.DEV ? undefined : ...`), as
+  for the model cache. `pool.modelKey` has the same limit in development: its key does not change
+  when you edit a generator.
+</Callout>
+
+Give the scene cache a database name of its own, not the model cache's: the two workers have
+different salts, and opening a cache deletes every entry stored under another salt.
+
+### Destroying the worker
+
+[`destroy()`](/docs/engine/api/worker/interfaces/SceneWorker/#destroy) returns a promise, as the
+pool's does. Pending jobs reject at once. A worker still running a job is terminated at once; an
+idle one first finishes its cache writes (up to `closeTimeoutMs`, 10 s by default), so what it just
+made is there next visit. The writes come after the results are posted, so a page that destroys
+the worker right after its last `commitAsync()` still keeps them. Don't make a first frame wait for
+it:
+
+```ts
+await layer.commitAsync();
+void worker.destroy(); // the bake is drawing; its cache write finishes in the background
+```
+
+The deprecated `PlacementWorker` has the same `destroy()`.
+
+## Coarse first, one swap
+
+A fine scene is slow to show because its models are big: at 100 voxels per metre nightwood's
+twelve models are about 800k bricks, and all of them are generated, encoded and baked before a
+fine picture exists. Every entity generator builds the same design at its native 10 voxels per
+metre in a fraction of that time, with the same extent and anchor as at its finer scales, and
+[the contract](/docs/generators/the-contract/) checks that a finer scale stays within one native
+voxel of the native model. So a page can show the scene with those coarse models drawn enlarged,
+and swap in the fine ones when they are ready.
+
+It takes three pieces, all opt-in:
+
+- **Scaled placements.** [`EntityPlacement.scale`](/docs/engine/api/engine/interfaces/EntityPlacement/#property-scale)
+  draws a model enlarged by an integer factor: each of its voxels covers `scale`³ world voxels.
+  The factor is the world's resolution over the model's, so a 10 voxels per metre model in a 100
+  voxels per metre world takes 10. The layer places the anchor at `scale × anchor`, which is where
+  the generator puts the fine model's anchor, so the coarse model and the fine one share a
+  placement. The scale is not read from the model, because only the app knows the world's
+  resolution. The layer holds one renderer model per model and scale, and encodes each model
+  once, since one encoding serves every scale.
+- **The swap.** Give the fine set to `setStatic` and call `commitAsync()` **in the same task**.
+  The coarse set keeps drawing while the fine models encode, add and bake. The fine set replaces
+  it in one apply, so the swap is one frame. Once the fine set is drawing, the layer releases the
+  coarse models it no longer needs. The same task matters because a `commit()` in between (a
+  crowd commits every frame) would place the fine set synchronously, on the main thread.
+- **Both pipeline variants.** Scaled models are drawn by a pipeline variant of their own (the
+  renderer's `SCALED` constant), which a scene without them never compiles. With
+  `deferPipelines`, prepare both up front: `prepare({ instances: true, scaled: true })` for the
+  coarse set, and `prepare({ instances: true })` for after the swap. Otherwise the first frame
+  after the swap compiles the plain variant.
+
+```ts
+import { makeInstanceLayer, type Entity, type EntityPlacement } from "@voxolith/engine";
+import { makeGeneratorPool, makeSceneWorker } from "@voxolith/engine/worker";
+
+const VPM = 100;     // the world's resolution
+const K = VPM / 10;  // the coarse models are built at the generators' native 10 voxels per metre
+
+const pool = makeGeneratorPool({ spawn: spawnGenerators, load });
+const worker = makeSceneWorker({ spawn: spawnScene });
+const layer = makeInstanceLayer(renderer, { load, worker, modelKey: pool.modelKey });
+
+// The same specs twice: coarse first, fine queued behind them on the same workers.
+const coarse = pool.generateMany(specs.map((s) => ({ ...s, ctx: { voxelsPerMetre: 10 } })));
+const fine = pool.generateMany(specs.map((s) => ({ ...s, ctx: { voxelsPerMetre: VPM } })));
+
+// Both variants: scaled models for the coarse set, plain ones for after the swap.
+const compiled = renderer.prepare({ instances: true, scaled: true });
+const compiledFine = renderer.prepare({ instances: true });
+
+// One placement per site, whichever stage's models it draws.
+const place = (models: Entity[], scale: number): EntityPlacement[] =>
+  sites.map((s) => ({ model: models[s.variant].model, x: s.x, y: s.y, z: s.z, yaw: s.yaw, base: s.base, scale }));
+
+layer.setStatic(place(await coarse, K));
+await Promise.all([compiled, layer.commitAsync()]);
+loop.invalidate();
+loadingScreen.ready(); // the scene is up, coarse
+
+// The swap: setStatic and commitAsync in one task, so no commit() (a crowd's) comes in between.
+const models = await fine;
+await compiledFine;
+layer.setStatic(place(models, 1));
+await layer.commitAsync(); // the coarse set draws until this applies; its models are released after
+loop.invalidate();
+```
+
+Every scale of a model has the same roles, so both stages share their palettes. What the swap
+does not release:
+
+- models whose id the host asked for with `layer.models.id(model, scale)`, which are the host's to
+  release;
+- everything, with [`keepUnused: true`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-keepunused),
+  for a host that switches between the same sets and would rather keep their models on the GPU.
+
+Things to know before copying it:
+
+- **Scaled models are drawn at rest.** Posing one (a placement with `parts`) throws, so keep
+  animated things, such as the valley's rats, out of the coarse stage.
+- **The coarse stage is visibly coarse.** Close up, 10 cm voxels are blocks, and undergrowth
+  built at 10 voxels per metre is denser than its fine version, so it visibly thins at the swap.
+  That is within the contract, which bounds a model's extent, not its density.
+- **It costs a second bake.** The coarse set is baked too, and cached too: its encodings are
+  small, but its bake is about as big as the fine one, since the tables are laid out in world
+  cells, not model voxels.
+- **It does not pay at every scale.** At 20 voxels per metre the factor is 2 and the fine models
+  cost about a tenth of those at 50, so the examples' pages at 20 are up in about 2 s warm, most of
+  it terrain and ground, which a coarse stage does not shorten. The examples use it at 50 and 100
+  only; their `?coarse=0` turns it off.
+- **Tell the stages apart on the loading screen.** The engine's loaders report both stages under
+  the same phases. The examples wrap their tracker so that the fine stage's tasks go under phases
+  of their own (`fine.models`, `fine.upload`, `fine.placement`), shown as rows in the corner pill
+  after the first picture, and mark `fine` when the swap has applied; that is example code, in
+  [`shared/detail.ts`](https://github.com/voxolith/examples/blob/main/src/shared/detail.ts).
+
+### What it gave the examples
+
+Measured on a real GPU in desktop Chrome, the warm first frame (the second visit) with the model
+cache alone, with the scene cache as well, and now: coarse first, the ground filled on workers
+(below) and the terrain sampled on workers. These are measurements of those pages, not a promise
+for yours:
+
+| page | model cache | + scene cache | now |
+|---|---|---|---|
+| nightwood, 100 voxels per metre | 30.8 s | 13.9 s | 1.0 s |
+| valley, 100 voxels per metre | 13.6 s | 6.4 s | 2.5 s |
+| nightwood, 50 voxels per metre | 6.6 s | 3.7 s | 0.5 s |
+| valley, 50 voxels per metre | 4.9 s | 3.1 s | 1.4 s |
+
+The swap itself is one frame. The valley is the slower of the two because its first picture
+waits for more ground: 18 m around the view, against nightwood's 8 m (the
+[near-ground gate](#ready-around-the-camera)).
+
+## Ground on workers
+
+The streamed ground is the other half of a first view. At 100 voxels per metre a 256² chunk of
+gen-terrain's fine ground cost 50 to 57 ms on the main thread, the fill and the brick upload
+together, and a view needs dozens of chunks. Two opt-in pieces: knowing when the ground near the
+camera is in, and filling the chunks on workers.
+
+### Ready around the camera
+
+A [`ChunkedWorld`](/docs/engine/api/engine/interfaces/ChunkedWorld/) reports its readiness as
+data, for a loading screen to wait on:
+
+| call | gives |
+|---|---|
+| [`pendingWithin(x, z, radius)`](/docs/engine/api/engine/interfaces/ChunkedWorld/#pendingwithin) | how many chunks whose centre lies within `radius` of (x, z) are not built yet, queued or not |
+| [`readyAround(x, z, radius)`](/docs/engine/api/engine/interfaces/ChunkedWorld/#readyaround) | `pendingWithin(...) === 0` |
+| [`whenReady(x, z, radius, { signal })`](/docs/engine/api/engine/interfaces/ChunkedWorld/#whenready) | resolves once `readyAround` holds: at once, or after the `step` that builds the last missing chunk; rejects with `signal.reason`, or with the error when a chunk there failed to fill |
+
+- **The world builds only in `step`**, and only what `focus` queued. So keep stepping (the frame
+  loop does), and focus on at least `radius` around the point, or `whenReady` never resolves.
+- **Chunk centres are what is tested**, as `focus` tests them. To cover a disc of ground, add half
+  a chunk's diagonal (`chunk * Math.SQRT1_2`), which takes every chunk that reaches into it.
+- **The queue follows the focus.** When the focus moves, chunks still queued are re-ranked from
+  the new point, so the queue stays nearest first wherever the camera went.
+
+The examples call their use of it the near-ground gate: the first picture waits for the ground
+within `?near=` metres of the view (8 on nightwood, 18 on the valley), and the rest of the
+streamed radius comes in after it, nearest first. A smaller gate shows the page sooner, with holes
+at the edge of the first view where chunks are still missing.
+
+### Filling chunks on workers
+
+`makeChunkedWorld({ fill })` fills chunks off the main thread. The main thread only copies the
+bricks that come back in, nearest first, within `step`'s budget:
+
+- [`makeChunkFillPool({ spawn, init })`](/docs/engine/api/worker/functions/makeChunkFillPool/) on
+  the main thread starts the workers and sends each of them `init` once (structured-cloned: plain
+  data and typed arrays). What `init` holds is the app's; for gen-terrain it is the terrain as
+  data (below). `size` is the number of workers (default one per core less one, up to 4), and
+  `depth` how many requests each keeps queued (default 2). The world keeps at most the pool's
+  `capacity` (`size × depth`) requests out, so the rest of its queue stays in its own nearest-first
+  order and follows the focus.
+- [`serveChunks({ make })`](/docs/engine/api/worker/functions/serveChunks/) in the worker turns
+  `init` into a [`ChunkFill`](/docs/engine/api/worker/type-aliases/ChunkFill/), a function that
+  fills one brick the way an `editMany` fill does. `make` runs once and may return a promise.
+- [`boxes`](/docs/engine/api/engine/interfaces/ChunkedWorldOptions/#boxes) says what to fill of a
+  chunk (default its whole box). [`columnBoxes(box, span)`](/docs/engine/api/engine/functions/columnBoxes/)
+  gives one box per 8 × 8 brick column, as tall as `span` says, which is what makes a fine
+  terrain cheap; columns with nothing in them are left out.
+- `generate` becomes optional. Given with `fill`, it runs on the main thread after a chunk's
+  bricks are in, for what cannot move to a worker (blitting models into the chunk, counting).
+
+<Tabs items={["main.ts", "ground.worker.ts"]}>
+<Tab value="main.ts">
+
+```ts title="main.ts"
+import { makeFrameLoop } from "@voxolith/renderer";
+import { columnBoxes, makeChunkedWorld } from "@voxolith/engine";
+import { makeChunkFillPool } from "@voxolith/engine/worker";
+import { fineTerrainInit, refineTerrain } from "@voxolith/gen-terrain";
+
+// Level the pads into terrain.heights first: the workers get the heights as they are now.
+const ground = refineTerrain(terrain, 10, { seed, top: paths });
+const fill = makeChunkFillPool({
+  spawn: () => new Worker(new URL("./ground.worker.ts", import.meta.url), { type: "module" }),
+  init: { fine: fineTerrainInit(ground), base: groundBase }, // sent once to each worker
+});
+const world = makeChunkedWorld({
+  target: renderer,
+  size: SIZE,
+  chunk: 256, // a multiple of 8 with `fill`
+  seed,
+  load,
+  fill,
+  boxes: ({ box }) => columnBoxes(box, (ox, oz) => ground.columnSpan(ox, oz)),
+});
+
+world.focus(camera.x, camera.z, 2400); // 24 m at 100 voxels per metre
+const loop = makeFrameLoop({
+  continuous: true,
+  render() {
+    if (world.pending) world.step(8); // copies in what came back, nearest first
+    renderer.render(frame());
+  },
+});
+
+// Show the page once the ground within 18 m is in (plus half a chunk's diagonal, since chunk
+// centres are tested); the rest streams in after it.
+await world.whenReady(camera.x, camera.z, 1800 + 256 * Math.SQRT1_2);
+loadingScreen.ready();
+```
+
+</Tab>
+<Tab value="ground.worker.ts">
+
+```ts title="ground.worker.ts"
+import { serveChunks } from "@voxolith/engine/worker";
+import { fineTerrainFrom, type FineTerrainInit } from "@voxolith/gen-terrain";
+
+serveChunks({
+  make(init) {
+    const { fine, base } = init as { fine: FineTerrainInit; base: number };
+    const ground = fineTerrainFrom(fine); // from its heights: nothing is sampled again
+    return (cells, ox, oy, oz) => ground.fillBrick(cells, ox, oy, oz, base);
+  },
+});
+```
+
+</Tab>
+</Tabs>
+
+What stays the same, and what to watch:
+
+- **Everything reads as before.** A chunk counts as built (`resident`, `pendingWithin`,
+  `whenReady`, the `ground` phase) once its bricks are applied, and `step` returns the chunks
+  still queued, out on a worker, or back and not applied yet, so keep stepping while it is above 0.
+- **Each brick is filled from empty** and replaced by the result, which is what `generate` writes
+  into a new or cleared chunk. So `chunk` must be a multiple of the 8-voxel brick, or two chunks
+  would share bricks.
+- **The description is taken when the pool is made.** Level the terrain and settle the paths
+  first; a later height edit needs a new pool. `destroy()` the pool when the ground is done.
+- **Failures leave a hole, reported.** A chunk whose fill fails (the fill threw, or the worker
+  died) stays unbuilt and goes to [`onError`](/docs/engine/api/engine/interfaces/ChunkedWorldOptions/#onerror)
+  (default `console.error`), is not retried until it has been freed, and makes a `whenReady` over
+  it reject. A worker that dies is replaced; the requests it had not started go to another.
+- **Chunks freed while out are dropped**, and their results with them.
+- **Cores are shared.** The generator pool, the scene worker, the chunk fill pool and the main
+  thread all load at once. The examples give the ground what is left after the generator pool's
+  four and the scene worker's one, up to six: on valley at 100 voxels per metre (warm, 24 cores),
+  3 workers gave a first frame of 2.97 to 3.01 s, 4 gave 2.77 to 2.82 s, 6 gave 2.53 to 2.55 s and
+  8 gave 2.75 to 2.79 s, with the fewest long tasks after it at 6 (measured).
+
+In bun, on a gen-terrain fine ground at 100 voxels per metre with 256² chunks and one box per
+brick column, a chunk took 50 ms on the main thread synchronously, against 42 ms on a worker plus
+10 ms on the main thread, almost all of it the brick grid encoding what it is given (measured).
+In the examples' pages that is about 10 ms of main thread per chunk, against 50 to 57 ms before.
+
+The terrain itself can be made on workers too. gen-terrain's
+[`terrainHeightsBand`](/docs/generators/api/gen-terrain/functions/terrainHeightsBand/) samples a
+band of rows of the height map, byte for byte what `generateTerrain` samples there, and
+`generateTerrain(params, seed, { heights })` builds the terrain from the stitched bands. The
+examples sample the valley in six bands (about 0.45 s), which took the 1.5 s terrain freeze out
+of the world page. The [terrain page](/docs/generators/terrain/#on-workers) has the data forms.
+
 ## What stays game code
 
 The engine gives controls and reports progress; it decides nothing about your load. These are
@@ -611,8 +1351,16 @@ yours:
   ones the page waits for and which continue after the first picture, and when to call it ready.
   The [examples' loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) is one
   answer, in the examples' code.
-- **The cache's budget.** Whether it has a cap, when to trim or clear, and whether to ask for
-  persistent storage.
+- **What overlaps.** Whether the ground streams while the scene worker encodes, how much of a frame
+  its adds may take (`uploadBudgetMs`, `pace`), and what the first frame waits for: how much
+  ground around the camera (`whenReady`'s radius), and whether a coarse stage comes first.
+- **The stages.** Whether to show coarse models first, at which scales, and when to swap; the
+  engine gives `scale` and a swap that releases what it replaced, and picks neither.
+- **How many workers.** The generator pool, the scene worker and the chunk fill pool share the
+  machine; their sizes are yours.
+- **The caches' budget.** Whether the model and scene caches are on, their caps (sized by
+  [measuring](#sizing-a-cap)), whether to deflate the scene cache, when to trim or clear, and
+  whether to ask for persistent storage.
 
 What that looks like in a game's own code: it decides what exists, reports it as a phase of its
 own, and orders the pool by distance to the player. The engine only runs the requests.
@@ -637,17 +1385,17 @@ onPlayerMoved(() => pool.reprioritise((spec) => nearFirst(houseOf.get(spec)!)));
 ## A complete page
 
 A page with no loading-screen helper of its own: one tracker for every loader, pipelines compiled
-and the forest placed on a worker behind a status line, then ground that keeps streaming after
-the first picture. The names it does not import or define (`worldPalette`, `treeSites`,
-`fillChunk`) are the page's own.
+and the forest encoded and placed on a scene worker behind a status line (both kept for the next
+visit), then ground that keeps streaming after the first picture. The names it does not import
+or define (`worldPalette`, `treeSites`, `fillChunk`) are the page's own.
 
-<Tabs items={["main.ts", "gen.worker.ts", "placement.worker.ts"]}>
+<Tabs items={["main.ts", "gen.worker.ts", "scene.worker.ts"]}>
 <Tab value="main.ts">
 
 ```ts title="main.ts"
 import { createRenderer, initGpu, makeCamera, makeFrameLoop, observeResize, resizeToDisplay } from "@voxolith/renderer";
 import { formatTimeline, makeChunkedWorld, makeInstanceLayer, makeLoadTracker, trackRenderer } from "@voxolith/engine";
-import { makeGeneratorPool, makePlacementWorker } from "@voxolith/engine/worker";
+import { makeGeneratorPool, makeSceneWorker } from "@voxolith/engine/worker";
 import { timeOfDay } from "@voxolith/engine/atmosphere";
 import { PRESETS } from "@voxolith/gen-tree";
 
@@ -663,16 +1411,17 @@ const size = { x: 1024, y: 128, z: 1024 };
 const renderer = await createRenderer(gpu, { size, palette: worldPalette }, { deferPipelines: true, onLoad: trackRenderer(load) });
 
 const pool = makeGeneratorPool({ spawn: () => new Worker(new URL("./gen.worker.ts", import.meta.url), { type: "module" }), load });
-const placement = makePlacementWorker({ spawn: () => new Worker(new URL("./placement.worker.ts", import.meta.url), { type: "module" }) });
-const layer = makeInstanceLayer(renderer, { load, placement });
+const worker = makeSceneWorker({ spawn: () => new Worker(new URL("./scene.worker.ts", import.meta.url), { type: "module" }) });
+const layer = makeInstanceLayer(renderer, { load, worker, modelKey: pool.modelKey }); // cached encodings by what made them
 
 // Three oak variants, placed a few hundred times.
 const oaks = await pool.generateMany([1, 2, 3].map((seed) => ({ generator: "voxolith/tree.broadleaf", params: PRESETS.oak, seed })));
 const base = layer.palettes.of("oak", oaks[0].model.roles);
 layer.setStatic(treeSites.map((s, i) => ({ model: oaks[i % 3].model, x: s.x, y: s.y, z: s.z, yaw: s.yaw, base })));
 
-// Compile and bake at once, off the main thread; the status line keeps updating.
+// Compile, encode and bake at once, off the main thread; the status line keeps updating.
 await Promise.all([renderer.prepare({ instances: true }), layer.commitAsync()]);
+void worker.destroy(); // nothing else is encoded or baked here; its cache writes finish first
 
 // The ground streams around the camera from here on, a few ms of chunks per frame.
 const world = makeChunkedWorld({ target: renderer, size, chunk: 64, seed: 7, generate: fillChunk, load });
@@ -706,33 +1455,52 @@ serveGenerators({ cache: import.meta.env.DEV ? undefined : "my-page-models" });
 ```
 
 </Tab>
-<Tab value="placement.worker.ts">
+<Tab value="scene.worker.ts">
 
-```ts title="placement.worker.ts"
-import { servePlacement } from "@voxolith/engine/worker";
+```ts title="scene.worker.ts"
+import { serveScene } from "@voxolith/engine/worker";
 
-servePlacement();
+// A cap sized from usage() after a visit: this page stores a few MB. Off in development.
+serveScene({ cache: import.meta.env.DEV ? undefined : { name: "my-page-scene", maxBytes: 64 * 1024 ** 2 } });
 ```
 
 </Tab>
 </Tabs>
 
-On a second visit the last `models` event reads `3/3 (3 cached)`, and the logged table shows
-where the time went: which phase was longest, and whether `pipelines` stayed at one span (no frame had to
-compile a variant of its own).
+On a second visit the last `models` event reads `3/3 (3 cached)`, the `upload` and `placement`
+events count their work as cached too (the encodings and the bake come from the scene cache),
+and the logged table shows where the time went: which phase was longest, and whether `pipelines`
+stayed at one span (no frame had to compile a variant of its own).
 
 ## See also
 
-- [Loading screens](/docs/manual/loading-screens/) for the load events and a display
+- [Loading screens](/docs/manual/loading-screens/) for the load events, a display, and the
+  [first-frame marks](/docs/manual/loading-screens/#marks-first-frame-and-converged)
+- [Offline and installing](/docs/manual/offline-and-installing/) for the service worker
 - [Workers and caching](/docs/manual/workers-and-caching/) for the pool and the worker file
 - [Instances](/docs/manual/instances/) for static and moving sets
 - [Engine: load events and loading controls](/docs/engine/loading/)
 - API: [`Renderer.prepare`](/docs/renderer/api/renderer/classes/Renderer/#prepare),
   [`PrepareNeeds`](/docs/renderer/api/renderer/interfaces/PrepareNeeds/),
-  [`makePlacementWorker`](/docs/engine/api/worker/functions/makePlacementWorker/),
-  [`servePlacement`](/docs/engine/api/worker/functions/servePlacement/),
+  [`makeSceneWorker`](/docs/engine/api/worker/functions/makeSceneWorker/),
+  [`serveScene`](/docs/engine/api/worker/functions/serveScene/),
+  [`encodeModel`](/docs/renderer/api/renderer/functions/encodeModel/),
+  [`Renderer.addEncodedModel`](/docs/renderer/api/renderer/classes/Renderer/#addencodedmodel),
+  [`Renderer.reserveBricks`](/docs/renderer/api/renderer/classes/Renderer/#reservebricks),
   [`InstanceLayer.commitAsync`](/docs/engine/api/engine/interfaces/InstanceLayer/#commitasync),
   [`GenerateOptions`](/docs/engine/api/worker/interfaces/GenerateOptions/),
   [`GeneratorPool`](/docs/engine/api/worker/interfaces/GeneratorPool/),
   [`openModelCacheControls`](/docs/engine/api/worker/functions/openModelCacheControls/),
-  [`ServeCacheOptions`](/docs/engine/api/worker/interfaces/ServeCacheOptions/)
+  [`ServeCacheOptions`](/docs/engine/api/worker/interfaces/ServeCacheOptions/),
+  [`ServeSceneCacheOptions`](/docs/engine/api/worker/interfaces/ServeSceneCacheOptions/),
+  [`openSceneCacheControls`](/docs/engine/api/worker/functions/openSceneCacheControls/),
+  [`CACHE_CAP_FLOOR`](/docs/engine/api/worker/variables/CACHE_CAP_FLOOR/),
+  [`normalizePlacement`](/docs/renderer/api/renderer/functions/normalizePlacement/),
+  [`bindPlacement`](/docs/renderer/api/renderer/functions/bindPlacement/),
+  [`EntityPlacement.scale`](/docs/engine/api/engine/interfaces/EntityPlacement/#property-scale),
+  [`ModelOptions`](/docs/renderer/api/renderer/interfaces/ModelOptions/),
+  [`ChunkedWorld`](/docs/engine/api/engine/interfaces/ChunkedWorld/),
+  [`makeChunkFillPool`](/docs/engine/api/worker/functions/makeChunkFillPool/),
+  [`serveChunks`](/docs/engine/api/worker/functions/serveChunks/),
+  [`columnBoxes`](/docs/engine/api/engine/functions/columnBoxes/),
+  [`fineTerrainInit`](/docs/generators/api/gen-terrain/functions/fineTerrainInit/)

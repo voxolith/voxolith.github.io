@@ -85,7 +85,14 @@ off and everything is generated. `openModelCache`, `packEntity` and `unpackEntit
 you want the same storage for models of your own.
 
 Nothing is evicted unless you ask. To see what the cache holds, clear it, trim it or cap its size,
-see [the model cache](/docs/manual/managing-loading/#the-model-cache) under Managing loading.
+see [the model cache](/docs/manual/managing-loading/#the-model-cache) under Managing loading. A cap
+is the game's to size: load the heaviest scenes once with none, read `usage()`, and add headroom
+([sizing a cap](/docs/manual/managing-loading/#sizing-a-cap)); a value that makes no sense throws,
+and a doubtful one warns in the console.
+
+The scene worker, which encodes models for the GPU and bakes instance placements, has a cache of
+its own for those results, keyed by `pool.modelKey`: see
+[caching encodings and bakes](/docs/manual/managing-loading/#caching-encodings-and-bakes).
 
 ## Falling back
 
@@ -114,7 +121,7 @@ try {
 ## See also
 
 - [Managing loading](/docs/manual/managing-loading/) for queue priorities, aborts, the
-  placement worker and the cache controls
+  scene worker and the cache controls
 - [Engine: workers](/docs/engine/workers/)
 - [Using generators](/docs/manual/using-generators/) for variant pools and scales
 - API: [`makeGeneratorPool`](/docs/engine/api/worker/functions/makeGeneratorPool/),

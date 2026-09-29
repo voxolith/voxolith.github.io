@@ -1,0 +1,244 @@
+---
+title: Offline and installing
+description: Make a Voxolith app load offline after one visit with the engine's service worker plugin, cache fetched data at run time, handle deploys, and make the app installable.
+---
+
+After one visit online, a Voxolith app can load again with no network: its code, its pages and
+the data it fetched come from a cache, and its models come from the generator worker's IndexedDB
+cache or are generated again in the browser. The engine gives you the two halves of that, and
+nothing else:
+
+- [`serviceWorker()`](/docs/engine/api/vite/functions/serviceWorker/) from
+  `@voxolith/engine/vite`, a Vite plugin that writes a service worker into the build;
+- [`registerServiceWorker()`](/docs/engine/api/pwa/functions/registerServiceWorker/) from
+  `@voxolith/engine/pwa`, which registers it from the page and tells you when the app is ready
+  offline or a new version has arrived.
+
+Whether to tell the user about either, and how, is up to your app. Being installable is up to it
+too: the manifest and the icons are your app's own files.
+
+## The plugin
+
+Add the plugin to `vite.config.ts`. It runs on `vite build` only, so a dev server never has a
+worker and never serves stale code:
+
+```ts title="vite.config.ts"
+import { defineConfig } from "vite";
+import basicSsl from "@vitejs/plugin-basic-ssl";
+import { serviceWorker } from "@voxolith/engine/vite";
+
+export default defineConfig({
+  base: process.env.BASE_PATH ?? "/",
+  plugins: [
+    basicSsl(),
+    serviceWorker({
+      name: "my-game", // unique among the apps on the origin
+      precache: "all", // the default: every file of the build
+      include: ["manifest.webmanifest", "favicon.svg", "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png"],
+      runtime: [
+        { match: "levels/" },                              // stale-while-revalidate
+        { match: /\.vox$/, strategy: "cache-first" },      // never change once published
+        { match: "news.json", strategy: "network-first" }, // fresh when online
+      ],
+    }),
+  ],
+  optimizeDeps: { exclude: ["@voxolith/renderer"] },
+});
+```
+
+It emits `sw.js` at the root of the build, with the build id and the list of files to precache
+written into it. The build id is a hash of the build's files: an unchanged rebuild gets the same
+worker and keeps its cache, and any change makes a new one. The options are in
+[`ServiceWorkerOptions`](/docs/engine/api/vite/interfaces/ServiceWorkerOptions/). `base` must be
+absolute (`/` or `/<repo>/`), since the worker's scope is resolved from it; the plugin warns about
+a relative one. It refuses a `public/sw.js` of your own, which would overwrite it (pick another
+`fileName`, or delete the old file, as Demolition Shot did).
+
+## Registering it
+
+Call `registerServiceWorker` once from the page. It registers `sw.js` at the app's base
+(`import.meta.env.BASE_URL`), scoped to that base, after the page's `load` event, so precaching
+does not compete with the page's own start-up:
+
+```ts title="src/main.ts"
+import { registerServiceWorker } from "@voxolith/engine/pwa";
+
+const registration = await registerServiceWorker({
+  onOfflineReady: () => showToast("Ready to play offline"),
+  onUpdate: () => showToast("A new version is ready", { label: "Reload", run: () => location.reload() }),
+  onError: (e) => console.warn("no offline support this time", e),
+});
+if (!registration) console.info("no service worker (dev server, localhost, or unsupported)");
+```
+
+`showToast` stands for your own UI. The callbacks are in
+[`RegisterServiceWorkerOptions`](/docs/engine/api/pwa/interfaces/RegisterServiceWorkerOptions/):
+
+- `onOfflineReady` runs once the first worker for this app has installed and taken over. What it
+  precaches is cached, so the app loads offline from then on.
+- `onUpdate` runs when a new build's worker has installed and taken over from an older one (see
+  [Updates](#updates)).
+- `onError` runs when registering failed, for example a build without the plugin, so there is no
+  `sw.js`. The default logs a warning.
+
+It resolves the registration, or `null` when there is no worker to register.
+
+## What to precache
+
+`precache` says what the worker fetches when it installs, so it is there offline before the user
+first opens it:
+
+| mode | precaches | use it for |
+|---|---|---|
+| `"all"` (default) | every file of the build: each page, its chunks and CSS, workers, imported assets (not source maps) | most apps. A multi-page app is then offline on every page after one visit, even pages never opened. It costs the whole build once per deploy (the examples are about a megabyte) |
+| `"entry"` | the root `index.html`, its entry chunk, the chunks it imports statically and their CSS | a large build whose other pages and lazy chunks (an editor mode, a level pack) most users never open. They are cached when first used |
+| `false` | only the root `index.html` | a build too big to fetch up front. Everything is cached when first used, so offline covers only what the user has already seen |
+
+The root `index.html` is always precached. Files in `public/` are not in the bundle, so none of
+the modes includes them: list the ones the page needs at start in `include` (the manifest, the
+icons, a model the page opens with). A file in `include` that fails to fetch is skipped rather
+than failing the install.
+
+## Fetched data
+
+Data the app fetches at run time (levels, `.vox` files, samples) also lives in `public/` and
+carries no hash in its URL. A `runtime` rule caches it as it is fetched, in a cache of its own
+that outlives deploys, since a new build does not make those files stale. `match` is a path
+relative to the base: a string is a prefix (`"samples/"`), a RegExp is tested against the path
+(`/\.vox$/`). The first matching rule wins, and each rule picks a
+[`CacheStrategy`](/docs/engine/api/vite/type-aliases/CacheStrategy/):
+
+| strategy | answers with | for |
+|---|---|---|
+| `stale-while-revalidate` (default) | the cached copy at once, refreshed from the network behind it | data that may change between visits |
+| `cache-first` | the cached copy if there is one, else the network | files that never change once published |
+| `network-first` | the network, the cached copy only offline | data that must be current when the user is online |
+
+Everything else is decided for you:
+
+- page loads go network first, so a new deploy shows up at once; the cached page answers when
+  offline or on a server error;
+- precached files and hashed build assets (`assets/`) are cache first;
+- any other request in scope is stale-while-revalidate, in the build's cache;
+- requests outside the scope, to other origins, other than `GET`, and range requests go straight
+  to the network.
+
+The runtime cache is never trimmed: it holds every matching file the user has opened. Keep rules
+to data a user returns to.
+
+## Scope on a shared origin
+
+GitHub Pages serves every project site of an account from one host
+(`voxolith.github.io/viewer/`, `/editor/`, `/examples/`), so the apps share one Cache Storage.
+Two things keep them apart:
+
+- **The name.** Each app's caches are named `<name>-<build id>` and `<name>-runtime-cache`, and a
+  new worker deletes only this app's caches of older builds, never another app's. So `name` must
+  be unique among the apps on the origin (letters, digits and dashes).
+- **The scope.** The worker is scoped to the app's base, so it answers only for that app's URLs.
+  It has to sit at the root of the build to get that scope: a worker's scope is at most its own
+  folder unless the server sends `Service-Worker-Allowed`, which GitHub Pages cannot. That is why
+  `fileName` cannot contain a `/`.
+
+## Updates
+
+A deploy takes over by itself. The browser compares `sw.js` byte for byte on each visit; a new
+build has a new id, so its worker installs, precaches the new files into a fresh cache, takes
+over at once and deletes the old cache. The page that is open still runs the old code, and the
+next load runs the new build (page loads are network first, so usually the very next one does).
+
+`onUpdate` fires when that happens, also for a deploy that arrives later in the same session. The
+worker never reloads the page itself: whether to show "a new version is ready", offer a reload,
+or say nothing is your app's call. The Voxolith apps say nothing; the examples and the viewer
+log a line to the console.
+
+## Dev and localhost
+
+`registerServiceWorker` does nothing and resolves `null`:
+
+- on a Vite dev server, which has no worker;
+- on `localhost`, `127.0.0.1` and `[::1]`, so local previews, smoke tests and benches never
+  serve from a cache;
+- where the browser has no service workers, or the page is not a secure context.
+
+To try offline loading locally, build, run `vite preview` and pass `localhost: true`:
+
+```ts
+registerServiceWorker({ localhost: true });
+```
+
+Then load the page once, turn the network off in the browser's developer tools and reload.
+
+## What offline covers
+
+- **The app**: everything precached, and with `"all"` every page of the build.
+- **Fetched data** that matched a `runtime` rule and was opened once online, or anything else in
+  scope that was fetched once.
+- **Models.** The service worker does not hold generated models. The generator worker's
+  IndexedDB cache does (`serveGenerators({ cache })`, see
+  [Workers and caching](/docs/manual/workers-and-caching/)), and it survives visits on its own. A
+  model that is not in it is generated again, in the browser as always: generation needs no
+  server, only the generator code, which is part of the precached build.
+
+Not covered: requests to other origins, and data that was never fetched while online.
+
+## Installable
+
+A browser offers to install an app that has a web manifest and icons; the service worker is
+what lets the installed app start offline. The worker is the engine's; the manifest and icons
+are yours. Link the manifest from `index.html`
+(`<link rel="manifest" href="manifest.webmanifest" />`), and list it and its icons in `include`,
+so an installed app starts offline with its icon. The viewer's:
+
+```json title="viewer/public/manifest.webmanifest"
+{
+  "name": "Voxolith Viewer",
+  "short_name": "Viewer",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#151B29",
+  "theme_color": "#151B29",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
+```
+
+`"start_url": "."` and `"scope": "."` resolve against the manifest's own URL, so it works under
+any base path.
+
+Launchers use two kinds of icon. A plain icon (the mark on transparency) is shown as it is. A
+**maskable** icon is cropped to the launcher's own circle, squircle or rounded square, and only
+the central circle with a diameter of 80% of the icon is sure to survive the crop. So it needs an
+opaque background and the artwork inside that circle, with some margin. Declare each for its own
+purpose: never mark the transparent icon `"any maskable"`, or a launcher crops the mark itself.
+The Voxolith apps take both from the branding build, which scales the mark to keep that margin.
+
+## The Voxolith apps
+
+| app | precache | runtime rules | installable |
+|---|---|---|---|
+| [examples](/docs/examples/) | `"all"`: every page | `models/` | no, cache only |
+| [viewer](/viewer/) | `"all"` | `samples/`, so a sample opened once opens offline | yes |
+| [editor](/editor/) | `"all"`, plus the model it opens with | none | yes |
+| [Demolition Shot](/demolition-shot/) | `"all"` | none | yes |
+
+None of them prompts for an update, and all of them skip localhost, so the workspace's smoke test
+and benches never load a cached page.
+
+## See also
+
+- [Mobile and PWA](/docs/manual/mobile-and-pwa/)
+- [Deploying](/docs/manual/deploying/)
+- [Workers and caching](/docs/manual/workers-and-caching/) for the model cache
+- [Managing loading](/docs/manual/managing-loading/#the-model-cache)
+- API: [`serviceWorker`](/docs/engine/api/vite/functions/serviceWorker/),
+  [`ServiceWorkerOptions`](/docs/engine/api/vite/interfaces/ServiceWorkerOptions/),
+  [`RuntimeCacheRule`](/docs/engine/api/vite/interfaces/RuntimeCacheRule/),
+  [`CacheStrategy`](/docs/engine/api/vite/type-aliases/CacheStrategy/),
+  [`registerServiceWorker`](/docs/engine/api/pwa/functions/registerServiceWorker/),
+  [`RegisterServiceWorkerOptions`](/docs/engine/api/pwa/interfaces/RegisterServiceWorkerOptions/)

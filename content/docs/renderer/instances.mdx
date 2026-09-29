@@ -1,6 +1,6 @@
 ---
 title: Instances
-description: Drawing models by reference with addModel and setInstances, at any yaw, mirrored and at fractional positions, with palettes beyond the world's 256.
+description: "Drawing models by reference with addModel and setInstances, at any yaw, mirrored, at fractional positions and enlarged by an integer scale, with palettes beyond the world's 256; encoding models and baking static sets on a worker."
 ---
 
 Stamping writes every voxel of a model into the world's bricks. A forest of six distinct trees then
@@ -40,8 +40,54 @@ renderer.setInstances([
 ]);
 ```
 
-`removeModel(id)` frees a model's bricks; replace the instances naming it first.
+`addModel` encodes the model's bricks on the main thread, and a fine scene has dozens of big
+models to encode; that can run on a worker instead (see
+[encoding models on a worker](#encoding-models-on-a-worker)). `removeModel(id)` frees a model's
+bricks; replace the instances naming it first.
 `instanceStats()` reports models, instances, index blocks and bytes for overlays and budgets.
+
+### Scaled models
+
+`addModel(src, { scale })` and `addEncodedModel(encoded, { scale })`
+([`ModelOptions`](/docs/renderer/api/renderer/interfaces/ModelOptions/)) draw a model enlarged by
+an integer factor: each of its voxels covers `scale`³ world voxels. A model built at 10 voxels per
+metre, drawn in a 100 voxels per metre world, takes 10. The scale belongs to the model, not the
+instance, so every instance of it is enlarged.
+
+```ts
+// A 100 voxels per metre world: the 10 vox/m model, each voxel 10³ world voxels.
+const k = 10;
+const coarseOak = renderer.addModel({ size: oak10.model.size, data: oak10.model.data }, { scale: k });
+const [ax, ay, az] = oak10.model.anchor;
+renderer.setInstances([
+  // The anchor is in the enlarged model's voxels: k times the model's own.
+  { model: coarseOak, x: 4000, y: 120, z: 2500, yaw: 0.7, anchor: [ax * k, ay * k, az * k], base: bark },
+]);
+await renderer.prepare({ instances: true, scaled: true }); // the scaled variant, before its first frame
+```
+
+- **Exactly the upsampled model.** An instance draws what the model upsampled `scale` times by
+  nearest neighbour would draw at scale 1: the world voxel at p reads model voxel `floor(q / scale)`,
+  q being p's cell in the enlarged model. That holds at any yaw, mirrored and at fractional
+  positions, with the same shadows, ambient occlusion and faces. The renderer's checks compare
+  every cell against the upsampled model: 0 of 7,075,252 differ.
+- **Anchors are in enlarged voxels.** The instance's space is the enlarged model's, so
+  `Instance.anchor` is in its voxels. The engine's layer passes `scale × anchor` for you.
+- **One encoding, any scale.** The scale is not part of the encoding, so one `EncodedModel` can be
+  added at several scales, each add a model of its own.
+- **Drawn at rest.** Instances of a scaled model cannot be posed: `Instance.parts` on one throws.
+  Draw it plain, or bake the pose.
+- **A variant of its own.** Scaled sampling sits behind the `SCALED` pipeline constant, so a scene
+  without scaled models does not pay for it: folding it into every scene cost 6 to 9% at scale 1
+  (measured), and with the constant `render-bench` shows no regression. Prepare it with
+  [`PrepareNeeds.scaled`](/docs/renderer/api/renderer/interfaces/PrepareNeeds/#property-scaled);
+  by default `prepare` compiles it only if a scaled model is placed now.
+- **A little more to bake.** A set of scaled models listed about 35% more sub-cell entries in its
+  bake than the fine set it stood in for (measured), since a coarse model's occupied sub-cells
+  cover more of the world once enlarged.
+
+The engine's [scaled placements](/docs/engine/instances/#scaled-placements) are built on this;
+the [coarse-first pattern](/docs/manual/managing-loading/#coarse-first-one-swap) is what they are for.
 
 ## How an instance is drawn
 
@@ -227,12 +273,116 @@ every 50 ms or so. The count moves only between instances, so at fine scales it 
 (about 190 ms apart at 100 voxels per metre). Without `onProgress` the bake does no progress work.
 
 Messages to one worker are handled in order, so a `drop` or a new `model` posted before a `bake`
-is seen before it. The engine's [`servePlacement`](/docs/engine/api/worker/functions/servePlacement/)
+is seen before it. The engine's [`serveScene`](/docs/engine/api/worker/functions/serveScene/)
 adds cancelling a bake that has not started, and error replies.
 
-The engine wraps all of it: `makePlacementWorker` and `makeInstanceLayer(renderer, { placement })`
-with `commitAsync()` (see [From the engine](#from-the-engine) and the manual's
-[placement off the main thread](/docs/manual/managing-loading/#placement-off-the-main-thread)).
+#### Storing bakes
+
+A bake is a pure function of its input and the models' placement data, so a host can keep it for
+the next visit. Two things make that safe:
+
+- **[`PLACEMENT_BAKE_VERSION`](/docs/renderer/api/renderer/variables/PLACEMENT_BAKE_VERSION/)**
+  changes whenever the same input would bake differently (a changed word, array or field, or the
+  same words computed another way). Key stored bakes by it. The renderer's verify holds a digest
+  of a fixed scene's bake next to the version it was recorded under, and fails when the bake
+  changes and the version does not.
+- **Ids are per page.** Model ids are slots, numbered by what was free, so the same scene gets
+  other ids on another visit. [`normalizePlacement(bake)`](/docs/renderer/api/renderer/functions/normalizePlacement/)
+  renumbers the instance records' models by first appearance in the set and empties `models`, for
+  storing; [`bindPlacement(stored, input)`](/docs/renderer/api/renderer/functions/bindPlacement/)
+  puts back the ids and keys of this page's input. Nothing else in a bake depends on the ids, so the
+  bound bake is byte for byte what `bakePlacement(input)` makes, provided the storing key covers the
+  grid, the instances in order (models named by content, not id) and the models' placement data.
+  `bindPlacement` checks the grid, the count and the pattern of model names, and throws otherwise.
+
+Both return a bake with its own `inst` and `grid` and share the other arrays with the one they
+were given, so store the normalised bake before transferring the original. The engine's scene
+cache does this for you ([caching encodings and bakes](/docs/manual/managing-loading/#caching-encodings-and-bakes)).
+
+The engine wraps all of it, with the model encodes below: `makeSceneWorker` and
+`makeInstanceLayer(renderer, { worker })` with `commitAsync()` (see [From the engine](#from-the-engine)
+and the manual's [scene worker](/docs/manual/managing-loading/#the-scene-worker)).
+
+### Encoding models on a worker
+
+`addModel` is two steps as well: a headless **encode** (the model's 8³ brick payloads and index
+blocks, the part grid and part boxes of a model with parts, and the occupied 2³ sub-cells the
+placement bake reads) and a cheap **apply** that claims pool slots for it and uploads the bytes.
+`addModel(src)` is exactly `addEncodedModel(encodeModel(src))`, so the two halves can run apart:
+
+| step | where | API |
+|---|---|---|
+| encode a [`ModelSource`](/docs/renderer/api/renderer/interfaces/ModelSource/) | worker | [`encodeModel(src, opts?)`](/docs/renderer/api/renderer/functions/encodeModel/) → [`EncodedModel`](/docs/renderer/api/renderer/interfaces/EncodedModel/) |
+| report progress (optional) | worker → main thread | [`EncodeOptions`](/docs/renderer/api/renderer/interfaces/EncodeOptions/)`.onProgress(done, total)`, like the bake's |
+| send it back without copying | worker → main thread | `postMessage(encoded, encodedTransferables(encoded))` ([`encodedTransferables`](/docs/renderer/api/renderer/functions/encodedTransferables/)) |
+| make room for a batch (optional) | main thread | [`reserveBricks(encoded[])`](/docs/renderer/api/renderer/classes/Renderer/#reservebricks) |
+| add it | main thread | [`addEncodedModel(encoded, opts?)`](/docs/renderer/api/renderer/classes/Renderer/#addencodedmodel) → model id (`opts.scale` as for `addModel`) |
+
+- **What each half costs.** The encode is about 2.5 µs per stored brick of a sparse model
+  (measured on nightwood's models at 100 voxels per metre, which have 27k to 230k), so up to about
+  0.6 s for one model. The apply only claims slots and copies the payload in: 1 to 37 ms for the
+  examples' big models (measured). The renderer takes over the
+  encoding's arrays, so don't reuse them.
+- **The same bytes.** The encode is written against a pool of the model's own, numbered in the
+  order it claimed slots; the apply claims real slots in that same order, so it uploads what
+  `addModel` would, and the id is the one `addModel` would have returned.
+- **Reserving.** The brick pools grow as models are added, in 1.5x steps. A step copies the GPU
+  pools GPU-side (1 ms or less of main thread), but the CPU mirror still reallocates and copies
+  itself, and for a moment the GPU holds both buffers. `reserveBricks` grows them once for a whole
+  batch before its adds. Only the pools' spare capacity differs from adding without it: model ids,
+  the index and everything drawn are the same. See
+  [growth and limits](/docs/renderer/storage/#growth-and-limits).
+- **Versioned.** An encoding carries [`ENCODED_MODEL_VERSION`](/docs/renderer/api/renderer/variables/ENCODED_MODEL_VERSION/),
+  which changes with the payload layout. `addEncodedModel` throws on any other version, so a host
+  that caches encodings (in IndexedDB, say) keys them by it. The engine's scene cache keeps
+  encodings under it and a digest of the model's identity.
+- **Placement from the same worker.** An encoding holds everything the bake reads about the model.
+  Transfer it with `encodedTransferables(encoded, { keepPlacement: true })`, which copies the
+  sub-cells rather than moving them, and once the main thread has added it and sent back the keys
+  from `placementModel(id)`, [`placementModelOf(encoded, keys)`](/docs/renderer/api/renderer/functions/placementModelOf/)
+  registers it with the worker's `PlacementBaker`. The sub-cells (millions of words at 100 voxels
+  per metre) then never travel back.
+
+<Tabs items={["main thread", "encode.worker.ts"]}>
+<Tab value="main thread">
+
+```ts
+import type { EncodedModel } from "@voxolith/renderer";
+
+const worker = new Worker(new URL("./encode.worker.ts", import.meta.url), { type: "module" });
+const landed = new Map<number, (e: EncodedModel) => void>();
+worker.onmessage = ({ data }: MessageEvent<{ id: number; encoded: EncodedModel }>) => landed.get(data.id)?.(data.encoded);
+
+const encodeThere = (id: number, model: { size: { x: number; y: number; z: number }; data: Uint8Array }) =>
+  new Promise<EncodedModel>((resolve) => {
+    landed.set(id, resolve);
+    worker.postMessage({ id, model });
+  });
+
+const batch = await Promise.all(trees.map((t, i) => encodeThere(i, { size: t.model.size, data: t.model.data })));
+renderer.reserveBricks(batch);                           // the pools grow once
+const ids = batch.map((e) => renderer.addEncodedModel(e)); // or one per frame, to spread the copies
+```
+
+</Tab>
+<Tab value="encode.worker.ts">
+
+```ts title="encode.worker.ts"
+import { encodeModel, encodedTransferables, type ModelSource } from "@voxolith/renderer/core";
+
+self.onmessage = ({ data }: MessageEvent<{ id: number; model: ModelSource }>) => {
+  const encoded = encodeModel(data.model);
+  self.postMessage({ id: data.id, encoded }, { transfer: encodedTransferables(encoded) });
+};
+```
+
+</Tab>
+</Tabs>
+
+A sparse model's brick map is a `Map` of many small arrays, which is slow to structured-clone at
+fine scales; the engine's scene worker packs it into transferred chunks of bricks instead. The
+manual has the [whole round trip](/docs/manual/managing-loading/#driving-it-yourself), encodes and
+bake on one worker, without the engine.
 
 ## Instance palettes
 
@@ -271,8 +421,9 @@ layer.commit(); // sends the static and moving sets; cheap to call every frame
 ```
 
 `setStatic` takes entity models rather than ids and places each on the model's own anchor. Given a
-placement worker, `layer.commitAsync()` bakes the static set there
-([Engine: instances](/docs/engine/instances/#baking-on-a-worker)).
+scene worker, `setStatic` only sends new models to be encoded, and `layer.commitAsync()` adds them
+and bakes the static set there
+([Engine: instances](/docs/engine/instances/#encoding-and-baking-on-a-worker)).
 
 See [Instances](/docs/engine/instances/) in the engine section for the layer, and
 [Stamping and crowds](/docs/engine/stamping-and-crowds/) for when to stamp instead.

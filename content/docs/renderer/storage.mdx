@@ -126,14 +126,50 @@ empty and fills through `edit`, should call `setClipBounds(min, max)` with the f
 
 ## Growth and limits
 
-Brick pools are allocated with headroom and reallocated (and rebound) when content stamped after
-construction outgrows them. A binding larger than the device allows does not fail at creation:
-it makes the bind group invalid, and rendering silently stops. The renderer checks the pools
-against `gpu.limits.maxStorageBufferBindingSize` and reports it with a message that says what to
-do, which is why `initGpu` asks for generous limits.
+Brick pools are allocated with headroom and reallocated (and rebound) when content stamped or
+added after construction outgrows them. They grow in 1.5x steps, not doubling: at forest scale the
+headroom is hundreds of megabytes of otherwise idle GPU memory, and a storage binding has a hard
+ceiling that doubling walks straight into. The headroom is capped at the device's limits, so a
+scene that fits still fits.
+
+- **The GPU side is copied on the GPU.** A step makes bigger buffers and fills them with a
+  `copyBufferToBuffer` of the claimed slots, submitted at once; later uploads land on top of the
+  copy. The main thread sends no brick data, which takes it to 1 ms or less, where re-uploading
+  the pools from the CPU cost 150 to 270 ms at a few hundred MB (measured). The old buffers are
+  destroyed right after the submit, so both exist in GPU memory only until the copy has run.
+- **The CPU mirror grows the same way.** The renderer keeps a CPU copy of the pools, which also
+  grows by 1.5x steps and is capped at the device's buffer limits, so it never grows past what the
+  GPU could hold (nightwood at 100 voxels per metre used to ask for 2 GiB and crash). Its copy on
+  growth is what a step still costs the main thread.
+- **Too big throws.** A binding larger than the device allows would not fail at creation: it makes
+  the bind group invalid, and rendering silently stops. So the renderer checks the pools against
+  `gpu.limits.maxStorageBufferBindingSize` and `maxBufferSize` and throws with a message that says
+  which limit to raise, which is why `initGpu` asks for generous limits.
+
+[`renderer.reserveBricks(want)`](/docs/renderer/api/renderer/classes/Renderer/#reservebricks) grows
+the pools once, before the content that will fill them, so the steps happen while the pools are
+still small. It takes a batch of encoded models (room for all their bricks, ahead of their
+`addEncodedModel` calls), or brick counts, `{ bricks4, bricks8 }`
+([`BrickReserve`](/docs/renderer/api/renderer/interfaces/BrickReserve/)), for content that is not
+encoded yet, such as the ground a streamed world is about to edit in. Only the pools' spare
+capacity differs from not reserving: ids, the index and everything drawn are the same. A
+reservation that fits exactly succeeds, one that does not fit throws, and one the pools already
+have room for does nothing.
+
+```ts
+// In development, after a comparable scene has loaded: what the pools hold.
+const { slots4, slots8, cap4, cap8 } = renderer.stats();
+console.log(`4-bit ${slots4} of ${cap4}, 8-bit ${slots8} of ${cap8}`);
+
+// Next time, before the ground streams in: grow once, while the pools are small.
+renderer.reserveBricks({ bricks4: 400_000, bricks8: 20_000 });
+```
 
 `renderer.stats()` reports resident voxel memory: bricks in use, how many are 8-bit, the GPU bytes
-held, and `dense`, what the same grid would have cost as one 3D texture.
+held, and `dense`, what the same grid would have cost as one 3D texture. `slots4` and `slots8` are
+the 4-bit and 8-bit pool slots claimed (the models' included), the counts `reserveBricks` makes
+room for, and `cap4` and `cap8` how many the GPU pools hold now. A brick of at most 15 distinct
+values takes a 4-bit slot, one with more an 8-bit slot, and a brick of one value throughout none.
 
 ## CPU-side volumes
 

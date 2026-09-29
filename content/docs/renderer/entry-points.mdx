@@ -40,7 +40,7 @@ opening the dev server over a LAN address sees no `navigator.gpu` without it.
 | import | use from | contents |
 |---|---|---|
 | `@voxolith/renderer` | browser code | everything: `initGpu`, `createRenderer`, `makeFrameLoop`, `observeResize`, plus all of `core` |
-| `@voxolith/renderer/core` | Node and bun tools, workers | everything that does not touch the GPU: formats, bricks and sparse volumes, cameras, lights, `makePerf`, ray helpers, `seededRandom`, `GridStamper`, effects, the static placement bake (`bakePlacement`, `PlacementBaker`) |
+| `@voxolith/renderer/core` | Node and bun tools, workers | everything that does not touch the GPU: formats, bricks and sparse volumes, cameras, lights, `makePerf`, ray helpers, `seededRandom`, `GridStamper`, effects, the worker halves of instancing: model encoding (`encodeModel`, `encodedTransferables`, `placementModelOf`, `ENCODED_MODEL_VERSION`; see [encoding models on a worker](/docs/renderer/instances/#encoding-models-on-a-worker)) and the static placement bake (`bakePlacement`, `PlacementBaker`) |
 | `@voxolith/renderer/vox` | Node and bun tools | `parseVox`, `parseVoxScene`, `writeVox`, `decodeVoxRotation` |
 | `@voxolith/renderer/ray` | Node and bun tools | `rayAABB`, `makeRay`, `voxelRaycast` |
 
@@ -98,7 +98,12 @@ try {
 
 The WebGPU default limits are far below what most adapters offer (a 128 MiB storage binding, a
 256 MiB buffer), and a large world's brick pool needs more, so `initGpu` asks for generous limits,
-clamped to the adapter. What was granted is in `gpu.limits`; size scenes against it.
+clamped to the adapter. What was granted is in `gpu.limits`; size scenes against it. The brick
+pools grow within those limits as content arrives, copied GPU-side, and
+[`renderer.reserveBricks`](/docs/renderer/api/renderer/classes/Renderer/#reservebricks) grows them
+once ahead of a batch of models or a streamed ground; `renderer.stats()` reports what they hold
+(`slots4`, `slots8`) and their room (`cap4`, `cap8`). See
+[growth and limits](/docs/renderer/storage/#growth-and-limits).
 `gpu.adapterInfo` is what the browser reported and `gpu.software` is true for CPU implementations
 (see [Quality and performance](/docs/renderer/quality-and-performance/#software-adapters)).
 
@@ -202,8 +207,11 @@ await renderer.prepare({ parts: true }); // posed instances come later
 ```
 
 - [`PrepareNeeds`](/docs/renderer/api/renderer/interfaces/PrepareNeeds/) (`instances`, `parts`,
-  `temporal`, `target`) says which variants to compile; a field left out is read from the current
-  state (what is placed now, the quality's `temporal`; `target` defaults to false). What that
+  `temporal`, `target`, `scaled`) says which variants to compile; a field left out is read from the
+  current state (what is placed now, the quality's `temporal`; `target` defaults to false).
+  `scaled` is for instances of models added with a `scale` above 1
+  ([scaled models](/docs/renderer/instances/#scaled-models)), whose sampling is a variant of its
+  own: a scene that places coarse models first and swaps in plain ones later prepares both. What that
   compiles depends on the `pipeline` mode: fragment passes, compute kernels (plus temporal ones),
   or for `"auto"` the compute kernels and the fragment pass for posed instances.
 - [`deferPipelines`](/docs/renderer/api/renderer/interfaces/RendererOptions/#property-deferpipelines)

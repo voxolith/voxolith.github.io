@@ -1,6 +1,6 @@
 ---
 title: Streaming
-description: Build a large world in chunks around the camera with makeChunkedWorld, place things deterministically with scatterRegion, and stream fine terrain.
+description: Build a large world in chunks around the camera with makeChunkedWorld, wait for the ground near the camera, place things deterministically with scatterRegion, and stream fine terrain, filled on workers.
 ---
 
 Building a whole world up front makes load time grow with its size, and memory with it. A
@@ -55,8 +55,28 @@ if (world.pending) world.step(4); // at most 4 ms of building this frame
 - `ctx.edit` and `ctx.blit` are clamped to the chunk, and `ctx.rng` is seeded from the chunk
   coordinates.
 
-To build the middle of the view before showing the page, loop on `step` with a larger budget until
-`pending` drops, yielding to the browser between steps; the world and valley examples do this.
+- When `focus` moves, chunks still queued are re-ranked from the new point, so the queue stays
+  nearest first to where the camera is now.
+
+To build the middle of the view before showing the page, wait for the ground around the camera
+rather than the whole radius. `world.whenReady(x, z, radius)` resolves once every chunk whose
+centre lies within `radius` is built (`pendingWithin` and `readyAround` give the same as data);
+the world builds only in `step`, so keep stepping meanwhile, with a larger budget behind the
+loading screen, yielding to the browser between steps. Chunk centres are what is tested, so add
+half a chunk's diagonal to cover a disc:
+
+```ts
+world.focus(x, z, 2400);
+const near = 1800 + 256 * Math.SQRT1_2; // every 256-voxel chunk reaching into 18 m
+while (!world.readyAround(x, z, near)) {
+  world.step(40); // behind the loading screen a frame can take more
+  await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0))); // let the frame paint
+}
+loadingScreen.ready();
+```
+
+The valley and nightwood examples wait this way for 18 m and 8 m of ground (their `?near=`),
+and let the rest stream in after the first picture.
 
 ## Placement must not depend on order
 
@@ -86,11 +106,14 @@ finer, answered a brick at a time. The coarse heightfield stays the source of tr
 stay flat, the river stays put. The fine one adds a smooth surface, grass blades and pebbles, and
 only a skin of ground below the surface.
 
-Edit one box per 8 x 8 brick column, sized by `columnSpan`, and send a chunk's boxes in one
-`editMany`. Each column is then computed once for its whole stack of bricks, about 40 ms per 256²
-chunk.
+Edit one box per 8 x 8 brick column, sized by `columnSpan` (`columnBoxes` from the engine makes
+them), and send a chunk's boxes in one `editMany`. Each column is then computed once for its whole
+stack of bricks, about 40 ms per 256² chunk.
 
 ```ts
+import { columnBoxes, makeChunkedWorld } from "@voxolith/engine";
+import { refineTerrain } from "@voxolith/gen-terrain";
+
 const K = 10;
 const ground = refineTerrain(terrain, K, { seed });
 
@@ -100,16 +123,18 @@ const world = makeChunkedWorld({
   chunk: 256,
   seed,
   generate(ctx) {
-    const boxes = [];
-    for (let oz = ctx.box.z0; oz <= ctx.box.z1; oz += 8)
-      for (let ox = ctx.box.x0; ox <= ctx.box.x1; ox += 8) {
-        const [y0, y1] = ground.columnSpan(ox, oz);
-        boxes.push({ x0: ox, y0, z0: oz, x1: ox + 7, y1, z1: oz + 7 });
-      }
+    const boxes = columnBoxes(ctx.box, (ox, oz) => ground.columnSpan(ox, oz));
     renderer.editMany(boxes, (cells, ox, oy, oz) => ground.fillBrick(cells, ox, oy, oz, terrainBase));
   },
 });
 ```
+
+That is still 50 ms or so a chunk on the thread that draws. The fill is a pure function of the
+terrain, so it can move to workers: `makeChunkedWorld({ fill, boxes })` with a
+`makeChunkFillPool` sends each chunk's boxes to a few workers that rebuilt the terrain from
+`fineTerrainInit`, and the main thread only copies the bricks back in, about 10 ms a chunk at 100
+voxels per metre (measured). The wiring, the worker file and what to watch are in
+[ground on workers](/docs/manual/managing-loading/#ground-on-workers).
 
 Fine models are sparse, so the valley example draws every house, tree and rock as a static
 [instance](/docs/manual/instances/) placed once for the whole map, and streams only the ground.
@@ -123,7 +148,9 @@ Fine models are sparse, so the valley example draws every house, tree and rock a
 - A soft fog at the streaming radius hides the edge. The valley example adds a light haze whatever
   the weather and keeps the zoom limit well inside it.
 - Frame time spent in `step` is frame time not spent drawing. A budget of 4 to 6 ms per frame while
-  moving keeps the view responsive.
+  moving keeps the view responsive. With `fill`, `step` applies at least one chunk that came
+  back whatever the budget, and a chunk's copy is about 10 ms at 100 voxels per metre, so a frame
+  that applies one takes that long.
 
 ## See also
 
@@ -134,4 +161,6 @@ Fine models are sparse, so the valley example draws every house, tree and rock a
   [`ChunkContext`](/docs/engine/api/engine/interfaces/ChunkContext/),
   [`scatterRegion`](/docs/engine/api/engine/functions/scatterRegion/),
   [`refineTerrain`](/docs/generators/api/gen-terrain/functions/refineTerrain/),
-  [`FineTerrain`](/docs/generators/api/gen-terrain/interfaces/FineTerrain/)
+  [`FineTerrain`](/docs/generators/api/gen-terrain/interfaces/FineTerrain/),
+  [`columnBoxes`](/docs/engine/api/engine/functions/columnBoxes/),
+  [`makeChunkFillPool`](/docs/engine/api/worker/functions/makeChunkFillPool/)

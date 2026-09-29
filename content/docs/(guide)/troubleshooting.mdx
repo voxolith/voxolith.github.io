@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Fixes for WebGPU missing or slow, software adapters, lost devices, HTTPS on phones, blank canvases, share codes, big worlds on phones, loading text that does not update and a model cache that stays cold.
+description: Fixes for WebGPU missing or slow, software adapters, lost devices, HTTPS on phones, blank canvases, share codes, big worlds on phones, loading text that does not update, a model or scene cache that stays cold and an app that does not load offline.
 ---
 
 Most problems with a Voxolith page come down to WebGPU: whether the browser offers it, on which
@@ -235,9 +235,11 @@ before that frame is painted. See
 Two of those steps can stop blocking instead
 ([Managing loading](/docs/manual/managing-loading/)):
 
-- **The static placement**: give the instance layer a placement worker and
-  `await layer.commitAsync()`; the page keeps painting while it bakes. Uploading new models in
-  `setStatic` still blocks, so keep the wait in front of that.
+- **The model uploads and the static placement**: give the instance layer a scene worker
+  (`makeInstanceLayer(renderer, { worker })`) and `await layer.commitAsync()`; `setStatic` then
+  returns at once, and the page keeps painting while the models encode and the set bakes. With the
+  older bake-only placement worker, uploading new models in `setStatic` still blocks, so keep the
+  wait in front of that.
 - **The pipeline compile**: without `prepare`, the first frame after loading stalls while the
   browser compiles the pipelines it uses, and that stall is not in the `pipelines` phase. Create
   the renderer with `deferPipelines: true` and `await renderer.prepare()` behind the loading
@@ -261,7 +263,113 @@ without generating. When it does not, in order of likelihood:
   design.
 - **The browser evicted it**, or it hit the quota or a `maxBytes` cap. Check with
   `openModelCacheControls(name)` and `usage()`, and see
-  [Managing loading](/docs/manual/managing-loading/#the-model-cache) for phones.
+  [Managing loading](/docs/manual/managing-loading/#the-model-cache) for phones. A cap smaller
+  than what one session needs evicts the models of the scene just left; size it by
+  [measuring](/docs/manual/managing-loading/#sizing-a-cap), and look for a
+  [cap warning](#cache-cap-warning) in the console.
+
+</Accordion>
+
+<Accordion id="scene-cache-cold" title="Every visit encodes and bakes the scene again">
+
+With `serveScene({ cache })`, a warm visit should read the static set's bake and the models'
+encodings: the `placement` and `upload` phases then count their work as cached, and a warm
+placement takes a fraction of a second. When they do not:
+
+- **It is a dev server.** The scene cache is meant to be off there, like the model cache: the dev
+  worker URL does not change with the code.
+- **A cap evicted it.** A `maxBytes` evicts the least recently used entries after each write, and a
+  result bigger than the cap is not kept at all (with a [warning](#cache-cap-warning), once). At
+  100 voxels per metre one page stores hundreds of MB (the examples' valley 824 MB, both stages),
+  so a small cap, or visiting several heavy pages, pushes the others out. Check with
+  `openSceneCacheControls(name)` and `usage({ kind: "placement" })`, and
+  [size the cap](/docs/manual/managing-loading/#sizing-a-cap) from what the scenes store.
+- **A version bump or a new build.** Keys carry `ENCODED_MODEL_VERSION` and `PLACEMENT_BAKE_VERSION`,
+  and are salted with the scene worker's hashed URL, so new renderer code starts cold once by design.
+- **The encodings have no identity.** Without `modelKey` or `hashModels` on the layer, encodings are
+  not cached (the bake still is). `pool.modelKey` knows only models the pool returned; a model you
+  built or copied yourself needs `hashModels`.
+- **The scene changed.** A bake is found by its whole input: any moved, added or removed instance,
+  or a model whose voxels changed, is a new bake. A layout drawn from `Math.random()` or the clock
+  never hits.
+- **Shared database name.** The scene cache and the model cache (or two scene worker scripts) under
+  one name delete each other's entries every time either opens it.
+- **The writes were lost.** `destroy()` terminates a worker still running a job at once, and gives
+  an idle one `closeTimeoutMs` (10 s) to finish its writes. A deflating cache (`compress: true`)
+  after a big first visit can need longer: raise it, or keep the worker.
+
+See [caching encodings and bakes](/docs/manual/managing-loading/#caching-encodings-and-bakes).
+
+</Accordion>
+
+<Accordion id="cache-cap-warning" title="A warning about maxBytes, or serveGenerators throws a RangeError">
+
+The model and scene caches check their `maxBytes` when a worker opens them. The engine picks no
+cap, so these are about a cap your game set:
+
+- **`RangeError: ... maxBytes must be a positive, finite number`**, thrown by `serveGenerators` or
+  `serveScene`: the cap is 0, negative, `NaN`, `Infinity` or not a number (a string from a
+  settings file, say). Leave it out for no cap.
+- **"maxBytes is ..., under 16 MiB"**: below
+  [`CACHE_CAP_FLOOR`](/docs/engine/api/worker/variables/CACHE_CAP_FLOOR/). One refined model or
+  bake is often bigger, so the cache keeps little. A cap in the wrong unit (MB where bytes were
+  meant) lands here.
+- **"above this origin's storage quota"**: the browser evicts before the cap is reached, so the
+  cap never applies. Lower it, or ask for room with `navigator.storage.persist()`.
+- **"an entry of ... is larger than maxBytes"**: that model or bake is not cached and is rebuilt
+  on every visit. Raise the cap. It warns once; later ones are skipped silently.
+
+Each warning comes once per cache, and each worker opens its own, so a pool of four workers may
+print it four times. To size a cap, load the heaviest scenes once on a production build with no
+cap, read `usage()` from `openModelCacheControls` and `openSceneCacheControls`, and add headroom:
+see [sizing a cap](/docs/manual/managing-loading/#sizing-a-cap).
+
+</Accordion>
+
+<Accordion id="holes-in-the-first-view" title="The first view has holes in the ground, or the edge of the world shows">
+
+A streamed world builds its chunks nearest first, and a page shown before they are in shows the
+gaps. In order of likelihood:
+
+- **The first picture does not wait for enough ground.** Wait for the ground around the camera
+  before showing the page: `await world.whenReady(x, z, radius)` (or loop on `readyAround`), with a
+  radius that covers what the first view sees. The examples call it the near-ground gate, `?near=`
+  in metres: nightwood waits for 8 m (6 m left holes in its fog at 100 voxels per metre) and the
+  valley for 18 m. A smaller gate is quicker and shows holes at the edge of the first view. See
+  [ready around the camera](/docs/manual/managing-loading/#ready-around-the-camera).
+- **The radius is tested at chunk centres.** A chunk whose centre is outside the radius but whose
+  edge reaches into the view does not count. Add half a chunk's diagonal (`chunk * Math.SQRT1_2`).
+- **`whenReady` never resolves.** It waits for what `focus` queued and `step` builds: focus on at
+  least its radius around the same point, and keep calling `step` (from the frame loop, or a loop
+  behind the loading screen).
+- **A chunk failed to fill on a worker.** With `makeChunkedWorld({ fill })` a failed chunk stays
+  empty, is reported to `onError` (by default `console.error`, "chunk ... failed to fill"), is not
+  retried until it has been freed, and makes a `whenReady` over it reject. Look for the error in
+  the console.
+- **Holes after moving.** The world keeps building in `step`; a budget too small for the camera's
+  speed lets the view outrun it. See [Streaming](/docs/manual/streaming/#costs).
+
+</Accordion>
+
+<Accordion id="not-offline" title="The app does not load offline">
+
+An app built with `serviceWorker()` from `@voxolith/engine/vite` and registered with
+`registerServiceWorker()` loads offline after one visit online. When it does not:
+
+- **It is a dev server or localhost.** There is no worker on `vite dev` (the plugin runs on
+  `vite build` only), and registration skips `localhost`, `127.0.0.1` and `[::1]`. To try it,
+  build, run `vite preview` and pass `registerServiceWorker({ localhost: true })`.
+- **The first visit had not finished.** The worker registers after the page's `load` event and
+  then precaches; `onOfflineReady` says when that is done.
+- **A public file is missing.** Files in `public/` are not in the bundle, so they are precached
+  only when listed in `include`, and fetched data is cached only by a `runtime` rule or once it
+  has been fetched.
+- **The base is relative.** The worker's scope comes from Vite's `base`, which must be `/` or
+  `/<repo>/`.
+- **The page shows the old version after a deploy.** The page that was open keeps its code; the
+  next load runs the new build, and `onUpdate` fires when the new worker has taken over.
+
+See [Offline and installing](/docs/manual/offline-and-installing/).
 
 </Accordion>
 

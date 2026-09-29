@@ -78,30 +78,14 @@ the LAN `https://` address on the phone and accept the self-signed certificate o
 
 ## Installable and offline
 
-Demolition Shot is a small PWA: a web manifest, icons, and a service worker registered under the
-deploy base with a build id, so every deploy installs a fresh worker whose cache name derives from
-it and stale assets never outlive a release:
-
-```ts
-declare const __BUILD_ID__: string; // set by `define` in vite.config.ts
-
-export function registerPwa(): void {
-  if (!("serviceWorker" in navigator)) return;
-  const base = import.meta.env.BASE_URL;
-  window.addEventListener("load", () => {
-    navigator.serviceWorker
-      .register(`${base}sw.js?v=${encodeURIComponent(__BUILD_ID__)}`, { scope: base })
-      .catch((e) => console.warn("[pwa] register failed", e));
-  });
-}
-```
-
-Its `sw.js` precaches the app shell on install, goes network-first for navigations (so a new deploy
-shows up), cache-first for hashed `/assets/`, and stale-while-revalidate for everything else on its
-origin. After the first visit the game plays offline. The manifest uses `"start_url": "."` and
-`"scope": "."` so it works under any base path. Copy `public/sw.js`, `public/manifest.webmanifest`
-and `src/pwa.ts` from [demolition-shot](https://github.com/voxolith/demolition-shot) as a starting
-point.
+Demolition Shot is an installable app that plays offline after one visit. It uses the engine's
+shared service worker: `serviceWorker()` from `@voxolith/engine/vite` in its `vite.config.ts`
+precaches the whole build and the public files its manifest and page use, and
+`registerServiceWorker()` from `@voxolith/engine/pwa` registers it under the deploy base. Each
+deploy gets a new worker and a fresh cache, so stale assets never outlive a release. The manifest
+uses `"start_url": "."` and `"scope": "."` so it works under any base path, and lists a
+maskable icon for launchers that crop to their own shape. How all of it works, and how to do the
+same in your app, is in [Offline and installing](/docs/manual/offline-and-installing/).
 
 Generated models are a separate cache: the generator worker's IndexedDB cache (see
 [Workers and caching](/docs/manual/workers-and-caching/)) survives between visits on its own.
@@ -117,6 +101,7 @@ Generated models are a separate cache: the generator worker's IndexedDB cache (s
 ## See also
 
 - [Performance](/docs/manual/performance/)
+- [Offline and installing](/docs/manual/offline-and-installing/)
 - [Deploying](/docs/manual/deploying/)
 - [Input](/docs/manual/input/)
 - API: [`makeTouchControls`](/docs/engine/api/input/functions/makeTouchControls/),

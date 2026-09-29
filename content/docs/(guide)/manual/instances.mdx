@@ -45,6 +45,12 @@ layer.commit();
 `Orientation` would, pass `orientationYaw(o)`, which returns `{ yaw, mirror }`; the valley example
 places the same layout as the stamped world page this way.
 
+A placement can also draw its model enlarged, `scale: k` for a model built k times coarser than
+the world (a 10 voxels per metre tree in a 100 voxels per metre world takes 10), anchored at
+`k × anchor`. That is how a scene shows coarse placeholders while its fine models are made; once
+a new static set is drawing, the layer releases the models the old one used and the new one does
+not. See [coarse first, one swap](/docs/manual/managing-loading/#coarse-first-one-swap).
+
 ## Moving things
 
 Moving placements take a model id and anchor, since they are rebuilt every frame:
@@ -76,9 +82,9 @@ point lights and water treat it like any other voxel.
   that never uses them pays nothing. The first placement builds the instanced pipeline.
 - Static placements cost once, but by default that once is on the main thread: `setInstances`
   builds a sub-cell table for every listed cell, about 0.65 s for the nightwood forest at 20
-  voxels per metre, 5 s at 50 and 20 s at 100. Place scenery once, not per frame, or bake it on a
-  worker with `layer.commitAsync()` (see
-  [placement off the main thread](/docs/manual/managing-loading/#placement-off-the-main-thread)).
+  voxels per metre, 5 s at 50 and 20 s at 100, and the models' first upload is main-thread work
+  too. Place scenery once, not per frame, or encode and bake it on a scene worker with
+  `layer.commitAsync()` (see [the scene worker](/docs/manual/managing-loading/#the-scene-worker)).
   A dynamic set costs its members and the cells they touch every commit, so keep only what
   actually moves in it.
 - The first placement builds the instanced pipeline in the next frame. To compile it behind a
@@ -100,8 +106,11 @@ point lights and water treat it like any other voxel.
   stamped copy.
 - Instances draw from their own palettes. A `base` from the world's `PaletteAllocator` works too,
   but then you are back to sharing 255 slots.
-- Free what you no longer use: `layer.models.release(model)` and `layer.palettes.release(key)`.
-  An instance still naming a removed palette draws garbage colours.
+- Free what you no longer use: `layer.palettes.release(key)`, and `layer.models.release(model)`
+  for models you asked for by id. Models a static set uploaded are released by the layer once a
+  set that does not need them is drawing (`keepUnused: true` keeps them). An instance still naming
+  a removed palette draws garbage colours.
+- Scaled models cannot be posed: keep animated things at scale 1.
 
 ## See also
 

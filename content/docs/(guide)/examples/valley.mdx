@@ -1,6 +1,6 @@
 ---
 title: valley
-description: "The world valley at 20, 50 or 100 voxels per metre: refined models drawn as instances, ground streamed in chunks, rats at their real size and a lighter phone profile."
+description: "The world valley at 20, 50 or 100 voxels per metre: coarse models first and one swap to the refined ones, drawn as instances, ground streamed in chunks filled on workers, rats at their real size and a lighter phone profile."
 ---
 
 **[Open the live page](/examples/valley/)** ·
@@ -30,11 +30,26 @@ their real size roam the village.
   ([`orientationYaw`](/docs/engine/api/engine/functions/orientationYaw/)) and at fractional
   positions. Nothing is written into the world, and each species, even each house, has a palette
   of its own (`layer.palettes.of`), outside the world's 256 slots.
-- **Streamed fine terrain.** [`refineTerrain`](/docs/generators/api/gen-terrain/functions/refineTerrain/)
-  turns the coarse terrain into a smooth 5, 2 or 1 cm surface with grass blades and pebbles, filled per
-  brick column ([`FineTerrain.columnSpan`](/docs/generators/api/gen-terrain/interfaces/FineTerrain/)) through
-  `renderer.editMany` inside a [`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/)
-  of 256-voxel chunks.
+- **Coarse first, one swap.** At 50 and 100 voxels per metre the valley shows first with every
+  model built at the generators' native 10 voxels per metre and drawn 5 or 10 times enlarged
+  ([`EntityPlacement.scale`](/docs/engine/instances/#scaled-placements)). The fine models are
+  generated, encoded and baked behind it, and swapped in at once, in one frame, when their bake
+  applies; the coarse models are released after
+  ([coarse first, one swap](/docs/manual/managing-loading/#coarse-first-one-swap)). At 20 there is
+  one stage, since a coarse one would only add work there. `?coarse=0` goes straight to the fine
+  models. The rats are never coarse: scaled models cannot be posed.
+- **Streamed fine terrain, filled on workers.** [`refineTerrain`](/docs/generators/api/gen-terrain/functions/refineTerrain/)
+  turns the coarse terrain into a smooth 5, 2 or 1 cm surface with grass blades and pebbles,
+  streamed by a [`makeChunkedWorld`](/docs/engine/api/engine/functions/makeChunkedWorld/) of
+  256-voxel chunks. Its bricks are filled on up to six workers
+  ([ground on workers](/docs/manual/managing-loading/#ground-on-workers)), one box per brick column
+  ([`columnBoxes`](/docs/engine/api/engine/functions/columnBoxes/) over
+  [`FineTerrain.columnSpan`](/docs/generators/api/gen-terrain/interfaces/FineTerrain/)), and the
+  main thread only copies them in, about 10 ms a chunk at 100 voxels per metre against 50 to 57
+  before (measured). The height map is sampled in bands on workers too, while the models generate.
+- **The ground near the view first.** The first picture waits for the ground within 18 m of the
+  view (`?near=`, through [`whenReady`](/docs/manual/managing-loading/#ready-around-the-camera)),
+  and the rest of the streamed radius comes in after it, nearest first.
 - **An instanced crowd, at real size only.** [`makeCrowd({ instances })`](/docs/engine/api/animation/functions/makeCrowd/)
   draws each rat pose as an instance, so rats glide and turn smoothly. The page builds rats only
   where gen-creature's [`realSizeAt`](/docs/generators/creature/#sizing-for-a-world) holds for
@@ -49,39 +64,67 @@ their real size roam the village.
 - **A model cache.** Production builds keep the generated models in IndexedDB, keyed by the
   worker's hashed URL, so a second visit loads in seconds and a new build never reads an old
   model.
-- **Loading off the main thread.** The static scenery bakes on a [placement worker](/docs/manual/managing-loading/#placement-off-the-main-thread) while the ground builds, and the pipelines compile behind the loading screen ([`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up)). At 50 voxels per metre that cut the main thread's long tasks during the load from 2073 ms to 835 ms on a real GPU; what remains is mostly the model upload in `setStatic`.
-- **Load progress.** One [load tracker](/docs/manual/loading-screens/) collects the renderer, the generator workers, the instance layer, the streamed ground and the page's own steps; the [loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) shows the steps the page lists while it loads, and `?perf` also logs the load timeline to the console.
+- **A scene cache.** Beside it, the [scene worker](/docs/manual/managing-loading/#caching-encodings-and-bakes)
+  keeps the models' encodings (by `pool.modelKey`, so a hit sends no bricks) and the static set's
+  bakes, both stages', uncompressed, under a 2.5 GiB cap sized for every example page at every
+  scale: 17 MB at 20 voxels per metre, 177 MB at 50 and 824 MB at 100 (measured). Production
+  builds only.
+- **Loading off the main thread.** The static scenery's models are encoded and the set baked on a [scene worker](/docs/manual/managing-loading/#the-scene-worker), and the main thread only adds the encoded models, a few per frame, while the ground streams in. The pipelines compile behind the loading screen ([`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up)), both the scaled variant for the coarse stage and the plain one for after the swap. Measured on a real GPU with a warm model cache, the longest main-thread task from the upload to the first frame went from 4.15 s to 74 ms at 100 voxels per metre, and from 0.85 s to 76 ms at 50, when the scene worker came in.
+- **What the load takes now.** Measured on a real GPU in desktop Chrome, a warm visit's first frame is 1.4 s at 50 voxels per metre and 2.5 s at 100, against 4.9 s and 13.6 s with the model cache alone and 3.1 s and 6.4 s with the scene cache as well ([what it gave the examples](/docs/manual/managing-loading/#what-it-gave-the-examples)). Most of it is the 18 m of ground the first picture waits for.
+- **Load progress.** One [load tracker](/docs/manual/loading-screens/) collects the renderer, the generator workers, the instance layer, the streamed ground and the page's own steps; the [loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) shows the steps the page lists while it loads, and `?perf` also logs the load timeline to the console. At 50 and 100 the rows before the first picture are the coarse stage's ("Generating coarse models", "Uploading coarse models", "Placing instances"), and the fine stage follows in the corner pill as "Generating detail", "Uploading detail" and "Placing detail", beside the ground still streaming. The timeline files the fine stage under phases of its own (`fine.models`, `fine.upload`, `fine.placement`) and marks `fine` when the swap has applied.
 
 ## The interesting part
 
-Scenery is one static list of instances, built from the shared layout and scaled by `K`, the
-factor over the world page's 10 voxels per metre:
+Scenery is a list of spots, built from the shared layout and scaled by `K`, the factor over the
+world page's 10 voxels per metre. Each stage places its own models on the same spots: the coarse
+stage with `scale: KC` (5 or 10), the fine one at scale 1.
 
 ```ts
 valley.scatter(0, 0, COARSE.x - 1, COARSE.z - 1, (pt) => {
-  const list = fine.get(pt.key)!;
-  const e = list[pt.variant.index % list.length];
   const { yaw, mirror } = orientationYaw(pt.variant.orientation);
   const x = pt.x * K, z = pt.z * K;
-  statics.push({ model: e.model, x, y: ground.heightAt(x + K / 2, z + K / 2) + 1, z, yaw, mirror, base: baseOf(pt.key) });
+  spots.push({ key: pt.key, variant: pt.variant.index, x, y: ground.heightAt(x + K / 2, z + K / 2) + 1, z, yaw, mirror, base: baseOf(pt.key) });
   // ...
 }, false);
-layer.setStatic(statics);
+
+/** The static set for one stage's models, drawn `scale` times enlarged. */
+const statics = (models: Map<string, Entity[]>, scale: number) => spots.map(({ key, variant, ...s }) => {
+  const list = models.get(key)!;
+  return { ...s, model: list[variant % list.length].model, scale };
+});
+layer.setStatic(statics(first, KC));
+const placed = commitStatic(layer);
+// ...after the first picture, once the fine models and the plain pipeline are ready:
+await swapToFine(staged, layer, statics(models, 1)); // setStatic + commitAsync in one task
 ```
 
-and the ground is streamed a brick column at a time, each box only as tall as that column needs:
+The ground is filled on workers from the levelled terrain and the paths as data, a brick column
+at a time, each box only as tall as that column needs, and the first picture waits for the ground
+near the view:
 
 ```ts
-generate(ctx) {
-  const boxes = [];
-  for (let oz = ctx.box.z0; oz <= ctx.box.z1; oz += 8)
-    for (let ox = ctx.box.x0; ox <= ctx.box.x1; ox += 8) {
-      const [y0, y1] = ground.columnSpan(ox, oz);
-      boxes.push({ x0: ox, y0, z0: oz, x1: ox + 7, y1, z1: oz + 7 });
-    }
-  renderer.editMany(boxes, (cells, ox, oy, oz) => ground.fillBrick(cells, ox, oy, oz, terrainBase, topOverride));
-},
+const ground = refineTerrain(terrain, K, { seed });
+const fill = groundFill({ fine: fineTerrainInit(ground, topOverride), base: terrainBase }); // makeChunkFillPool
+const world = makeChunkedWorld({
+  target: renderer,
+  size: SIZE,
+  chunk: CHUNK,
+  seed,
+  load,
+  fill,
+  boxes: ({ box }) => columnBoxes(box, (ox, oz) => ground.columnSpan(ox, oz)),
+  generate() {
+    built++; // runs once a chunk's bricks are in
+  },
+});
+world.focus(start[0], start[1], RADIUS, RADIUS * 1.3);
+// ...
+await buildAround(world, focusX, focusZ, Math.min(RADIUS, NEAR + CHUNK * Math.SQRT1_2), 40); // whenReady + step
 ```
+
+`groundFill`, `buildAround` and `swapToFine` are the examples' own helpers, in
+[`shared/ground.ts`](https://github.com/voxolith/examples/blob/main/src/shared/ground.ts) and
+[`shared/detail.ts`](https://github.com/voxolith/examples/blob/main/src/shared/detail.ts).
 
 A light haze whatever the weather hides the streamed edge at the horizon, and the zoom limit
 keeps the camera inside it.
@@ -105,6 +148,8 @@ its scale, and keeps every other URL option. The HUD title names the voxel size.
 | `?variants=` | 3 (1) | models per species, 1 to 10; 10 matches the world page exactly but needs over a gigabyte of GPU memory |
 | `?rats=` | 60 (20) at 100, else none | rats in the crowd, 0 to 400; a number forces a crowd at any scale, larger than life below 100 |
 | `?radius=` | 24 (16) | streamed radius, in metres (at least 8) |
+| `?near=` | 18 | metres of ground around the view the first picture waits for (at most the radius); less is sooner, with holes at the edge of the first view |
+| `?coarse=0` | | no coarse stage at 50 and 100: the fine models before the first picture |
 | `?seed=` | `voxolith` | a different valley |
 | `?season=` | `summer` | `spring`, `summer`, `autumn`, `winter` |
 | `?time=night` | | start at midnight by the lamp |

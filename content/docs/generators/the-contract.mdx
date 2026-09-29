@@ -84,6 +84,12 @@ For each value in `scales`, at the defaults:
 - it generates within 20 s and fits 96 MB of GPU bricks;
 - at least 99% of the structure is grounded, with `looseRoles` (single leaves, petals, seed
   heads) neither counted nor carrying the flood;
+- it stays within one native voxel of the native model: every fine voxel, divided by k, lies in
+  or next to (its 26 neighbours) an occupied native voxel, loose roles included. So the
+  fine model never reaches more than one coarse voxel past the native model drawn enlarged as its
+  placeholder. The failure message counts the voxels further out and names the
+  worst one's role and position. Broadleaf's root flare was eased into its coarse box to pass,
+  leaving its model at 10 voxels per metre byte-identical;
 - in `full`, a second run gives the same bricks.
 
 </Accordion>

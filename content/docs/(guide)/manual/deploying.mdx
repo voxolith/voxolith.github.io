@@ -107,7 +107,9 @@ their `workspace:*` dependencies resolve; copy it from any of the app repositori
 - Vite hashes asset file names, so browsers pick up new code on the next load.
 - A generator worker's IndexedDB cache is salted with the worker's hashed URL, so a new build never
   reads a model the old one generated.
-- A service worker should version its cache per build, as Demolition Shot's does with a build id.
+- The engine's service worker (`serviceWorker()` from `@voxolith/engine/vite`) names its cache after
+  a hash of the build, so a deploy installs a new worker that takes over and deletes the old
+  cache; see [Offline and installing](/docs/manual/offline-and-installing/#updates).
 
 ## Pitfalls
 
@@ -121,6 +123,7 @@ their `workspace:*` dependencies resolve; copy it from any of the app repositori
 
 - [Getting started](/docs/getting-started/)
 - [Mobile and PWA](/docs/manual/mobile-and-pwa/)
+- [Offline and installing](/docs/manual/offline-and-installing/)
 - [Renderer: entry points](/docs/renderer/entry-points/)
 - API: [`initGpu`](/docs/renderer/api/renderer/functions/initGpu/),
   [`showUnsupportedScreen`](/docs/renderer/api/renderer/functions/showUnsupportedScreen/),

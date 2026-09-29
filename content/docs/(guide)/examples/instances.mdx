@@ -25,7 +25,8 @@ GPU memory with what stamping would cost; `?stamp` stamps the trees instead.
 - [`blitModelToBricks`](/docs/engine/api/engine/functions/blitModelToBricks/) for comparison
   (`?stamp`), turned in 90° steps.
 - `renderer.instanceStats()`: models, instances and the GPU bytes they use.
-- A [placement worker](/docs/manual/managing-loading/#placement-off-the-main-thread): the static trees bake off the main thread while the ground builds (not with `?stamp`, which stamps them instead), and the pipelines compile behind the loading screen with [`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up).
+- A [scene worker](/docs/manual/managing-loading/#the-scene-worker): the trees' models are encoded and their static set baked off the main thread, which only adds the encoded models (not with `?stamp`, which stamps them instead), and the pipelines compile behind the loading screen with [`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up).
+- A [scene cache](/docs/manual/managing-loading/#caching-encodings-and-bakes) in production builds: the trees are grown on the main thread, so they have no generator key, and the layer passes `hashModels: true`, which looks their encodings up by a hash of their bytes on the worker. The bricks are still sent, so that saves the encode; the bake is read by its own digest. About 1 MB (measured).
 
 ## The interesting part
 
@@ -51,6 +52,7 @@ the [valley](/docs/examples/valley/) does, and the 256-slot limit no longer appl
 | `?trees=` | 160 | number of trees, 0 to 2000 |
 | `?rats=` | 400 | number of rats, 0 to 3000 |
 | `?stamp` | | stamp the trees into the world instead of instancing them |
+| `?upscale=` | | an integer of at least 2: a check of the renderer's [scaled models](/docs/renderer/instances/#scaled-models), not a pattern to copy. Every other tree is a copy of its model that many times coarser, drawn that many times larger (`addModel(src, { scale })`), so a blocky tree should have the outline and height of the fine trees of the same model, standing where it was placed. It uploads and places on the main thread, without the scene worker |
 | `?seed=` | `instances` | a different field |
 
 Plus the [common ones](/docs/examples/#common-url-options), including `?perf`.

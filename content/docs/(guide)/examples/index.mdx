@@ -51,21 +51,41 @@ Every example reads a few options through the shared startup code (`src/shared/b
 | option | effect |
 |---|---|
 | `?diag` | show the adapter, the 3D texture limit and the storage binding limit in the page |
-| `?perf` | where the example uses `makePerf`: show the frame-time and render-scale overlay; all but the bench also log the [load timeline](/docs/manual/loading-screens/#measuring) to the console, with the load time in the overlay's label |
+| `?perf` | where the example uses `makePerf`: show the frame-time and render-scale overlay; all but the bench also log the [load timeline](/docs/manual/loading-screens/#measuring) to the console, with the load time and "first frame at X s" in the overlay's label |
 | `?e2e` | expose test hooks on `window` for the end-to-end input checks; not for normal use |
 
 Every page also shows the same [loading screen](/docs/manual/loading-screens/#the-examples-loading-screen) while it loads: one row per step the page lists and an overall bar, then a corner pill for anything that continues in the background. A load that fails says so on that screen.
 
 GPU validation errors and a lost device are shown in the page too, since a phone has no console.
 
+## Offline
+
+After one visit online, every example page loads offline, including pages you never opened: a
+service worker caches the whole build on the first visit (see
+[Offline and installing](/docs/manual/offline-and-installing/)). Generated models come from the
+IndexedDB model cache, or are generated again in the browser, and the pages with instanced scenery
+read their models' encodings and static bakes from a second IndexedDB cache, the
+[scene cache](/docs/manual/managing-loading/#caching-encodings-and-bakes) (`voxolith-scene`, up to
+2.5 GiB, least recently used out first), or compute them again. Both caps are sized to what the
+pages store at every scale (106 MB of models, 1816 MB of encodings and bakes, measured). With
+the caches, a coarse first stage and the ground filled on workers, a warm first frame of
+nightwood at 100 voxels per metre is 1.0 s, where it was 30.8 s with the model cache alone
+(measured). The examples only cache; they are not an installable app. A new deploy takes
+over quietly and runs on the next load, and a deploy that changed a worker's code starts its cache
+cold once, since each is salted by its worker's hashed URL. The dev server caches nothing. A
+production build served from `localhost` keeps the model and scene caches but registers no service
+worker, so it does not work offline there.
+
 ## Apps
 
 Larger programs built on the same packages, each in its own repository:
 
 - **[Viewer](/viewer/)**: open MagicaVoxel `.vox` files and Minecraft `.mca` regions, or build
-  models from the generators and share them as codes. [Source](https://github.com/voxolith/viewer)
+  models from the generators and share them as codes. Installable, and it works offline after
+  one visit, including every sample you have opened. [Source](https://github.com/voxolith/viewer)
 - **[Demolition Shot](/demolition-shot/)**: aim, release, watch it crumble. A mobile demolition
   game and installable PWA, the engine's showcase. [Source](https://github.com/voxolith/demolition-shot)
-- **[Editor](/editor/)**: a voxel editor, in its early days. [Source](https://github.com/voxolith/editor)
+- **[Editor](/editor/)**: a voxel editor, in its early days. Installable, and it opens offline
+  after one visit. [Source](https://github.com/voxolith/editor)
 
 <ImageZoom src="/shots/demolition-shot.webp" alt="Demolition Shot: a brick tower on a checkered field, the slingshot in the foreground" width={960} height={540} />
