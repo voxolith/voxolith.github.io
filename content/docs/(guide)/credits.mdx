@@ -116,6 +116,62 @@ The key light's jitter follows the R2 low-discrepancy sequence from Martin Rober
 [*The Unreasonable Effectiveness of Quasirandom Sequences*](https://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/)
 (2018, blog post).
 
+## Temporal upscaling
+
+[Temporal upscaling](/docs/renderer/quality-and-performance/#temporal-upscaling)
+(`RenderQuality.upscale`) traces the scene at a fraction of the output size and resolves the
+full-size picture over frames.
+
+<Cards>
+  <Card
+    title="High Quality Temporal Supersampling"
+    href="https://advances.realtimerendering.com/s2014/"
+    description="Brian Karis. Advances in Real-Time Rendering in Games, SIGGRAPH 2014 course."
+  />
+</Cards>
+
+- **Karis** describes temporal supersampling as shipped in Unreal Engine 4: each frame is rendered
+  through a different sub-pixel offset and accumulated into a reprojected colour history, which is
+  clamped to the current frame's neighbourhood so stale colour cannot ghost. Voxolith's resolve
+  follows it: a Halton(2,3) jitter of the primary ray, the reprojected colour history, the clamp
+  to the padded range of the frame's 3 × 3 samples, Catmull-Rom sampling of the history, and the
+  new sample weighted by its distance to the pixel centre.
+
+**What is Voxolith's own:** it is used to upscale a smaller trace, in a pass of its own
+(`resolve.wesl`); reprojection needs no motion vectors, since it uses the hit distance the
+temporal kernel already stores; a still pixel keeps a running average and then holds, restarting
+only after four frames outside the range, so sub-pixel voxel detail does not shimmer; pixels near
+a light that changed keep a short average; and the lights' glow is added after the resolve, from
+the current frame.
+
+## A physical sky
+
+[`makePhysicalSky`](/docs/engine/atmosphere/#skies) in `@voxolith/engine/atmosphere` is a
+physically based sky drawn as a renderer background, which also lights the scene.
+
+<Cards>
+  <Card
+    title="A Scalable and Production Ready Sky and Atmosphere Rendering Technique"
+    href="https://doi.org/10.1111/cgf.14050"
+    description="Sébastien Hillaire. Computer Graphics Forum 39(4) (EGSR 2020), pages 13-22."
+  />
+</Cards>
+
+- **Hillaire** renders the sky from small look-up tables that are cheap enough to rebuild at run
+  time: transmittance, a multiple-scattering table, and a sky-view table with a non-linear
+  latitude that puts its resolution at the horizon. Voxolith's physical sky builds those three
+  tables in compute shaders at his sizes (transmittance 256 × 64, multiple scattering 32 × 32,
+  sky view 192 × 108).
+- **Bruneton and Neyret**, *Precomputed Atmospheric Scattering*, Computer Graphics Forum 27(4)
+  (EGSR 2008), [doi:10.1111/j.1467-8659.2008.01245.x](https://doi.org/10.1111/j.1467-8659.2008.01245.x):
+  the transmittance table's parameterisation and the Earth constants, as revised in Bruneton's
+  2017 reference implementation, which Hillaire's also uses.
+
+**What is Voxolith's own:** a CPU twin of the model that the scene's key light, ambient and fog
+colour are taken from; a second sky-view table for the moon, with its phase, lighting the night
+sky; stars one or two pixels wide at any resolution; and the engine's weather (cloud cover, overcast light)
+applied on top.
+
 ## Further reading
 
 Papers from [AMD's publications](https://gpuopen.com/learn/publications/) that fit the renderer's

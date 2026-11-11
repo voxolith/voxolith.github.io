@@ -57,7 +57,7 @@ Role `r` of the terrain now lives in slot `groundBase + r - 1`. `buildPalette()`
 `water` material, which is what makes it transparent and animated.
 
 ```ts
-const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { background: classicSky });
 renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
 renderer.setQuality(gpu.software ? "low" : "medium");
 ```
@@ -126,7 +126,7 @@ import {
   WebGPUUnsupportedError,
 } from "@voxolith/renderer";
 import { PaletteAllocator } from "@voxolith/engine";
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 import { generateTerrain } from "@voxolith/gen-terrain";
 import "./style.css";
 
@@ -156,7 +156,7 @@ const terrain = generateTerrain(
 const palette = new PaletteAllocator(1);
 const groundBase = palette.allocate(terrain.roles, "terrain").base;
 
-const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { background: classicSky });
 renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
 renderer.setQuality(gpu.software ? "low" : "medium");
 

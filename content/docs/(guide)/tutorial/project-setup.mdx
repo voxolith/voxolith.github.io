@@ -185,7 +185,7 @@ import {
   showUnsupportedScreen,
   WebGPUUnsupportedError,
 } from "@voxolith/renderer";
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 import "./style.css";
 
 const canvas = document.getElementById("scene") as HTMLCanvasElement;
@@ -198,7 +198,7 @@ const gpu = await initGpu(canvas).catch((err: unknown) => {
 
 // --- an empty world ---------------------------------------------------------------
 const SIZE = { x: 384, y: 128, z: 384 };
-const renderer = await createRenderer(gpu, { size: SIZE, palette: new Float32Array(256 * 4) });
+const renderer = await createRenderer(gpu, { size: SIZE, palette: new Float32Array(256 * 4) }, { background: classicSky });
 renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
 
 const camera = makeCamera({ target: [SIZE.x / 2, 20, SIZE.z / 2], distance: 420, pitchDeg: 30, fovDeg: 45 });
@@ -223,7 +223,9 @@ What this does:
 - **`createRenderer(gpu, { size, palette })`** makes a renderer for a world of 384 × 128 × 384
   voxels. There are no voxels yet (no `data`), and the palette is 256 empty colours.
   `setClipBounds` tells the renderer the whole box is in use, since it cannot infer that from an
-  empty world.
+  empty world. `background: classicSky` is the sky: the renderer draws none of its own beyond a
+  plain gradient, and `classicSky` is the engine's, with the sun, moon, stars and clouds that
+  `atmosphereFrame` describes.
 - **`makeCamera`** gives a function that turns a yaw (in degrees) into the camera fields a frame
   needs.
 - **`timeOfDay(0.35)`** is the lighting for mid-morning: 0 is midnight, 0.25 sunrise, 0.5 noon,

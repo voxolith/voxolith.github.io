@@ -132,9 +132,6 @@ const camera = makeCamera({ target: [16, 16, 16], distance: 80, pitchDeg: 30, fo
 const sun: [number, number, number] = [0.5, 0.8, 0.35];
 const LIGHTING = {
   lightDir: sun, lightColor: [1, 0.98, 0.94], ambientSky: [0.5, 0.53, 0.6], ambientGround: [0.3, 0.29, 0.27],
-  sunDir: sun, moonDir: [0, -1, 0], sunColor: [1, 0.96, 0.85], moonColor: [0, 0, 0],
-  skyTop: [0.35, 0.55, 0.9], skyHorizon: [0.75, 0.82, 0.92],
-  nightFactor: 0, sunIntensity: 1, moonIntensity: 0,
 } satisfies Omit<FrameParams, keyof CameraFrame>;
 
 const loop = makeFrameLoop({

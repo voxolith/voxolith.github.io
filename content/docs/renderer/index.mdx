@@ -21,11 +21,11 @@ The renderer is **WebGPU only**. It needs `navigator.gpu` and a secure context (
 - **Instances**: `addModel` uploads a model once and `setInstances` draws it any number of times,
   at any yaw, mirrored, at fractional positions, with palettes of its own. See
   [Instances](/docs/renderer/instances/).
-- **Lighting and materials**: a directional key light, a sky with sun and moon discs, soft
+- **Lighting and materials**: a directional key light, a pluggable background (the sky), soft
   shadows, face ambient occlusion, up to 32 point lights with range-limited shadows and a visible
   glow; emissive, glass, metal and animated water materials. See
   [Lighting and materials](/docs/renderer/lighting/).
-- **Atmosphere**: fog, clouds, rain and snow, wet and snow-covered surfaces and wind on water, all
+- **Atmosphere**: fog, rain and snow, wet and snow-covered surfaces and wind on water, all
   off at zero. The renderer knows the effects, not the weather. See
   [Atmosphere](/docs/renderer/atmosphere/).
 - **Performance**: quality presets, an adaptive render scale and a render-on-demand frame loop,
@@ -72,16 +72,17 @@ const camera = makeCamera({ target: [16, 16, 16], distance: 80, pitchDeg: 30, fo
 const loop = makeFrameLoop({
   render() {
     resizeToDisplay(gpu);
-    renderer.render({ ...camera(35), ...LIGHTING }); // LIGHTING: the key light and sky fields of FrameParams
+    renderer.render({ ...camera(35), ...LIGHTING }); // LIGHTING: the key light and ambient fields of FrameParams
   },
 });
 observeResize(canvas, loop);
 loop.invalidate();
 ```
 
-`FrameParams` is the camera frame plus the lighting and sky fields, and optionally the atmosphere
-fields. `timeOfDay(phase)` from [`@voxolith/engine/atmosphere`](/docs/engine/atmosphere/) produces
-the lighting half from one number.
+`FrameParams` is the camera frame plus the key light and ambient, and optionally the
+[background](/docs/renderer/atmosphere/#backgrounds)'s parameters and the atmosphere fields.
+`timeOfDay(phase)` from [`@voxolith/engine/atmosphere`](/docs/engine/atmosphere/) produces the
+lighting from one number, and the same module has the skies.
 
 ## Where to start
 

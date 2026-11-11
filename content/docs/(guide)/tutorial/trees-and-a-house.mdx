@@ -191,7 +191,7 @@ import {
   WebGPUUnsupportedError,
 } from "@voxolith/renderer";
 import { blitModelToBricks, PaletteAllocator, type Entity, type Orientation } from "@voxolith/engine";
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 import {
   axis,
   button,
@@ -289,7 +289,7 @@ const groundBase = palette.allocate(terrain.roles, "terrain").base;
 const houseBase = palette.allocateFor(house, "house").base;
 const treeBase = new Map(treeModels.map((t) => [t, palette.allocate(t.entity.model.roles, t.kind).base]));
 
-const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { background: classicSky });
 renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
 renderer.setQuality(gpu.software ? "low" : "medium");
 

@@ -1,9 +1,9 @@
 ---
 title: Atmosphere
-description: The renderer's raw atmospheric effects (fog, clouds, rain and snow, wet and snow-covered surfaces, wind on water, effectScale) and what each one costs.
+description: The renderer's raw atmospheric effects (fog, rain and snow, wet and snow-covered surfaces, wind on water, effectScale), the pluggable background that draws the sky, and what each one costs.
 ---
 
-The renderer draws raw atmospheric effects and knows nothing about weather. Fog, a cloud layer,
+The renderer draws raw atmospheric effects and knows nothing about weather. Fog,
 falling particles, wet or covered ground and wind on the water are independent effects, each off
 until its amount is above zero, so a scene that sets none of them renders exactly as before.
 
@@ -11,8 +11,8 @@ What the effects *mean* (rain, a blizzard, a foggy morning) is decided above the
 
 | layer | owns |
 |---|---|
-| renderer | the effects: optional fields of `FrameParams`, all off at zero |
-| [`@voxolith/engine/atmosphere`](/docs/engine/atmosphere/) | the vocabulary and translator: `timeOfDay`, `Atmosphere` presets, blending and transitions, `approach`, `atmosphereFrame` |
+| renderer | the effects: optional fields of `FrameParams`, all off at zero; a slot for a background module |
+| [`@voxolith/engine/atmosphere`](/docs/engine/atmosphere/) | the vocabulary and translator: `timeOfDay`, `Atmosphere` presets, blending and transitions, `approach`, `atmosphereFrame`; the skies (`classicSky`, `makePhysicalSky`) |
 | the game | whether there is weather at all, when it changes, how wetness and snow cover build up |
 
 Keep policy out of the engine and meaning out of the renderer.
@@ -41,19 +41,6 @@ sky is behind the wall too. It is the way to bound a close-up scene at a fine sc
     color: { description: 'Fog colour.', type: '[number, number, number]', required: true },
     heightFalloff: { description: 'Fog thins with height at this rate per voxel above y = 0. 0 is uniform.', type: 'number', default: '0' },
     distance: { description: 'View distance in voxels: rays stop there and the fog is total. 0 is unbounded.', type: 'number', default: '0' },
-  }}
-/>
-
-### `clouds`
-
-A drifting noise layer over the sky gradient. `cover` 1 is overcast and hides the sun, moon and
-stars.
-
-<TypeTable
-  type={{
-    cover: { description: '0 clear to 1 fully overcast.', type: 'number', required: true },
-    color: { description: 'Cloud colour.', type: '[number, number, number]', required: true },
-    drift: { description: 'Drift of the layer, sky units per second on x and z.', type: '[number, number]', required: true },
   }}
 />
 
@@ -105,11 +92,71 @@ at k times the resolution passes k so waves, caustics, drops and snowflakes keep
 Fog density and fall speeds are already per voxel and are scaled by whoever sets them.
 `atmosphereFrame(..., { voxelsPerMetre })` sets all of this for you.
 
+## Backgrounds
+
+The renderer draws no sky of its own. What a ray shows when it hits nothing is a **background**: a
+WESL module handed to `createRenderer` and linked into the shader, so it is chosen at creation and
+cannot be swapped later. Its parameters change per frame.
+
+```ts
+import { classicSky, classicSkyParams, timeOfDay } from "@voxolith/engine/atmosphere";
+
+const renderer = await createRenderer(gpu, scene, { background: classicSky });
+const light = timeOfDay(0.42);
+renderer.render({ ...camera(35), ...light, background: classicSkyParams(light) });
+```
+
+- [`RendererOptions.background`](/docs/renderer/api/renderer/interfaces/RendererOptions/) takes a
+  [`BackgroundOptions`](/docs/renderer/api/renderer/interfaces/BackgroundOptions/): `source`, the
+  module, and `textures`, up to two filterable 2D float texture views.
+- [`FrameParams.background`](/docs/renderer/api/renderer/interfaces/FrameParams/) is the module's
+  parameters for the frame: up to 64 floats (`BACKGROUND_FLOATS`), zero past what is given.
+- **The default** is `GRADIENT_BACKGROUND_WESL`, a plain two-colour sky: one colour at and below
+  the horizon, blending to another towards the zenith. No sun, stars or clouds.
+  `gradientBackgroundParams(horizon, zenith, out?)` packs its colours; without
+  `FrameParams.background` it draws `GRADIENT_BACKGROUND_DEFAULTS`, a hazy daylight blue.
+- **Skies** with a sun, moon, stars and clouds are the engine's:
+  [`classicSky` and `makePhysicalSky`](/docs/engine/atmosphere/#skies).
+
+### Writing one
+
+A background module exports one function and may import the renderer's `bg` module:
+
+```wgsl
+import package::bg::{BG, bgTex0, bgTex1, bgSampler};
+
+fn background(rd : vec3<f32>, footprint : f32) -> vec3<f32> {
+  return mix(BG.params[0].xyz, BG.params[1].xyz, smoothstep(0.0, 0.6, max(rd.y, 0.0)));
+}
+```
+
+- `rd` is the unit ray direction in grid space, y up; the result is linear RGB.
+- `footprint` is the angular size of what the ray stands for, in radians: one pixel for primary
+  rays, twice that for reflections. Use it to anti-alias small things such as stars and discs.
+- `BG.params` is `array<vec4<f32>, 16>`, the frame's `background` floats; `BG.time` is
+  `FrameParams.time`.
+- `bgTex0` and `bgTex1` are the two textures (1 × 1 black when not given), and `bgSampler` filters
+  linearly, repeating in u and clamped in v, for longitude-latitude maps. Sample with
+  `textureSampleLevel`: the background runs in compute kernels and inside non-uniform control
+  flow, where `textureSample` is not allowed.
+- Keep it small. It is called from several places in the shader (primary misses, reflections, the
+  floor's fade), and a software adapter's compile time grows with every inlined copy.
+
+Renderers with the same background source share one linked shader.
+
+<Callout title="Changed: the sky left FrameParams">
+  `FrameParams` no longer has `sunDir`, `moonDir`, `sunColor`, `moonColor`, `skyTop`,
+  `skyHorizon`, `nightFactor`, `sunIntensity`, `moonIntensity` or `clouds`. A page that passed them
+  gets the default gradient until it creates its renderer with `background: classicSky` and passes
+  the packed parameters, which `atmosphereFrame` already returns as `background`.
+</Callout>
+
 ## Cost
 
 | effect | cost per pixel |
 |---|---|
-| fog, clouds | a few arithmetic operations |
+| fog | a few arithmetic operations |
+| background | whatever its module does, per ray that leaves the world; the default gradient is one `mix` |
 | precipitation | 8 hash samples along the primary ray |
 | surface cover | one short upward ray per upward-facing pixel, while `cover > 0` (medium and high only) |
 | wet, waterWind | shading terms only |
@@ -121,8 +168,9 @@ own rules and hands it to `atmosphereFrame` with the time-of-day lighting each f
 spread straight into `render`:
 
 ```ts
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 
+const renderer = await createRenderer(gpu, scene, { background: classicSky }); // the sky atmosphereFrame describes
 const weather = { ...ATMOSPHERES.rain, wetness: 0.6 }; // the game owns wetness and cover
 renderer.render({
   ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()),

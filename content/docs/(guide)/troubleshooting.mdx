@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Fixes for WebGPU missing or slow, software adapters, lost devices, HTTPS on phones, blank canvases, share codes, big worlds on phones, loading text that does not update, a model or scene cache that stays cold and an app that does not load offline.
+description: Fixes for WebGPU missing or slow, software adapters, phones with only a compatibility-mode adapter, lost devices, HTTPS on phones, blank canvases, share codes, big worlds on phones, loading text that does not update, a model or scene cache that stays cold and an app that does not load offline.
 ---
 
 Most problems with a Voxolith page come down to WebGPU: whether the browser offers it, on which
@@ -76,6 +76,17 @@ turned off).
 
 </Accordion>
 
+<Accordion id="compatibility-mode" title="An older phone has WebGPU, but the renderer will not start">
+
+Some phones' Chrome offers only a WebGPU **compatibility-mode** adapter (one built on OpenGL ES
+rather than Vulkan): a Huawei P30 Pro on Android 10 is one. `navigator.gpu` exists there, but the
+renderer cannot start: it needs more than 4 storage buffers in the fragment stage, and
+compatibility mode does not give that. There is no setting that fixes it and no fallback; the page
+needs a device whose browser offers a core WebGPU adapter. The examples' `?diag` shows the adapter
+and its storage buffers per stage.
+
+</Accordion>
+
 <Accordion id="device-lost" title="The picture freezes, or &quot;device lost&quot; appears">
 
 The GPU device was lost: the driver reset after a frame took too long, the GPU ran out of
@@ -139,9 +150,14 @@ In rough order of likelihood:
    `renderer.setClipBounds([0, 0, 0], [size.x - 1, size.y - 1, size.z - 1])`.
 4. **The camera sees nothing.** It is inside the ground, below the world, or facing away. Log
    `camPos` and try a camera well above the middle of the world looking down.
-5. **Lighting is missing.** Every frame needs the lighting and sky fields as well as the camera;
-   spread `timeOfDay(...)` (or `atmosphereFrame(...)`) into `render`.
-6. **A GPU error.** Look in the console for validation errors, or use the pattern in the
+5. **Lighting is missing.** Every frame needs the key light and ambient as well as the camera;
+   spread `atmosphereFrame(...)` (or `timeOfDay(...)`) into `render`.
+6. **The sky is black, or a flat gradient.** The sky is a
+   [background](/docs/renderer/atmosphere/#backgrounds) chosen at `createRenderer`. `classicSky`
+   draws black until a frame passes `background` (`atmosphereFrame` returns it, `classicSkyParams`
+   packs it); a renderer created without `background` draws a plain two-colour gradient and
+   ignores the sun, moon and clouds.
+7. **A GPU error.** Look in the console for validation errors, or use the pattern in the
    examples' `src/shared/boot.ts`: listen for `uncapturederror` on `gpu.device` and show it.
 
 The examples' `?selftest=1`, `2` and `3` (on orbit and world) draw debug bands that show which

@@ -66,7 +66,7 @@ import {
   WebGPUUnsupportedError,
   type VoxModel,
 } from "@voxolith/renderer";
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 
 const canvas = document.getElementById("scene") as HTMLCanvasElement;
 
@@ -82,7 +82,7 @@ const model = parseVox(await res.arrayBuffer());
 const grid = toGrid(model);
 
 // 3. A renderer for exactly this grid.
-const renderer = await createRenderer(gpu, grid);
+const renderer = await createRenderer(gpu, grid, { background: classicSky });
 renderer.setFloor({ enabled: true, y: 0, colorA: [0.22, 0.23, 0.27], colorB: [0.17, 0.18, 0.21] });
 
 // 4. An orbit camera: call it with a yaw in degrees to get this frame's camera.
@@ -150,7 +150,9 @@ produces the camera fields of a frame: `camPos`, `camFwd`, `camRight`, `camUp`, 
 </Step>
 <Step>
 **Lighting.** Every frame also needs a sun, ambient light and a sky. `timeOfDay(0.4)` computes
-all of them for mid-morning, and `atmosphereFrame` adds the weather (here, clear). Both are from
+all of them for mid-morning, and `atmosphereFrame` adds the weather (here, clear). The sky is a
+background the renderer is created with: `classicSky` draws what `atmosphereFrame` describes, and
+without it the renderer draws a plain two-colour gradient. All three are from
 [`@voxolith/engine/atmosphere`](/docs/engine/atmosphere/); you can also pass the fields yourself.
 </Step>
 <Step>

@@ -48,12 +48,12 @@ frame when asked:
 ```ts title="src/main.ts"
 import { createRenderer, initGpu, makeCamera, makeFrameLoop, observeResize, resizeToDisplay } from "@voxolith/renderer";
 import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 
 const canvas = document.getElementById("scene") as HTMLCanvasElement;
 const gpu = await initGpu(canvas);
 const size = { x: 64, y: 32, z: 64 };
-const renderer = await createRenderer(gpu, { size, data: new Uint8Array(size.x * size.y * size.z), palette: new Float32Array(256 * 4) });
+const renderer = await createRenderer(gpu, { size, data: new Uint8Array(size.x * size.y * size.z), palette: new Float32Array(256 * 4) }, { background: classicSky });
 
 const camera = makeCamera({ target: [32, 8, 32], distance: 160, pitchDeg: 30, fovDeg: 40 });
 const sky = atmosphereFrame(timeOfDay(0.4), ATMOSPHERES.clear);

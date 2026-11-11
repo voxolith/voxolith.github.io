@@ -40,7 +40,12 @@ scale button steps a phone between 20 and 50. The general levers, in the order t
 - Resolution: cap `maxPixelRatio` in `initGpu`, start `gpu.renderScale` low, and let `makePerf`
   climb from there.
 - Quality: `renderer.setQuality("low")` removes shadow rays, point-light shadows and ambient
-  occlusion.
+  occlusion. `reflections: false` makes every pixel cheaper where water, metal and glass hardly
+  show.
+- Traced pixels: with `temporal` on, [`upscale`](/docs/manual/performance/#temporal-upscaling)
+  traces a fraction of the output and resolves the rest over frames, so the output keeps its
+  resolution. Nightwood starts a phone at 0.5 and lets `makePerf` move the fraction between 0.25
+  and 1 towards 30 fps.
 - Voxel size: a coarser `voxelsPerMetre` cuts memory and ray steps together (nightwood takes
   59 ms a frame at 20 against 144 ms at 50 at render scale 1, 1280 × 720).
 - Content: fewer model variants, a smaller streamed radius, fewer animated members.
@@ -48,6 +53,11 @@ scale button steps a phone between 20 and 50. The general levers, in the order t
   Exceeding a binding makes rendering stop silently rather than fail loudly, so show GPU errors in
   the page: on a phone there is no console to find them in. The examples' `boot.ts` listens to the
   device's `uncapturederror` and `lost` for this.
+
+How far behind a phone is, measured: on a Xiaomi POCO F5 (Adreno 725, Chrome on Android 15)
+tracing costs roughly 45 to 90 times more per pixel than on a desktop Radeon 890M. Nightwood ran
+at 1 fps there with the phone profile alone and at about 46 fps with the adaptive traced
+fraction, at the price of a soft picture when it sits at 0.25.
 
 ## Touch controls and gestures
 
@@ -96,6 +106,9 @@ Generated models are a separate cache: the generator worker's IndexedDB cache (s
   `makePerf` ignores gaps over `maxSampleMs`.
 - The viewport meta tag matters: Demolition Shot disables user scaling and uses `viewport-fit=cover`
   so the canvas owns the whole screen.
+- Not every phone with `navigator.gpu` can run the renderer: a Chrome that offers only a WebGPU
+  compatibility-mode adapter cannot. See
+  [Troubleshooting](/docs/troubleshooting/#compatibility-mode).
 - Test on a real device. Desktop device emulation does not reproduce the GPU's limits.
 
 ## See also

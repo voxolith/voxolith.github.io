@@ -112,7 +112,7 @@ import {
 } from "@voxolith/renderer";
 import { blitModelToBricks, makeBrickStamper, PaletteAllocator, type Entity, type Orientation } from "@voxolith/engine";
 import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 import {
   axis,
   button,
@@ -220,7 +220,7 @@ const houseBase = palette.allocateFor(house, "house").base;
 const treeBase = new Map(treeModels.map((t) => [t, palette.allocate(t.entity.model.roles, t.kind).base]));
 const ratBase = ratModels.map((e, i) => palette.allocate(e.model.roles, RAT_KINDS[i]).base);
 
-const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { background: classicSky });
 renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
 
 renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) =>

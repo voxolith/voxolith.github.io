@@ -14,19 +14,22 @@ make a lamp glow, and what emissive voxels do and do not do.
 
 - `lightDir`, `lightColor`: the directional key light, which casts the shadows.
 - `ambientSky`, `ambientGround`: the fill from above and below.
-- `sunDir`, `moonDir`, `sunColor`, `moonColor`, `sunIntensity`, `moonIntensity`, `nightFactor`,
-  `skyTop`, `skyHorizon`: how the sky is painted.
 
-The sun and moon discs only paint the sky; they light nothing. The key light, its colour and the
-ambient do the lighting. Most games do not fill these by hand: `timeOfDay(phase)` from
-`@voxolith/engine/atmosphere` returns all of them for a time of day (0 midnight, 0.5 noon). By day
+The sky is separate: a [background](/docs/renderer/atmosphere/#backgrounds) the renderer is created
+with, fed per frame through `FrameParams.background`. Its sun and moon discs only paint; they
+light nothing. The key light, its colour and the ambient do the lighting. Most games do not fill
+these by hand: `timeOfDay(phase)` from `@voxolith/engine/atmosphere` returns them for a time of
+day (0 midnight, 0.5 noon), with the sun, moon and sky colours that
+[`classicSky`](/docs/engine/atmosphere/#skies) draws. By day
 the key light follows the sun; at night it becomes a dim blue moonlight and the ambient drops low
 enough for point lights to carry the scene.
 
 ```ts
-import { timeOfDay } from "@voxolith/engine/atmosphere";
+import { classicSky, classicSkyParams, timeOfDay } from "@voxolith/engine/atmosphere";
 
-renderer.render({ ...frame(), ...timeOfDay(0.9) }); // late evening
+const renderer = await createRenderer(gpu, scene, { background: classicSky });
+const light = timeOfDay(0.9); // late evening
+renderer.render({ ...frame(), ...light, background: classicSkyParams(light) });
 ```
 
 A game with its own camera-specific day and night can pass its own values instead; the fields are

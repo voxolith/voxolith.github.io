@@ -13,9 +13,11 @@ bushes, bracken and grass grow underneath, and through a gap in the trees a cott
 lit and a lantern at the door. Fireflies drift between the trunks. You can look around but not
 walk. The camera stands still, so the world only has to reach as far as the fog lets you see.
 The lighting is the point of the page, and the renderer's work on lighting is measured against it:
-[temporal accumulation](/docs/renderer/quality-and-performance/#temporal-accumulation) nearly
-halves its frame at a fixed view (the page leaves it off; the [temporal](/docs/examples/temporal/)
-example has the toggle), and world-space light comes next.
+shadows and ambient occlusion accumulate over frames
+([temporal accumulation](/docs/renderer/quality-and-performance/#temporal-accumulation), on by
+default here), the frame can be traced smaller and resolved to full size
+([temporal upscaling](/docs/renderer/quality-and-performance/#temporal-upscaling)), and
+world-space light comes next.
 
 ## What it shows
 
@@ -35,6 +37,15 @@ example has the toggle), and world-space light comes next.
 - **Moonlight.** The key light is the moon of
   [`timeOfDay(0.98)`](/docs/engine/api/atmosphere/functions/timeOfDay/), brightened and turned
   bluer. It shadows through the canopy, so only the clearing is moonlit.
+- **Temporal shadows, no reflection rays.** Shadows and AO accumulate over frames (`?temporal=0`
+  traces them in full every frame; the Low preset, which has none, skips it), and the materials'
+  secondary rays are [compiled out](/docs/renderer/quality-and-performance/#reflections)
+  (`?reflections=1` brings them back): from where the camera stands they only reach the cabin's
+  door handle and gutter. Together they took a frame from 56.6 to 24.5 ms at 50 voxels per metre
+  and render scale 1 on the desktop Radeon.
+- **Temporal upscaling.** `?upscale=0.5` traces at half the output size and resolves to it over
+  frames. A phone starts there, and its adaptive controller then drives the traced fraction
+  instead of the render scale ([below](#cost)).
 - **Point lights.** The lantern is a shadowed point light with a halo. Each firefly is a small
   unshadowed one with a halo, wandering its own slow path and pulsing, up to 28 of the renderer's
   32 lights. The window glass is emissive, which lights only itself (see
@@ -106,8 +117,18 @@ Rays through foliage step voxel by voxel wherever an instance may be, and each s
 into the instances there. So this page is expensive, and the cost follows the voxel size. At
 1280 × 720 on a desktop Radeon at render scale 1, a frame takes about 39 ms of GPU time at 20
 voxels per metre against 86 ms at 50, which is why phones start at 20; the adaptive render scale
-brings that down to what the device can keep up with. Phones also get 12 fireflies and the Medium
-preset, and load in one stage, with no coarse models first. `renderer.setDebug(10)` shows the steps each ray took; `?renderScale=` fixes the scale for
+brings that down to what the device can keep up with. (Those two figures predate the defaults
+above: with temporal shadows on and reflections off, 50 voxels per metre takes 24.4 ms, and 9.0 ms
+at `?upscale=0.5`.) Phones also get 12 fireflies and the Medium
+preset, and load in one stage, with no coarse models first.
+
+On a phone the page does not lower the output resolution to keep up. The render scale stays
+fixed (0.6 at most), the scene starts at `upscale` 0.5, and `makePerf` drives the traced fraction
+between 0.25 and 1 towards 30 fps (`targetMs: 33.4`), calling `renderer.setQuality({ upscale })`
+when it changes. Measured on a Xiaomi POCO F5 (Adreno 725, Chrome on Android 15), tracing costs
+roughly 45 to 90 times more per pixel than on the desktop Radeon 890M; the page went from 1 fps to
+about 46 fps this way, with a soft picture at 0.25. `?upscale=`, `?renderScale=` or `?temporal=0`
+turns the adaptive fraction off. `renderer.setDebug(10)` shows the steps each ray took; `?renderScale=` fixes the scale for
 measuring.
 
 ## Controls
@@ -132,6 +153,9 @@ size.
 | `?fireflies=` | 24 (12) | fireflies, 0 to 28 |
 | `?trees=`, `?shrubs=`, `?plants=` | 1 | density of each, 0 to 1 |
 | `?seed=` | `nightwood` | a different wood |
+| `?temporal=` | on (off on the Low preset) | `0`: shadows and AO traced in full every frame |
+| `?reflections=` | off | `1`: metal, glass and water trace their secondary rays |
+| `?upscale=` | 1 (adaptive from 0.5) | the fraction of the output size the scene is traced at, 0.25 to 1; needs temporal |
 | `?renderScale=` | adaptive | a fixed render scale, for measuring |
 
 Plus the [common ones](/docs/examples/#common-url-options).

@@ -1,16 +1,17 @@
 ---
 title: Atmosphere
-description: "@voxolith/engine/atmosphere: timeOfDay, Atmosphere presets, blending, transitions, approach, and atmosphereFrame, which yields renderer settings."
+description: "@voxolith/engine/atmosphere: timeOfDay, Atmosphere presets, blending, transitions, approach, atmosphereFrame, which yields renderer settings, and the skies (classicSky, makePhysicalSky) as renderer backgrounds."
 ---
 
 Time of day and weather are layered in three:
 
-- the **renderer** draws raw atmospheric effects (`fog`, `clouds`, `precipitation`, `surface`,
+- the **renderer** draws raw atmospheric effects (`fog`, `precipitation`, `surface`,
   `waterWind` in [`FrameParams`](/docs/renderer/api/renderer/interfaces/FrameParams/), all off at
-  zero) and knows nothing about weather ([Atmosphere](/docs/renderer/atmosphere/) under Renderer);
+  zero) and whatever background module the host links in, and knows nothing about weather ([Atmosphere](/docs/renderer/atmosphere/) under Renderer);
 - the **engine**, `@voxolith/engine/atmosphere`, is the vocabulary and the translator: a way to
   describe the sky, presets, blending and transitions, and one function that turns time of day
-  plus an atmosphere into the renderer's settings;
+  plus an atmosphere into the renderer's settings; and the [skies](#skies), as renderer
+  backgrounds;
 - the **game** decides whether there is weather, when it changes, and how wetness and snow cover
   build up.
 
@@ -18,18 +19,20 @@ Keep policy out of the engine and meaning out of the renderer. The module has no
 clock of its own, and it is optional: a game without weather never imports it.
 
 ```ts
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 
+const renderer = await createRenderer(gpu, scene, { background: classicSky });
 renderer.render({ ...camera, ...atmosphereFrame(timeOfDay(0.5), { ...ATMOSPHERES.rain, wetness: 0.7 }), time });
 ```
 
 ## Time of day
 
-[`timeOfDay(phase, options?)`](/docs/engine/api/atmosphere/functions/timeOfDay/) returns the
-lighting half of `FrameParams` (everything but the camera) as a
-[`Lighting`](/docs/engine/api/atmosphere/interfaces/Lighting/): key light direction and colour, sky
-and ground ambient, sun and moon directions, colours and intensities, sky top and horizon, and the
-night factor.
+[`timeOfDay(phase, options?)`](/docs/engine/api/atmosphere/functions/timeOfDay/) returns a
+[`Lighting`](/docs/engine/api/atmosphere/interfaces/Lighting/). Its key light direction and colour
+and its sky and ground ambient are the renderer's `FrameParams` fields. The rest (sun and moon
+directions, colours and intensities, sky top and horizon, the night factor) is sky vocabulary that
+a background draws: the renderer ignores it, and `classicSkyParams` or `atmosphereFrame` packs it
+for [`classicSky`](#skies).
 
 - `phase` runs 0 to 1 over a day: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset.
 - The sun rises in +X and sets in -X on a tilted arc towards +Z, as at mid latitudes: the noon sun
@@ -93,8 +96,10 @@ function frame(dt: number, phase: number) {
 ## Into the renderer
 
 [`atmosphereFrame(lighting, atmosphere, options?)`](/docs/engine/api/atmosphere/functions/atmosphereFrame/)
-returns the lighting plus the renderer's [`AtmosphereParams`](/docs/renderer/api/renderer/interfaces/AtmosphereParams/)
-for one frame:
+returns an [`AtmosphereFrame`](/docs/engine/api/atmosphere/interfaces/AtmosphereFrame/) for one
+frame: the weather-adjusted lighting, the renderer's
+[`AtmosphereParams`](/docs/renderer/api/renderer/interfaces/AtmosphereParams/), and `background`,
+the classic sky's parameters already packed. Spread it into `render`:
 
 - Cloud blocks the direct key light and turns it into sky light: overcast dims and flattens the
   key light and greys the sky, keeping the night dark. Rain clouds are darker than white ones.
@@ -102,11 +107,70 @@ for one frame:
 - Wind tilts the rain and snow, drifts the clouds and drives the water (`waterWind`).
 - Precipitation particles are lit like the scene, mostly ambient with some key light.
 - `wetness` and `cover` become the renderer's `surface` settings.
+- The cloud layer (cover, colour, drift) goes into `background`, with the sky colours and the sun
+  and moon discs.
 - With a clear atmosphere the lighting passes through unchanged.
 
 [`AtmosphereFrameOptions`](/docs/engine/api/atmosphere/interfaces/AtmosphereFrameOptions/):
 `coverColor` for settled snow, `rainSpeed` (70 voxels per second) and `snowSpeed` (8), and
 `voxelsPerMetre`.
+
+## Skies
+
+The renderer draws no sky: it takes a [background](/docs/renderer/atmosphere/#backgrounds), a WESL
+module chosen at `createRenderer`, and this module has two.
+
+**`classicSky`** is the stylised sky Voxolith scenes had before backgrounds became pluggable: a
+vertical gradient, blocky night stars, blocky sun and moon discs with glows, and a drifting cloud
+layer. It is headless: a `BackgroundOptions` constant with no textures.
+
+```ts
+import { atmosphereFrame, classicSky, classicSkyParams, timeOfDay } from "@voxolith/engine/atmosphere";
+
+const renderer = await createRenderer(gpu, scene, { background: classicSky });
+
+// With weather: atmosphereFrame returns the packed sky as `background`.
+renderer.render({ ...camera, ...atmosphereFrame(timeOfDay(phase), weather), time });
+
+// Without: pack a Lighting (a cloudless sky for that time of day) yourself.
+const bg = new Float32Array(64);
+const light = timeOfDay(0.42);
+renderer.render({ ...camera, ...light, background: classicSkyParams(light, bg) });
+```
+
+- [`classicSkyParams(frame, out?)`](/docs/engine/api/atmosphere/functions/classicSkyParams/) packs a
+  [`ClassicSkyFrame`](/docs/engine/api/atmosphere/interfaces/ClassicSkyFrame/): the sun and moon
+  directions, colours and intensities, `skyTop`, `skyHorizon`, `nightFactor` and optional
+  `clouds` (`cover`, `color`, `drift`). A `Lighting` is one. Pass `out` to allocate nothing per
+  frame; a sky that never changes can be packed once.
+- Without parameters `classicSky` draws black, so pass `background` every frame.
+- Cloud drift animates from `FrameParams.time`.
+- `CLASSIC_SKY_WESL` is the module's source, for a host that wraps it.
+
+**[`makePhysicalSky(gpu, options?)`](/docs/engine/api/atmosphere/functions/makePhysicalSky/)** is a
+physically based sky after Hillaire (EGSR 2020): Rayleigh, Mie and ozone scattering from look-up
+tables built in compute shaders, a sun disc with limb darkening, a moon with its phase, stars and
+the cloud layer. It lights the scene from the same model: `sky.frame()` returns the key light, the
+ambient and a fog colour that matches the horizon, with the weather applied as `atmosphereFrame`
+does.
+
+```ts
+const sky = await makePhysicalSky(gpu);
+const renderer = await createRenderer(gpu, scene, { background: sky.background });
+renderer.render({ ...camera, ...sky.frame(timeOfDay(phase), weather), time });
+```
+
+- It needs the renderer's device, so it is the one part of this module that is not headless.
+  `physicalSkyFrame(model, lighting, atmosphere?, options?)` gives the same frame from the CPU
+  model alone (`makeSkyModel`), for tests or for lighting a scene under another backdrop.
+- `timeOfDay`'s colours are not used; only where the sun and moon are.
+- Cost: two small compute passes and about 30 ms of CPU at creation; per frame a CPU lookup, and a
+  rebuild of the sky-view tables (two 192 × 108 passes) only when the sun or moon has moved.
+- `sky.destroy()` frees the tables; destroy the renderer first.
+
+A renderer created with another background reads `background` as that background's own
+parameters, so when you spread an `atmosphereFrame` under one, pass your `background` after the
+spread.
 
 ### Scale
 
@@ -120,3 +184,14 @@ voxels per second, and the renderer's `effectScale` keeps waves and drops their 
   `makePerf` and call `perf.reprobe()` when the view moves; see
   [Quality and performance](/docs/renderer/quality-and-performance/).
 </Callout>
+
+## References
+
+- Sébastien Hillaire. *A Scalable and Production Ready Sky and Atmosphere Rendering Technique.*
+  Computer Graphics Forum 39(4) (EGSR 2020), pages 13-22.
+  [doi:10.1111/cgf.14050](https://doi.org/10.1111/cgf.14050)
+- Eric Bruneton, Fabrice Neyret. *Precomputed Atmospheric Scattering.* Computer Graphics Forum
+  27(4) (EGSR 2008). [doi:10.1111/j.1467-8659.2008.01245.x](https://doi.org/10.1111/j.1467-8659.2008.01245.x)
+  (the transmittance parameterisation and the Earth constants)
+
+What the physical sky takes from it: [Research and credits](/docs/credits/#a-physical-sky).

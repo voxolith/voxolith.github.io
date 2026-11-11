@@ -33,15 +33,16 @@ in radians (default 0.02, about 1.1°). The shadows then get soft edges that wid
 to the caster, and a still view stops tracing them once they have converged. Near edits and moving
 instances they stay hard.
 
-The **sky** is a vertical gradient (`skyTop`, `skyHorizon`) with blocky stars at night
-(`nightFactor`) and world-positioned sun and moon discs (`sunDir`, `moonDir`, `sunColor`,
-`moonColor`, `sunIntensity`, `moonIntensity`). The discs only paint the sky: they light nothing.
-The key light, its colour and the ambient do all the lighting, so a moonlit night is a dim blue
-`lightColor` along `moonDir`, not the moon disc.
+The **sky** is not the renderer's: what a ray that leaves the world shows is a
+[background](/docs/renderer/atmosphere/#backgrounds), a WESL module chosen when the renderer is
+created. The default is a plain two-colour gradient; skies with sun and moon discs, stars and
+clouds are the engine's ([`classicSky`, `makePhysicalSky`](/docs/engine/atmosphere/#skies)). A
+background only paints: its discs light nothing. The key light, its colour and the ambient do all
+the lighting, so a moonlit night is a dim blue `lightColor` towards the moon, not the moon disc.
 
 Turning a time of day into these values is not the renderer's job.
 [`timeOfDay(phase)`](/docs/engine/api/atmosphere/functions/timeOfDay/) in
-[`@voxolith/engine/atmosphere`](/docs/engine/atmosphere/) returns every lighting field from one
+[`@voxolith/engine/atmosphere`](/docs/engine/atmosphere/) returns the lighting and the sky's description from one
 number (0 midnight, 0.5 noon), so animating a transition is animating `phase`.
 
 ```ts
