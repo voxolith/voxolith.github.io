@@ -16,7 +16,7 @@ const features = [
   },
   {
     title: 'Generators',
-    text: 'Deterministic, seedable trees, bushes, grass, rocks, buildings, rigged creatures and terrain, at 10, 50 or 100 voxels per metre.',
+    text: 'Deterministic, seedable trees, bushes, grass, rocks, buildings, rigged creatures and terrain, from 10 to 100 voxels per metre.',
   },
   {
     title: 'Animation',

@@ -43,11 +43,12 @@ layer.commit();
 
 ## URL options
 
-All are in the [Options panel](/docs/examples/#the-options-panel), and reload the page.
+All are in the [Options panel](/docs/examples/#the-options-panel). These four reload the page; the shared
+[renderer options](/docs/examples/#renderer-options) (`high` preset by default) apply at once.
 
 | option | default | effect |
 |---|---|---|
-| `?vpm=` | 10 | 10 to 250; `100` uses rats sized for a 100 voxels-per-metre world (smaller, finer) |
+| `?vpm=` | 10 | 10, 20, 30, 40 or 50; anything else snaps to the nearest. 10 gives gen-creature's stylised preset (size 1.2); 20 to 50 the rat as [`atScale`](/docs/generators/creature/#sizing-for-a-world) sizes it for a world at that scale, which at all four is the smallest that keeps two-voxel legs, so they look alike |
 | `?yaw=` | 0.35 | heading of every rat, radians (-6.3 to 6.3) |
 | `?pairs=` | all | show only the first few clips |
 | `?distance=` | 230 | camera distance, voxels, 20 to 600 |

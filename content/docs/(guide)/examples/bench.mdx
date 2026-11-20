@@ -1,6 +1,6 @@
 ---
 title: bench
-description: "The renderer benchmark: one fixed, deterministic scene at 10 to 100 voxels per metre that takes every expensive renderer path, seen from four fixed views."
+description: "The renderer benchmark: one fixed, deterministic scene at 10 to 50 voxels per metre that takes every expensive renderer path, seen from four fixed views."
 ---
 
 **[Open the live page](/examples/bench/)** ·
@@ -9,7 +9,7 @@ description: "The renderer benchmark: one fixed, deterministic scene at 10 to 10
 <ImageZoom src="/shots/bench.webp" alt="The bench example at 20 voxels per metre, view 2: a pond in the grass at dusk, rats and stones beside it, a cottage with lit windows behind and a spruce at the wood's edge" width={960} height={540} />
 
 Not a showcase: a test scene for measuring the renderer. It is small enough to build in a few
-seconds at 20 voxels per metre and still tolerable at 100, and it takes every expensive path the
+seconds at 20 voxels per metre and still tolerable at 50, and it takes every expensive path the
 renderer has, so one run at each scale settles whether a renderer change is faster or slower.
 Every length is in metres, so the scene is the same at every scale.
 
@@ -28,8 +28,8 @@ A 40 m square of low ground at dusk:
   primary ray within 32 m.
 - **Things that move.** Four small stones circle the pond as a dynamic instance set, and six rats
   walk a circle beside it, [posed on the GPU](/docs/renderer/instances/#posed-on-the-gpu)
-  (`makeCrowd` rigged). They are sized with gen-creature's `atScale` at every scale, so below 100
-  voxels per metre they are larger than life.
+  (`makeCrowd` rigged). They are sized with gen-creature's `atScale` at every scale, so they are larger than life
+  (a rat is real size only from about 84 voxels per metre).
 
 Nothing depends on the clock. The seed is fixed, nothing calls `Math.random`, and whatever moves
 (stones, rats, water) advances a fixed 1/60 s per drawn frame, so two runs draw the same frames.
@@ -47,12 +47,13 @@ profile: the page runs as asked everywhere.
 
 ## URL options
 
-All but `?e2e` are in the [Options panel](/docs/examples/#the-options-panel). `?view=`, `?renderScale=` and `?quality=` apply at
-once; `?vpm=` and `?anim` reload the page.
+All but `?e2e` are in the [Options panel](/docs/examples/#the-options-panel). `?view=`, `?renderScale=`, `?quality=` and the
+other shared [renderer options](/docs/examples/#renderer-options) (`?temporal`, `?upscale=`, `?reflections=0`, `?debug=`) apply at once; `?vpm=` and
+`?anim` reload the page.
 
 | option | default | effect |
 |---|---|---|
-| `?vpm=` | 20 | voxels per metre: 10, 20, 30, 40, 50 or 100, a list of this page's own for resolution sweeps (valley and nightwood offer 20, 50 and 100); anything else snaps to the nearest. 10 is the generators' native scale: the models come dense and unrefined, and the ground still goes through `refineTerrain`, at factor 1 |
+| `?vpm=` | 20 | voxels per metre: 10, 20, 30, 40 or 50, the list every page with a scale shares; anything else snaps to the nearest, so `?vpm=100` opens at 50. 10 is the generators' native scale: the models come dense and unrefined, and the ground still goes through `refineTerrain`, at factor 1 |
 | `?view=` | 0 | one of the four views; `all` starts at 0, and `bench.setView()` with no argument steps to the next |
 | `?renderScale=` | 0.5 | the fixed render scale, 0.1 to 2 |
 | `?quality=` | `high` (`low` on a CPU adapter) | `low`, `medium` or `high`; `maxSteps` is 1024 in every preset, since `fog.distance` bounds the rays |
@@ -83,7 +84,7 @@ picture, and `?batch=N` (default 3) sets how many frames the hook's back-to-back
 between waits for the GPU.
 
 The maintainers' workspace has a `render-bench` tool that drives this page on a real GPU at 20,
-then 50, then 100 voxels per metre, each scale only if the one below showed no regression against
+then 50 voxels per metre, each scale only if the one below showed no regression against
 a saved baseline. Per view it reports the median GPU time over alternated rounds, and a parity
 check: the pixels that differ between the normal walk and the no-skip walk (`setDebug(1)`), with
 shadows off and motion frozen.

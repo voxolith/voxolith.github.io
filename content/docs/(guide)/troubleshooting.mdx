@@ -203,7 +203,8 @@ voxels per metre always rebuilds the same voxels; asking for a finer scale
 
 Phones have less GPU memory and smaller storage buffer bindings than desktops. On a desktop Radeon
 the valley example holds about 126 MB of GPU memory at its desktop default of 50 voxels per metre,
-560 MB at `?vpm=100` and 19 MB at 20. It therefore picks a lighter profile when it sees a
+and 19 MB at 20 (at 100, which it offered until the examples settled on 50 as their finest
+scale, 560 MB). It therefore picks a lighter profile when it sees a
 touch-only pointer, or a GPU whose largest storage binding is under 512 MiB: coarser voxels and a
 smaller valley.
 
@@ -212,12 +213,13 @@ smaller valley.
 | voxels per metre (`?vpm=`) | 50 (2 cm) | 20 (5 cm) |
 | valley size (`?scale=`) | 4 × 4 tiles | 2 × 2 tiles |
 | models per species (`?variants=`) | 3 | 1 |
-| rats (`?rats=`) | 60, at 100 only | 20, at 100 only |
+| rats (`?rats=`) | none | none |
 | streamed radius (`?radius=`) | 24 m | 16 m |
 | quality preset | Medium | Low |
 
-Rats are built only at a scale where they come out at their real size, which is 100 voxels per
-metre; at 20 or 50 the HUD says "rats at 1 cm". `?full` asks for the desktop settings anyway, and
+Rats are built by default only at a scale where they come out at their real size, from about 84
+voxels per metre, which is more than the page offers: the HUD says so, and `?rats=` adds them
+larger than life. `?full` asks for the desktop settings anyway, and
 each setting can be given on its own. If the phone profile still fails, lower `?scale=` and
 `?radius=` further and stay at 20 voxels per metre (50 voxels per metre, from the Options panel, costs nearly
 seven times the memory). The nightwood example uses the same test and the same scales.
@@ -296,7 +298,8 @@ placement takes a fraction of a second. When they do not:
   worker URL does not change with the code.
 - **A cap evicted it.** A `maxBytes` evicts the least recently used entries after each write, and a
   result bigger than the cap is not kept at all (with a [warning](#cache-cap-warning), once). At
-  100 voxels per metre one page stores hundreds of MB (the examples' valley 824 MB, both stages),
+  fine scales one page stores hundreds of MB (the examples' valley 177 MB at 50 voxels per metre,
+  and 824 MB at 100 when it offered that, both stages),
   so a small cap, or visiting several heavy pages, pushes the others out. Check with
   `openSceneCacheControls(name)` and `usage({ kind: "placement" })`, and
   [size the cap](/docs/manual/managing-loading/#sizing-a-cap) from what the scenes store.
@@ -350,7 +353,7 @@ gaps. In order of likelihood:
 - **The first picture does not wait for enough ground.** Wait for the ground around the camera
   before showing the page: `await world.whenReady(x, z, radius)` (or loop on `readyAround`), with a
   radius that covers what the first view sees. The examples call it the near-ground gate, `?near=`
-  in metres: nightwood waits for 8 m (6 m left holes in its fog at 100 voxels per metre) and the
+  in metres: nightwood waits for 8 m (6 m left holes in its fog at 100 voxels per metre, which it offered then) and the
   valley for 18 m. A smaller gate is quicker and shows holes at the edge of the first view. See
   [ready around the camera](/docs/manual/managing-loading/#ready-around-the-camera).
 - **The radius is tested at chunk centres.** A chunk whose centre is outside the radius but whose

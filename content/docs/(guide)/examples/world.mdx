@@ -124,7 +124,8 @@ renderer.render({ ...frame(), ...atm, time: still ? 0 : now / 1000 });
 
 All but the last two rows are in the [Options panel](/docs/examples/#the-options-panel). `?time=`, `?weather=` and `?still` apply at
 once (the Night/Day button, the weather menu and the N and W keys change the same state, and the
-URL follows); the rest reload the page.
+URL follows), as do the shared [renderer options](/docs/examples/#renderer-options) (`medium` preset by default); the rest
+reload the page.
 
 | option | default | effect |
 |---|---|---|
@@ -135,6 +136,7 @@ URL follows); the rest reload the page.
 | `?radius=` | 1.5 × width | streamed radius around the view, in voxels |
 | `?time=` | `day` | `night` starts at midnight, close to the lamp |
 | `?weather=` | `clear` | `clear`, `cloudy`, `rain`, `storm`, `snow`, `fog`; also any other [`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/) name |
+| `?sky=` | `classic` | `physical`: the engine's physical sky as the background and the light |
 | `?still` | | freeze the water and render on demand |
 | `?workers=0` | | for tools: generate the models and fill the ground on the main thread instead of workers |
 | `?selftest=1`, `2`, `3` | | for tools: voxel-lookup debug bands |

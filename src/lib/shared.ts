@@ -28,13 +28,13 @@ export const demos = [
     title: 'Valley',
     href: '/examples/valley/',
     image: '/shots/valley.webp',
-    text: 'The same valley in 5, 2 or 1 cm voxels: refined models drawn as instances, the ground streamed in chunks.',
+    text: 'The same valley in voxels down to 2 cm: refined models drawn as instances, the ground streamed in chunks.',
   },
   {
     title: 'Nightwood',
     href: '/examples/nightwood/',
     image: '/shots/nightwood.webp',
-    text: 'A misty forest at night in 5, 2 or 1 cm voxels: moonlight through the canopy, a lit cottage and fireflies. Look around; fog sets the view distance.',
+    text: 'A misty forest at night in voxels down to 2 cm: moonlight through the canopy, a lit cottage and fireflies. Look around; fog sets the view distance.',
   },
   {
     title: 'Demolition Shot',

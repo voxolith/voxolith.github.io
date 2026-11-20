@@ -29,10 +29,9 @@ the program [Your first scene](/docs/getting-started/first-scene/) walks through
 const model = parseVox(await (await fetch(`${import.meta.env.BASE_URL}models/cat-sit.vox`)).arrayBuffer());
 const grid = modelToGrid(model);
 
-// 2. Create the renderer for this grid and give it the coarse occupancy
-//    grid so rays skip empty space.
+// 2. Create the renderer for this grid; its brick index lets rays skip empty space.
 const renderer = await createRenderer(gpu, grid);
-renderer.updateCoarse(new OccupancyGrid(grid.size, grid.data).data);
+if (gpu.software) renderer.setQuality("low"); // a CPU adapter: no shadows or AO
 renderer.setFloor({ enabled: true, y: 0, colorA: [0.22, 0.23, 0.27], colorB: [0.17, 0.18, 0.21] });
 
 // 3. A camera factory: call it with a yaw each frame to get camera vectors.
@@ -40,9 +39,10 @@ const { target, distance } = frameGrid(grid.size);
 const camera = makeCamera({ target, distance, pitchDeg: 28, fovDeg: 32 });
 ```
 
-The `updateCoarse` call is left over from an older renderer that needed a separate occupancy
-grid; the brick index now does that job itself, and the call does nothing. New code can leave it
-out.
+Older versions of this page also built an `OccupancyGrid` and passed it to
+`renderer.updateCoarse`. The brick index does that job itself now and the renderer keeps the call
+only as a no-op, so the page dropped both. Like orbit and minecraft-region, it starts on the Low
+preset on a software (CPU) adapter.
 
 ## URL options
 

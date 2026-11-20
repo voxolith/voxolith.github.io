@@ -8,6 +8,13 @@ costs six trees' worth of memory per copy, a turned tree has to be resampled int
 a moving thing re-uploads bricks every frame. **Instances** keep one copy of each model on the GPU
 and draw it wherever it is placed.
 
+<Callout title="Measurements at 100 voxels per metre">
+  The numbers on this page for the examples' nightwood at 100 voxels per metre were
+  taken when those pages offered that scale. The examples now stop at 50 (an old `?vpm=100` link
+  opens there); the engine, the renderer and the generators still support 100, and the
+  measurements stand as what that scale costs.
+</Callout>
+
 ## Models and placements
 
 [`renderer.addModel(source)`](/docs/renderer/api/renderer/classes/Renderer/) uploads a model once

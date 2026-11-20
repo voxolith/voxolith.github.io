@@ -9,6 +9,13 @@ yielding between entities keeps the page responsive, but the work still lands on
 that has to draw. `@voxolith/engine/worker` runs generators on a pool of workers, which also
 spreads the work across cores.
 
+<Callout title="Measurements at 100 voxels per metre">
+  The numbers on this page for the examples' valley and nightwood at 100 voxels per metre were
+  taken when those pages offered that scale. The examples now stop at 50 (an old `?vpm=100` link
+  opens there); the engine, the renderer and the generators still support 100, and the
+  measurements stand as what that scale costs.
+</Callout>
+
 It comes in two halves, because they run in different realms:
 
 - [`makeGeneratorPool`](/docs/engine/api/worker/functions/makeGeneratorPool/) on the main thread

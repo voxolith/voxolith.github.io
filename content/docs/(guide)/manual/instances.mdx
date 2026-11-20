@@ -82,7 +82,7 @@ point lights and water treat it like any other voxel.
   that never uses them pays nothing. The first placement builds the instanced pipeline.
 - Static placements cost once, but by default that once is on the main thread: `setInstances`
   builds a sub-cell table for every listed cell, about 0.65 s for the nightwood forest at 20
-  voxels per metre, 5 s at 50 and 20 s at 100, and the models' first upload is main-thread work
+  voxels per metre, 5 s at 50 and 20 s at 100 (which the page offered then), and the models' first upload is main-thread work
   too. Place scenery once, not per frame, or encode and bake it on a scene worker with
   `layer.commitAsync()` (see [the scene worker](/docs/manual/managing-loading/#the-scene-worker)).
   A dynamic set costs its members and the cells they touch every commit, so keep only what

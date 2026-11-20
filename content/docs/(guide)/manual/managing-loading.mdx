@@ -12,6 +12,13 @@ is one heading per control, then what stays in your code, then
 [Loading screens](/docs/manual/loading-screens/) covers the other half: how the loaders report
 what they are doing, and how to show it.
 
+<Callout title="Measurements at 100 voxels per metre">
+  The numbers on this page for the examples' valley and nightwood at 100 voxels per metre were
+  taken when those pages offered that scale. The examples now stop at 50 (an old `?vpm=100` link
+  opens there); the engine, the renderer and the generators still support 100, and the
+  measurements stand as what that scale costs.
+</Callout>
+
 ## Awaitable pipeline warm-up
 
 Without it, the renderer makes its base pipelines in `createRenderer` and every other variant
@@ -1013,7 +1020,7 @@ unreachable, not gone: they leave by the cap, by the browser, or by a `clear()`.
 What each example page adds to the scene cache, visited in this order on an empty cache (a
 production build in desktop Chrome, from the comment in the examples'
 [`placement.worker.ts`](https://github.com/voxolith/examples/blob/main/src/shared/placement.worker.ts)).
-At 50 and 100 voxels per metre the pages load [coarse first](#coarse-first-one-swap), so they
+At 50 voxels per metre (and at 100, when they offered it) the pages load [coarse first](#coarse-first-one-swap), so they
 keep two stages: the coarse models' encodings are small, but their bake is about as big as the
 fine one, since the tables are laid out in world cells, not model voxels.
 
@@ -1127,9 +1134,9 @@ headroom: usually a desktop, at 50 voxels per metre or more. At 20 the fine mode
 a second stage only adds work. On a phone it lagged, so the examples leave it off there. Voxolith
 leaves this choice to the developer: the engine gives the pieces below and turns none of them on.
 The examples decide per device with a `COARSE_FIRST = { desktop: true, phone: false }` switch at
-the top of valley and nightwood. It is on for desktops at 50 and 100, and off on phones (the phone
-profile of `shared/scale.ts`), which load their fine models in one stage. `?coarse=0` or
-`?coarse=1` overrides it. The piece to copy is
+the top of valley and nightwood. It is on for desktops at 50, and off on phones (the phone
+profile of `shared/scale.ts`), which load their fine models in one stage. `?coarse=0` turns it off
+and `?coarse=1` forces it, at 20, 30 and 40 too. The piece to copy is
 [`shared/detail.ts`](https://github.com/voxolith/examples/blob/main/src/shared/detail.ts).
 
 It works because every entity generator builds the same design at 10 voxels per metre in a
@@ -1216,7 +1223,7 @@ Things to know before copying it:
 - **It does not pay at every scale or on every device.** At 20 voxels per metre the factor is 2
   and the fine models cost about a tenth of those at 50, so the examples' pages at 20 are up in
   about 2 s warm, most of it terrain and ground, which a coarse stage does not shorten. On a phone
-  the background stage made the scene lag. The examples use it on desktops at 50 and 100 only;
+  the background stage made the scene lag. The examples use it on desktops at 50 only;
   `?coarse=1` forces it on at any scale and on a phone, and `?coarse=0` off.
 - **Tell the stages apart on the loading screen.** The engine's loaders report both stages under
   the same phases. The examples wrap their tracker so that the fine stage's tasks go under phases

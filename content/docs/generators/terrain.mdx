@@ -136,8 +136,8 @@ on coarse columns (the settlement's paths and yards) and applies to the top two 
 blades. It can be passed per call or once in the options, `refineTerrain(terrain, k, { top })`,
 which `fillBrick` then uses when a call passes none. `heightAt`, `waterAt`, `waterTop`, `maxY`, `spanOf` and `pick` work in fine voxels. Its GPU
 cost for a whole valley grows fast with `k`: the valley example measures about 19 MB at 20 voxels
-per metre, 126 MB at 50 and 560 MB at 100, which is why it defaults to 50 on a desktop and 20 on a
-phone.
+per metre, 126 MB at 50 and 560 MB at 100 (a scale the page offered then), which is why it
+defaults to 50 on a desktop and 20 on a phone and goes no finer.
 
 ## On workers
 

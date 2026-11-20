@@ -16,15 +16,15 @@ lists the URL options it reads.
 | [hello-vox](/docs/examples/hello-vox/) | load a `.vox` model and draw it with a turning camera | ~55 lines |
 | [orbit](/docs/examples/orbit/) | a voxel grid written by hand, an orbit camera, rendering on demand | ~80 lines |
 | [minecraft-region](/docs/examples/minecraft-region/) | drop a Minecraft `.mca` region and fly through it in first person | ~110 lines |
-| [world](/docs/examples/world/) | a generated valley: terrain, river, village, forest, a lamp to carry, day and night, weather | ~540 lines + layout |
-| [valley](/docs/examples/valley/) | the same valley at 20, 50 or 100 voxels per metre: refined models as instances, streamed ground, rats at 1 cm | ~655 lines |
-| [nightwood](/docs/examples/nightwood/) | first person in a misty forest at night at 20, 50 or 100 voxels per metre: moonlight, a lit cottage, fireflies, fog as the view distance | ~435 lines |
-| [temporal](/docs/examples/temporal/) | temporal accumulation of shadows and AO: a moonlit scene, a one-tap toggle, soft shadows, GPU time off and on | ~380 lines |
-| [creature](/docs/examples/creature/) | rigged, animated rats you can wound and dismember with a tap | ~405 lines |
-| [swarm](/docs/examples/swarm/) | hundreds of animated rats through one crowd, with a live cost overlay | ~190 lines |
-| [instances](/docs/examples/instances/) | trees and a crowd drawn by reference, nothing written into the world | ~255 lines |
-| [rigged](/docs/examples/rigged/) | the same rats baked on the CPU and posed on the GPU from one rest model, side by side, one pair per clip | ~130 lines |
-| [bench](/docs/examples/bench/) | the renderer benchmark: one deterministic scene with every expensive renderer path, four fixed views, at 10 to 100 voxels per metre | ~565 lines |
+| [world](/docs/examples/world/) | a generated valley: terrain, river, village, forest, a lamp to carry, day and night, weather | ~550 lines + layout |
+| [valley](/docs/examples/valley/) | the same valley at 10 to 50 voxels per metre: refined models as instances, streamed ground | ~665 lines |
+| [nightwood](/docs/examples/nightwood/) | first person in a misty forest at night at 10 to 50 voxels per metre: moonlight, a lit cottage, fireflies, fog as the view distance | ~435 lines |
+| [temporal](/docs/examples/temporal/) | temporal accumulation of shadows and AO: a moonlit scene, a one-tap toggle, soft shadows, GPU time off and on | ~390 lines |
+| [creature](/docs/examples/creature/) | rigged, animated rats you can wound and dismember with a tap | ~410 lines |
+| [swarm](/docs/examples/swarm/) | hundreds of animated rats through one crowd, with a live cost overlay | ~195 lines |
+| [instances](/docs/examples/instances/) | trees and a crowd drawn by reference, nothing written into the world | ~265 lines |
+| [rigged](/docs/examples/rigged/) | the same rats baked on the CPU and posed on the GPU from one rest model, side by side, one pair per clip | ~140 lines |
+| [bench](/docs/examples/bench/) | the renderer benchmark: one deterministic scene with every expensive renderer path, four fixed views, at 10 to 50 voxels per metre | ~580 lines |
 
 If you are new, read them in that order: each builds on ideas from the ones before. The
 [tutorial](/docs/tutorial/) walks through most of the same ground one step at a time.
@@ -54,10 +54,31 @@ day, a render scale) applies at once; the rest are marked "changed" and applied 
 panel's "Apply and reload" button, and "Defaults" clears them all. Either way the panel rewrites
 the query string, leaving out any value equal to its default on that device, so the address bar
 always holds a link to what you see. Each example's page says which of its options apply at once.
+Beside its own options, every panel has the same [renderer options](#renderer-options): quality,
+temporal accumulation, the traced fraction, reflections, a fixed render scale and a debug view.
 hello-vox, orbit and minecraft-region have no options, so no button; switches meant for tools
 (`?e2e` and a few per page) work in the URL only. A toggle is on as `?key` or `?key=1` and off as
 `?key=0`; a number outside its range is clamped. Each page declares its options once, in its
 `main.ts`, through [`src/shared/options.ts`](https://github.com/voxolith/examples/blob/main/src/shared/options.ts).
+
+### Renderer options
+
+Every page with a panel carries the renderer's own knobs under the same names, so any scene can
+be tried at another quality without editing code:
+
+| option | default | effect |
+|---|---|---|
+| `?quality=` | the page's (`low` on a CPU adapter) | `low`, `medium` or `high`: the renderer's [preset](/docs/renderer/quality-and-performance/) |
+| `?temporal` | off | [temporal accumulation](/docs/renderer/quality-and-performance/#temporal-accumulation) of shadows and ambient occlusion; nothing to accumulate on `low` |
+| `?upscale=` | 1 | with temporal on: the fraction of the output size that is traced, 0.25 to 1 ([temporal upscaling](/docs/renderer/quality-and-performance/#temporal-upscaling)) |
+| `?reflections=0` | on | off compiles out the secondary rays of water, metal and glass |
+| `?renderScale=` | 0 | a fixed render scale up to 2; 0 leaves it to the page, adaptive where it uses `makePerf` |
+| `?debug=` | | `10`: how many steps each primary ray took; `1`: the walk without empty-space skipping |
+
+They apply at once on world, valley, creature, swarm, instances, rigged and bench. On temporal
+`?quality=` reloads and the rest apply at once; on nightwood all but `?debug=` reload. The
+instances page has an `?upscale=` of its own (scaled copies), so it lacks the shared one. A page's
+table lists them only where its defaults differ.
 
 ## Common URL options
 
@@ -82,10 +103,11 @@ IndexedDB model cache, or are generated again in the browser, and the pages with
 read their models' encodings and static bakes from a second IndexedDB cache, the
 [scene cache](/docs/manual/managing-loading/#caching-encodings-and-bakes) (`voxolith-scene`, up to
 2.5 GiB, least recently used out first), or compute them again. Both caps are sized to what the
-pages store at every scale (106 MB of models, 1816 MB of encodings and bakes, measured). With
+pages stored at every scale when they went up to 100 voxels per metre (106 MB of models, 1816 MB
+of encodings and bakes, measured). With
 the caches, a coarse first stage and the ground filled on workers, a warm first frame of
-nightwood at 100 voxels per metre is 1.0 s, where it was 30.8 s with the model cache alone
-(measured). The examples only cache; they are not an installable app. A new deploy takes
+nightwood at 50 voxels per metre is 0.5 s, where it was 6.6 s with the model cache alone
+(measured; at 100, which the pages offered then, 1.0 s against 30.8 s). The examples only cache; they are not an installable app. A new deploy takes
 over quietly and runs on the next load, and a deploy that changed a worker's code starts its cache
 cold once, since each is salted by its worker's hashed URL. The dev server caches nothing. A
 production build served from `localhost` keeps the model and scene caches but registers no service
