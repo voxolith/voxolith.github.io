@@ -61,7 +61,12 @@ An [`Input`](/docs/engine/api/input/interfaces/Input/) is read once per frame:
 
 - **`update()`** advances edges and polls the gamepad. Call it once per frame before reading:
   `pressed`, `released`, `padPressed`, `virtualPressed` and friends report what changed between
-  the last two `update()` calls.
+  the last two `update()` calls. A tap shorter than a frame is not lost: a key, or a virtual value
+  (the touch buttons and joysticks), that went down and up again between two `update()` calls reads
+  as held for the next frame (`down`, `pressed`) and as `released`, with `down` false, in the frame
+  after, exactly like a tap that spans two frames; `active()` stays true in between, so that second
+  frame is drawn. Gamepad buttons are the exception: they are polled in `update()`, so a tap
+  between two polls is not seen at all.
 - **Keys** by `KeyboardEvent.code` (physical, so WASD stays put on AZERTY): `down`, `pressed`,
   `released`. Keys are read from `window` (they never target a canvas), ignored while a text field
   has focus, and released when the window loses focus or the page is hidden. `captureKeys(codes)`

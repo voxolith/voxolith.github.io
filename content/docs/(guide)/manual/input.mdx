@@ -81,6 +81,10 @@ if (actions.pressed("jump")) jump();
 - Screen and stick Y are down-positive; `pad:LeftY-` and `touch:move.y-` read the stick pushed up.
 - `pressed` and `released` report what changed between the last two `input.update()` calls. Call
   `update()` exactly once per frame, before reading them.
+- A key or touch control tapped and let go within one frame still reads as held for the next
+  frame and released in the one after (a gamepad button, polled in `update()`, does not). Such a
+  tap moves one frame's worth however long the frame was, so clamp `dt` where a hitch must not
+  become a jump.
 - Bindings are plain JSON: `actions.bindings()` to save a player's rebinding, `actions.load(saved)`
   to restore it.
 - Touch controls show once a touch is seen and hide on mouse, keyboard or gamepad use. Theme them
