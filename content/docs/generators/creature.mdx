@@ -129,8 +129,9 @@ const rats = kinds.every((k) => realSizeAt(PRESETS[k], vpm))
 if (!rats.length) console.log(`rats from ${Math.ceil(Math.max(...kinds.map((k) => minVoxelsPerMetre(PRESETS[k]))))} voxels per metre`);
 ```
 
-The [valley example](/docs/examples/valley/) does this: no scale it offers (10 to 50 voxels per
-metre) is fine enough, so it has no rats unless asked (`?rats=`), and its HUD says why. A game that wants giant rats (the
+The [valley example](/docs/examples/valley/) makes the choice per scale: its rats are real size
+at 50 voxels per metre, fewer and larger than life at 40 and 30, and left out at 20 and 10 unless
+asked for (`?rats=`); its HUD says which. A game that wants giant rats (the
 [tutorial](/docs/tutorial/rats/)) just uses `atScale` and lets the floor win.
 
 Small rats are where the resolution rules bite, so below size 1 the body keeps floors: lower legs and

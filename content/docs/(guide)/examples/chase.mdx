@@ -1,0 +1,77 @@
+---
+title: chase
+description: "A chase camera with chaseFrame behind a rat steered through makeActions: keyboard, gamepad and an on-screen stick, four framings and an eased heading."
+---
+
+**[Open the live page](/examples/chase/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/chase/main.ts)
+
+<ImageZoom src="/shots/chase.webp" alt="The chase example: a rat seen from behind and above on a patch of grass, between a dark boulder, a mossy rock and a tree, with the View select and the Wander button in the HUD" width={960} height={540} />
+
+A rat on a small patch of ground. Steer it with WASD or the arrow keys, a gamepad's left stick,
+or the on-screen stick a touch screen gets; Shift, or the Run button, runs. Until you do, it
+wanders by itself, and the camera follows.
+
+## What it shows
+
+- **`chaseFrame`.** [`chaseFrame(target, { yawDeg, distance, height, lookAhead, fovDeg })`](/docs/renderer/api/renderer/functions/chaseFrame/)
+  puts the eye `distance` behind and `height` above the target along its heading, and looks at a
+  point `lookAhead` in front of it: the framing of a driving or third-person game. It is plain
+  arithmetic that returns the same camera fields `makeCamera` and `firstPersonFrame` do.
+- **Four framings.** The View select switches between chase, close, high and a rat's-eye view,
+  which is a negative distance: the eye ahead of the target, at head height. Each is a preset of
+  three numbers, and the Options panel has every number.
+- **Lag is the page's.** The camera's heading eases towards the rat's instead of copying it
+  (`?follow=`), so a turn swings the rat across the picture before the view comes round.
+- **One set of actions for every device.** All input comes through
+  [`makeActions`](/docs/engine/api/input/functions/makeActions/), which binds keys, pad and touch
+  to the same two axes; [`makeTouchControls`](/docs/engine/api/input/functions/makeTouchControls/)
+  adds the stick and the Run button. See [Input](/docs/manual/input/).
+- **The rat** is the [creature](/docs/examples/creature/) example's: a rigged entity, animated by
+  a crowd of one and drawn as an instance.
+
+## The interesting part
+
+```ts
+const actions = makeActions(input, {
+  steer: axis({ negative: ["key:KeyA", "key:ArrowLeft"], positive: ["key:KeyD", "key:ArrowRight"], analog: ["pad:LeftX", "touch:move.x"] }),
+  go: axis({ negative: ["key:KeyS", "key:ArrowDown", "pad:LeftY+", "touch:move.y+"], positive: ["key:KeyW", "key:ArrowUp", "pad:LeftY-", "touch:move.y-"] }),
+  run: button("key:ShiftLeft", "key:ShiftRight", "pad:A", "touch:run"),
+});
+makeTouchControls(input, { joysticks: [{ id: "move", side: "left" }], buttons: [{ id: "run", label: "Run" }] });
+
+// Per frame: the camera's heading follows the rat's by the shortest way round.
+const behind = ((((ratYaw - camYaw) % 360) + 540) % 360) - 180;
+camYaw += behind * Math.min(1, follow * dt);
+const view = chaseFrame([rat.x, rat.y + 8, rat.z], { yawDeg: camYaw, distance, height, lookAhead, fovDeg });
+renderer.render({ ...view, ...DAYLIGHT });
+```
+
+## Controls
+
+| input | does |
+|---|---|
+| W/S, up/down, left stick, on-screen stick | walk forwards and back |
+| A/D, left/right | turn |
+| Shift, pad A, the Run button | run |
+| the View select | chase, close, high or rat's eye |
+| the Wander button | let the rat wander by itself |
+
+## URL options
+
+All but `?e2e` are in the [Options panel](/docs/examples/#the-options-panel). Everything but `?seed=` applies at once, the shared [renderer options](/docs/examples/#renderer-options)
+included.
+
+| option | default | effect |
+|---|---|---|
+| `?view=` | `chase` | `chase`, `close`, `high` or `eye`: a preset of the next three |
+| `?distance=` | 120 | how far behind the rat the eye sits, in voxels, -60 to 300; negative is ahead of it |
+| `?height=` | 50 | how far above it, 4 to 300 |
+| `?lookAhead=` | 40 | how far in front of the rat the camera looks, 0 to 300 |
+| `?fov=` | 55 | the vertical field of view in degrees, 30 to 100 |
+| `?follow=` | 3 | how quickly the camera's heading catches up with the rat's; 0 never turns, 20 is rigid |
+| `?wander=0` | on | start with the rat standing still instead of wandering |
+| `?seed=` | `chase` | a different patch |
+| `?e2e` | | `window.chaseStats()` for the test tools |
+
+See also [Input](/docs/manual/input/) and [Animation](/docs/manual/animation/).

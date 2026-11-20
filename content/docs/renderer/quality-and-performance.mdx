@@ -142,7 +142,9 @@ renderer.setQuality({ ...QUALITY_PRESETS.medium, temporal: true, upscale: 0.5 })
   neighbourhood, and blends in the new sample weighted by its distance to the pixel centre. With a
   still camera a pixel keeps a running average and then holds, restarting only after four frames
   outside that range, so sub-pixel detail does not shimmer. Pixels close to a light that changed
-  keep a short average, so surfaces follow moving lights. A finishing pass adds the lights' glow
+  keep a short average, so surfaces follow moving lights. Pixels where something moved this
+  frame (edited voxels, dynamic or posed instances, and their shadows) are resolved as in motion:
+  they leave no trail, but stay at the traced, lower resolution while it moves. A finishing pass adds the lights' glow
   after the resolve, from the current frame.
 - **Converging.** As with temporal accumulation, the picture sharpens over the frames after the
   view stops changing; `renderer.converging()` covers it.

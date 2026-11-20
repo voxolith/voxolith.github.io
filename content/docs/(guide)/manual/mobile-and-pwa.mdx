@@ -31,9 +31,9 @@ generate and draw). A phone gets 20 voxels per metre (5 cm voxels), which the en
 support as a scale of their own ([at 20 voxels per metre](/docs/generators/scales-and-refinement/#at-20-voxels-per-metre)):
 about an eighth of the bricks of 50, and 19 MB of GPU memory for the valley against 126 MB. It
 also shrinks the rest: a 2 × 2 tile map, one model per species, a 16 m streamed radius instead of
-24, the `low` preset with a shorter `maxSteps`, and a starting render scale of 0.6. There are no rats
-by default: a rat is real size only from about 84 voxels per metre, more than the page offers,
-and `?rats=` adds them larger than life; see
+24, the `low` preset with a shorter `maxSteps`, and a starting render scale of 0.6. The phone profile has
+no rats: at 20 voxels per metre the page's smallest rat would be 1.25 m long (a desktop at 50 gets
+60 at real size), and `?rats=` adds them anyway; see
 [sizing for a world](/docs/generators/creature/#sizing-for-a-world). Each setting can still be
 forced from the page's [Options panel](/docs/examples/#the-options-panel) or the URL (`?vpm=`,
 `?scale=`, `?variants=`, `?rats=`, `?radius=`). The general levers, in the order they help:

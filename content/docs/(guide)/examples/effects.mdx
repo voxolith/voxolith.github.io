@@ -1,0 +1,69 @@
+---
+title: effects
+description: "A muzzle flash and an explosion from the renderer's effect simulations, stamped into a scene each frame with GridStamper, with a crater, emissive fire and a fading point light per effect."
+---
+
+**[Open the live page](/examples/effects/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/effects/main.ts)
+
+<ImageZoom src="/shots/effects.webp" alt="The effects example at dusk: a cannon on a square of grass has fired at a brick wall, where a dome of dark smoke with glowing embers and sparks lights the bricks and the ground" width={960} height={540} />
+
+A cannon, a brick wall, and dusk. Tap anywhere, or press Fire: the cannon flashes, a ball flies,
+and where it lands a blast carves a crater.
+
+## What it shows
+
+- **Effects are small simulations.** [`makeMuzzleFlash`](/docs/renderer/api/renderer/functions/makeMuzzleFlash/)
+  and [`makeExplosion`](/docs/renderer/api/renderer/functions/makeExplosion/) each run on a stage
+  grid of their own: `tick(dt)` rewrites `data`, whose values are seven fire-to-smoke slots.
+- **Copied into the world each frame.** To put one in a scene the page copies the stage's voxels
+  into the world at an offset, with the seven slots mapped to seven slots of the world's palette,
+  the hot ones emissive.
+- **`GridStamper` leaves nothing behind.** [`GridStamper`](/docs/renderer/api/renderer/classes/GridStamper/)
+  keeps the static scene as a base plate. Each `stamp(voxels)` first restores what the previous
+  stamp covered, then writes the new voxels, and returns the box that changed for
+  `renderer.updateVoxels`. The flash, the ball and every blast go in as one list per frame.
+- **A crater is the other kind of edit.** It is permanent, written to the base plate with
+  `writeBase`.
+- **Fire needs a light.** An emissive voxel lights only itself, so each effect also carries a
+  point light (`renderer.setLights`) that fades with it. That is what lights the wall, the ground
+  and the cannon.
+- **Continuous only while something burns.** The page renders on demand otherwise.
+
+## The interesting part
+
+```ts
+const stamper = new GridStamper(base, SIZE);
+
+// Per frame, for each effect still burning:
+fx.tick(dt);
+// ...push the stage's voxels, offset by the effect's origin, fire slot n as world slot FIRE + n - 1,
+// and a light that goes out with the fire:
+lights.push({ position, color: [1, 0.62, 0.28], intensity: power * (1 - age / life) ** 2, range: 150, shadows });
+
+// One stamp for everything that moves: it restores last frame's cells first.
+const box = stamper.stamp(voxels);
+if (box) renderer.updateVoxels(stamper.liveData, box);
+renderer.setLights(lights);
+```
+
+## Controls
+
+Tap or click the scene to fire at that spot; Space fires at the wall, and the Fire button at a
+spot the seed picks. Drag to turn. The Blast and Flash selects and the Auto button are in the HUD.
+
+## URL options
+
+All but `?e2e` are in the [Options panel](/docs/examples/#the-options-panel). Everything but `?seed=` applies at once, the shared [renderer options](/docs/examples/#renderer-options)
+included.
+
+| option | default | effect |
+|---|---|---|
+| `?blast=` | `medium` | the explosion preset: `small`, `medium` or `large` |
+| `?flash=` | `cone` | the muzzle flash: `star`, `cone` or `bloom` |
+| `?auto` | | keep firing, about once a second |
+| `?time=` | 0.73 | time of day, 0 midnight to 0.5 noon; the default is dusk, so the lights show |
+| `?seed=` | `effects` | where the Fire button's shots land |
+| `?e2e` | | `window.effectsStats()` and `window.effectsFire()` for the test tools |
+
+See also [Lighting](/docs/manual/lighting/) and [Worlds and storage](/docs/manual/worlds-and-storage/).

@@ -152,7 +152,8 @@ physically based sky after Hillaire (EGSR 2020): Rayleigh, Mie and ozone scatter
 tables built in compute shaders, a sun disc with limb darkening, a moon with its phase, stars and
 the cloud layer. It lights the scene from the same model: `sky.frame()` returns the key light, the
 ambient and a fog colour that matches the horizon, with the weather applied as `atmosphereFrame`
-does.
+does. Below the horizon it draws the ground: the sky model's `groundAlbedo`, shaded under the
+frame's own light and seen through the horizon haze.
 
 ```ts
 const sky = await makePhysicalSky(gpu);

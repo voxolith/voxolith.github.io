@@ -17,13 +17,18 @@ lists the URL options it reads.
 | [orbit](/docs/examples/orbit/) | a voxel grid written by hand, an orbit camera, rendering on demand | ~80 lines |
 | [minecraft-region](/docs/examples/minecraft-region/) | drop a Minecraft `.mca` region and fly through it in first person | ~110 lines |
 | [world](/docs/examples/world/) | a generated valley: terrain, river, village, forest, a lamp to carry, day and night, weather | ~550 lines + layout |
-| [valley](/docs/examples/valley/) | the same valley at 10 to 50 voxels per metre: refined models as instances, streamed ground | ~665 lines |
+| [valley](/docs/examples/valley/) | the same valley at 10 to 50 voxels per metre: refined models as instances, streamed ground, rats at real size at 50 | ~665 lines |
 | [nightwood](/docs/examples/nightwood/) | first person in a misty forest at night at 10 to 50 voxels per metre: moonlight, a lit cottage, fireflies, fog as the view distance | ~435 lines |
 | [temporal](/docs/examples/temporal/) | temporal accumulation of shadows and AO: a moonlit scene, a one-tap toggle, soft shadows, GPU time off and on | ~390 lines |
 | [creature](/docs/examples/creature/) | rigged, animated rats you can wound and dismember with a tap | ~410 lines |
 | [swarm](/docs/examples/swarm/) | hundreds of animated rats through one crowd, with a live cost overlay | ~195 lines |
 | [instances](/docs/examples/instances/) | trees and a crowd drawn by reference, nothing written into the world | ~265 lines |
 | [rigged](/docs/examples/rigged/) | the same rats baked on the CPU and posed on the GPU from one rest model, side by side, one pair per clip | ~140 lines |
+| [background](/docs/examples/background/) | a sky written by the page as a WESL module, driven by a parameter block each frame, next to the renderer's default gradient | ~255 lines |
+| [select](/docs/examples/select/) | pick a voxel, highlight the object it belongs to by its palette range, carve the world with `clear` | ~250 lines |
+| [restyle](/docs/examples/restyle/) | trees recoloured by palette without regenerating, and models added and removed at run time | ~225 lines |
+| [effects](/docs/examples/effects/) | a muzzle flash and an explosion stamped into a scene, with a crater, emissive fire and a fading light each | ~265 lines |
+| [chase](/docs/examples/chase/) | a chase camera behind a rat steered by keyboard, gamepad or an on-screen stick | ~220 lines |
 | [bench](/docs/examples/bench/) | the renderer benchmark: one deterministic scene with every expensive renderer path, four fixed views, at 10 to 50 voxels per metre | ~580 lines |
 
 If you are new, read them in that order: each builds on ideas from the ones before. The

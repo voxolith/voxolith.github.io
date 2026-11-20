@@ -213,13 +213,13 @@ smaller valley.
 | voxels per metre (`?vpm=`) | 50 (2 cm) | 20 (5 cm) |
 | valley size (`?scale=`) | 4 × 4 tiles | 2 × 2 tiles |
 | models per species (`?variants=`) | 3 | 1 |
-| rats (`?rats=`) | none | none |
+| rats (`?rats=`) | 60, real size | none |
 | streamed radius (`?radius=`) | 24 m | 16 m |
 | quality preset | Medium | Low |
 
-Rats are built by default only at a scale where they come out at their real size, from about 84
-voxels per metre, which is more than the page offers: the HUD says so, and `?rats=` adds them
-larger than life. `?full` asks for the desktop settings anyway, and
+Rats come by default only where they still read as small animals: 60 at 50 voxels per metre,
+where the page's smallest rat is real size, fewer and larger than life at 40 and 30, and none at
+20 and 10 or on the phone profile. The HUD says which, and `?rats=` forces a crowd at any scale. `?full` asks for the desktop settings anyway, and
 each setting can be given on its own. If the phone profile still fails, lower `?scale=` and
 `?radius=` further and stay at 20 voxels per metre (50 voxels per metre, from the Options panel, costs nearly
 seven times the memory). The nightwood example uses the same test and the same scales.

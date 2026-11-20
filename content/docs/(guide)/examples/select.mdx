@@ -1,0 +1,73 @@
+---
+title: select
+description: "Picking a voxel on the CPU, highlighting the object it belongs to by its palette range, and carving the world with clear: a dig tool, removing an object, and a reset."
+---
+
+**[Open the live page](/examples/select/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/select/main.ts)
+
+<ImageZoom src="/shots/select.webp" alt="The select example: a cottage, trees and rocks on a square of ground, all greyed except one oak that is selected and keeps its colour, with Tool, Remove and Reset buttons" width={960} height={540} />
+
+A small garden stamped into the world grid: a cottage, trees, bushes and rocks from the
+generators, on layered ground. Hover or tap an object to highlight it, remove it, or switch to
+the dig tool and carve cubes out of anything.
+
+## What it shows
+
+- **A palette range per object.** Each stamped object gets slots of its own from a
+  `PaletteAllocator`, so the value of a voxel says which object it belongs to. That is all the
+  bookkeeping selection needs.
+- **Picking on the CPU.** [`makeRay`](/docs/renderer/api/ray/functions/makeRay/) turns a pointer
+  position into the ray the shader casts through that pixel, and
+  [`voxelRaycast`](/docs/renderer/api/ray/functions/voxelRaycast/) walks it through the page's own
+  dense copy of the grid. See [Picking](/docs/manual/picking/).
+- **Highlighting by slot range.** [`setHighlight`](/docs/renderer/lighting/#floor-and-highlight)
+  with `mode: 1` keeps the voxels in a slot range in colour, rims their outline and greys the
+  rest. Nothing is re-uploaded.
+- **Carving.** `renderer.clear(box)` frees every brick wholly inside the box and empties the cells
+  of those it only partly covers. The dig tool clears a cube where you tap, and Remove clears the
+  selected object's bounding box. The page empties the same box in its own copy, so picking sees
+  the hole.
+- **Reset.** `renderer.updateVoxels(data)` uploads the whole grid again from the page's untouched
+  copy.
+
+## The interesting part
+
+```ts
+// The voxel under the pointer, and the object whose palette range holds its value.
+const { origin, dir } = makeRay(canvas, frame(), clientX, clientY);
+const hit = voxelRaycast(SIZE, world.data, origin, dir, 4096);
+const slot = hit ? world.data[at(hit.cell[0], hit.cell[1], hit.cell[2])] : 0;
+const object = objects.find((o) => slot >= o.slotMin && slot <= o.slotMax);
+
+// Its slots keep their colour and get a rim; everything else is greyed.
+renderer.setHighlight(object ? { mode: 1, slotMin: object.slotMin, slotMax: object.slotMax } : { mode: 0, slotMin: 0, slotMax: 0 });
+
+// Carve: on the GPU, and in the page's copy so the next pick agrees.
+renderer.clear(box);
+```
+
+## Controls
+
+| input | does |
+|---|---|
+| hover (mouse) | highlight the object under the pointer |
+| click, tap | select tool: keep the selection; dig tool: clear a cube there |
+| T, the Tool button | switch between select and dig |
+| X, the Remove button | clear the selected object |
+| the Reset button | put everything back |
+| drag, wheel or pinch | turn, zoom |
+
+## URL options
+
+All but `?e2e` are in the [Options panel](/docs/examples/#the-options-panel). `?tool=`, `?dig=` and the shared [renderer options](/docs/examples/#renderer-options) apply at once; `?seed=`
+reloads the page.
+
+| option | default | effect |
+|---|---|---|
+| `?tool=` | `select` | `select` or `dig`: what a click or tap does |
+| `?dig=` | 12 | the edge of the cube the dig tool clears, in voxels, 2 to 32 |
+| `?seed=` | `select` | a different garden |
+| `?e2e` | | `window.selectStats()` and `window.selectAt(x, y)` for the test tools |
+
+See also [Picking](/docs/manual/picking/) and [Worlds and storage](/docs/manual/worlds-and-storage/).

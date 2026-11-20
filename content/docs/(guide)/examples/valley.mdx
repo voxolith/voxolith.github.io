@@ -1,6 +1,6 @@
 ---
 title: valley
-description: "The world valley at 10 to 50 voxels per metre: coarse models first and one swap to the refined ones, drawn as instances, ground streamed in chunks filled on workers, and a lighter phone profile."
+description: "The world valley at 10 to 50 voxels per metre: coarse models first and one swap to the refined ones, drawn as instances, ground streamed in chunks filled on workers, rats at their real size and a lighter phone profile."
 ---
 
 **[Open the live page](/examples/valley/)** ·
@@ -56,13 +56,13 @@ above and the measurements at 100 below are from then, and an old `?vpm=100` lin
 - **The ground near the view first.** The first picture waits for the ground within 18 m of the
   view (`?near=`, through [`whenReady`](/docs/manual/managing-loading/#ready-around-the-camera)),
   and the rest of the streamed radius comes in after it, nearest first.
-- **An instanced crowd, on request.** [`makeCrowd({ instances })`](/docs/engine/api/animation/functions/makeCrowd/)
-  draws each rat pose as an instance, so rats glide and turn smoothly. By default the page builds
-  rats only where gen-creature's [`realSizeAt`](/docs/generators/creature/#sizing-for-a-world)
-  holds for every kind, which is from about 84 voxels per metre: more than the page offers. Below
-  that a rat's legs would be under two voxels thick at its real size, so it has to be built larger
-  than life (0.86 m long at 50, 2.15 m at 20). So there are none by default, and the HUD says why.
-  `?rats=N` (the panel's Rats) adds a crowd anyway, larger than life.
+- **An instanced crowd, where a rat fits.** [`makeCrowd({ instances })`](/docs/engine/api/animation/functions/makeCrowd/)
+  draws each rat pose as an instance, so rats glide and turn smoothly. The page builds its rats as
+  small as it can, 25 voxels from nose to tail tip, which is real size at 50 voxels per metre
+  (0.50 m) and larger than life below: 1.25 times at 40 and 1.7 times at 30. So there are 60 rats
+  at 50, 40 at 40 and 24 at 30, and none at 20 and 10, where the smallest rat would be a giant
+  among the houses, nor on the phone profile. The HUD says how large they are, or why there are
+  none. `?rats=N` (the panel's Rats) forces a crowd at any scale, and `?rats=0` gives none.
 - **A phone profile.** A touch-only pointer, or a GPU whose storage bindings are under 512 MiB,
   gets a lighter valley: 5 cm voxels (20 per metre), a 2 × 2 tile map, one model per species, a
   16 m streamed radius, the Low quality preset, and one loading stage: the fine models before the first picture, with no coarse stage. `?full` gives a phone
@@ -156,7 +156,7 @@ keys do, and so do the shared [renderer options](/docs/examples/#renderer-option
 | `?vpm=` | 50 (20) | voxels per metre: 10, 20, 30, 40 or 50; anything else snaps to the nearest, so `?vpm=100` opens at 50 |
 | `?scale=` | 4 (2) | valley size in 320-voxel tiles of the world page, 1 to 8 |
 | `?variants=` | 3 (1) | models per species, 1 to 10; 10 matches the world page exactly but needs over a gigabyte of GPU memory |
-| `?rats=` | none | rats in the crowd, 0 to 400, larger than life (0.86 m long at 50): a rat is real size only from about 84 voxels per metre |
+| `?rats=` | 60 (none) | rats in the crowd, 0 to 400: by default 60 at 50 voxels per metre (real size), 40 at 40 (1.25 times life), 24 at 30 (1.7 times) and none at 20 and 10; a number forces a crowd at any scale, larger than life below 50, and 0 gives none |
 | `?radius=` | 24 (16) | streamed radius, in metres, 8 to 256 |
 | `?near=` | 18 | metres of ground around the view the first picture waits for (at most the radius); less is sooner, with holes at the edge of the first view |
 | `?coarse=` | on for a desktop at 50, off on a phone | `0`: no coarse stage, the fine models before the first picture; `1`: a coarse stage at any scale above 10 and on a phone |

@@ -1,0 +1,75 @@
+---
+title: background
+description: "A sky written by the page as a WESL module and driven by a parameter block each frame, next to the renderer's default gradient, with a pond and a chrome ball that reflect it."
+---
+
+**[Open the live page](/examples/background/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/background/main.ts)
+
+<ImageZoom src="/shots/background.webp" alt="The background example: a small round island with a pond, a chrome ball and stone posts under a dusk sky drawn by the page's own shader, a low sun, a warm horizon and stars" width={960} height={540} />
+
+The renderer draws no sky of its own. Whatever a ray sees when it leaves the world comes from a
+[background](/docs/renderer/atmosphere/#backgrounds): a WESL module handed to `createRenderer` and
+linked into the raymarch shader. This page writes one, about fifty lines of shader in its
+`main.ts`: a horizon-to-zenith gradient, smooth or in flat bands, a sun disc with a glow, stars
+and a dark ground. The Sky select swaps it for the renderer's default, a two-colour gradient and
+nothing else.
+
+## What it shows
+
+- **A background module.** `SKY_WESL` exports `background(rd, footprint)`: the linear colour along
+  a unit direction, with the angle one pixel covers, which the page uses to keep the sun's edge
+  and the stars from aliasing. It is passed as
+  [`BackgroundOptions.source`](/docs/renderer/api/renderer/interfaces/BackgroundOptions/).
+- **Parameters per frame.** The module reads 64 floats the page packs each frame
+  (`FrameParams.background`, `BG.params` in the shader) and the frame time (`BG.time`): the sun's
+  direction and size, the horizon and zenith colours, the band count, the star brightness. Moving
+  the sun is a new parameter block, not a new shader.
+- **One function for rays and reflections.** The same `background` colours primary rays and
+  reflected ones, so the pond and the chrome ball show the sky too.
+- **The default, for comparison.** Leaving `background` out links the renderer's
+  [`GRADIENT_BACKGROUND_WESL`](/docs/renderer/api/renderer/variables/GRADIENT_BACKGROUND_WESL/),
+  whose two colours [`gradientBackgroundParams`](/docs/renderer/api/renderer/functions/gradientBackgroundParams/)
+  packs.
+- **Chosen at creation.** A background is linked when the renderer is created, so swapping the
+  module builds a new renderer from the same scene. Everything else on the page is parameters and
+  changes with the next frame.
+- **A background lights nothing.** The page derives the key light and the ambient from the same
+  sun height and passes them beside the parameter block.
+
+## The interesting part
+
+```ts
+// The module is chosen when the renderer is created; leaving it out links the default gradient.
+const renderer = await createRenderer(gpu, scene, {
+  background: sky === "dusk" ? { source: SKY_WESL } : undefined,
+});
+
+// Per frame: pack the parameter block the module reads as BG.params, and light the scene to match.
+params.set([...sunDir, 0.035, ...horizon, bands, ...zenith, stars, ...sunColor, twinkle, ...GROUND, 0]);
+renderer.render({ ...camera(/* ... */), lightDir: sunDir, lightColor, ambientSky, ambientGround, background: params });
+```
+
+The page renders on demand. Animate passes the frame time and draws every frame: the stars
+twinkle and the water ripples.
+
+## Controls
+
+Drag to turn, wheel or pinch to zoom. The Sky and Sun selects and the Bands and Animate buttons
+in the HUD change the same state as the options below.
+
+## URL options
+
+All are in the [Options panel](/docs/examples/#the-options-panel) and apply at once, the shared [renderer options](/docs/examples/#renderer-options) too. `?sky=` rebuilds the renderer,
+which takes a moment.
+
+| option | default | effect |
+|---|---|---|
+| `?sky=` | `dusk` | `dusk`: this page's module; `gradient`: the renderer's default gradient |
+| `?sun=` | 10 | the sun's height in degrees, 2 to 80; low is a warm dusk with stars, and the scene's light follows it |
+| `?heading=` | 195 | the sun's compass heading in degrees |
+| `?bands=` | 0 | draw the gradient in this many flat bands, up to 12; 0 is smooth |
+| `?stars=` | 0.8 | star brightness, 0 to 1; they fade as the sun climbs |
+| `?animate` | | pass the frame time and draw every frame |
+
+See also [Backgrounds](/docs/renderer/atmosphere/#backgrounds) and [Lighting](/docs/renderer/lighting/).

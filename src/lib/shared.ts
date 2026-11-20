@@ -79,6 +79,11 @@ export const appPages = [
   '/examples/swarm/',
   '/examples/instances/',
   '/examples/rigged/',
+  '/examples/background/',
+  '/examples/select/',
+  '/examples/restyle/',
+  '/examples/effects/',
+  '/examples/chase/',
   '/examples/bench/',
 ];
 

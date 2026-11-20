@@ -1,0 +1,70 @@
+---
+title: restyle
+description: "One set of tree models recoloured by palette without regenerating: seasons and tints as a few hundred bytes, and models added and removed at run time."
+---
+
+**[Open the live page](/examples/restyle/)** ·
+[Source](https://github.com/voxolith/examples/blob/main/src/restyle/main.ts)
+
+<ImageZoom src="/shots/restyle.webp" alt="The restyle example in its autumn look: seven trees on a round patch of ground, broadleaves in yellow and orange and one green spruce, with a Look select and Add tree and Remove tree buttons" width={960} height={540} />
+
+A voxel of a generated model is a [role](/docs/engine/entities-and-roles/) (bark, leaf, twig),
+never a colour. The colour comes from a palette, so a look is a few hundred bytes. The Look
+select restyles every tree on the page with the next frame, and no model is regenerated or
+uploaded again; the readout says how long the restyle took.
+
+## What it shows
+
+- **A palette per species.** Instances use palettes of their own, outside the world's 256 slots:
+  `renderer.addPalette` once per species, shared by every tree of it.
+- **Restyling in place.** `renderer.setPaletteColors` rewrites a species' palette, and
+  `renderer.updatePalette` uploads the world palette again after the ground's three slots change.
+- **Seasons and tints.** Spring, summer and autumn are the tree generator's own colours for the
+  same roles ([`skinFor(species, season)`](/docs/generators/api/gen-tree/functions/skinFor/)).
+  Frost and burnt are tints the page computes from each role's id, the way a game would show
+  damage or a faction.
+- **What a palette cannot do.** A real winter tree is a different model, with bare boughs and
+  snow on them: that is the generator's `look.season`, and needs a new model. This page only
+  recolours.
+- **Models added and removed.** Each tree is a model of its own, drawn as one instance. Add tree
+  generates one and uploads it (`renderer.addModel`); Remove tree places the instances without it
+  and then frees its bricks (`renderer.removeModel`). Freed bricks go back to the renderer's pool
+  and the next model takes them, so adding and removing in turn does not grow the GPU buffers.
+
+## The interesting part
+
+```ts
+// Once: a palette per species.
+paletteOf.set(species, renderer.addPalette(colors, materials));
+
+// A new look: rewrite each species' palette in place, and the ground's slots in the world palette.
+for (const species of SPECIES) {
+  const { colors, materials } = instancePalette(treeRoles(species, look));
+  renderer.setPaletteColors(paletteOf.get(species)!, colors, materials);
+}
+renderer.updatePalette(palette.buildPalette());
+
+// Removing a tree: place the instances without it first (an instance may not name a removed
+// model), then free its bricks.
+renderer.setInstances(list);
+renderer.removeModel(tree.model);
+```
+
+## Controls
+
+Drag to turn, wheel or pinch to zoom. The Look select and the Add tree and Remove tree buttons
+are in the HUD.
+
+## URL options
+
+All but `?e2e` are in the [Options panel](/docs/examples/#the-options-panel). `?look=`, `?trees=` and the shared [renderer options](/docs/examples/#renderer-options) apply at once;
+`?seed=` reloads the page.
+
+| option | default | effect |
+|---|---|---|
+| `?look=` | `summer` | `spring`, `summer`, `autumn`, `frost` or `burnt` |
+| `?trees=` | 7 | how many trees stand, 0 to 24 |
+| `?seed=` | `restyle` | different trees |
+| `?e2e` | | `window.restyleStats()` for the test tools |
+
+See also [Entities and roles](/docs/engine/entities-and-roles/) and [Instances](/docs/manual/instances/).
