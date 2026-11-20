@@ -47,6 +47,7 @@ Links to the apps (`/viewer/`, `/examples/`, ...) are 404 locally: those pages l
 | `src/app/sitemap.ts`, `robots.ts` | crawler files, generated at build |
 | `public/shots/` | demo screenshots (1280x720 captures, 960 px WebP) |
 | `public/generators/` | generator contact sheets (`bun run previews`, WebP, committed) |
+| `ci/` | the workspace root CI assembles: its `package.json` and `bun.lock` (`bun run lock`) |
 | `src/brand/`, `public/brand/`, `public/favicon*` | **generated** by `bun run sync` in `voxolith/branding`; don't edit here |
 
 Each section is a Fumadocs root folder (`"root": true` in its `meta.json`), which is what the
@@ -68,6 +69,19 @@ under `voxolith-theme`, the same key the apps use, so the choice carries across 
 
 Both read the sibling repos, so they need the Voxolith workspace layout; CI checks the packages out
 alongside. `bun run links` checks every internal link in `out/` after a build.
+
+## Reproducible installs
+
+The site's dependencies resolve from a workspace root, so it has no lockfile beside its
+`package.json`. CI's root is `ci/package.json`, and `ci/bun.lock` is the lockfile for it: the
+workflow copies both into the root it assembles, then runs a plain `bun install`. Run
+`bun run lock` after any dependency change here or in renderer, engine or generators, and commit
+the result. It resolves that root from the sibling checkouts' manifests in a temporary directory
+and installs nothing. If it is forgotten the build still installs: locked versions are kept
+wherever their range still allows them, and only the changed ranges float to the newest release.
+`bun run lock --check` says whether the file is current; `--fresh` re-resolves everything.
+
+`tools/api/` (TypeDoc) is a separate install with its own committed `bun.lock`, installed frozen.
 
 ## License
 

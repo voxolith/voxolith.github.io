@@ -50,8 +50,9 @@ jobs:
         with:
           bun-version: latest
       - name: Assemble a workspace root
-        run: |
-          echo '{ "name": "pages-workspace", "private": true, "workspaces": ["voxolith.github.io", "renderer", "engine", "generators/*"] }' > package.json
+        # ci/bun.lock (`bun run lock` in the site) pins what the install below resolves. It is not
+        # frozen: a range changed since, here or in a sibling, resolves afresh.
+        run: cp voxolith.github.io/ci/package.json voxolith.github.io/ci/bun.lock .
       - run: bun install
       - working-directory: voxolith.github.io
         run: bun run typecheck

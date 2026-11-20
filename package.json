@@ -13,6 +13,7 @@
     "build": "next build",
     "start": "serve out",
     "links": "bun tools/check-links.ts",
+    "lock": "bun tools/lock.ts",
     "previews": "bun tools/previews.ts",
     "typecheck": "next typegen && tsc --noEmit"
   },

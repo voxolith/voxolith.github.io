@@ -1,0 +1,5 @@
+{
+  "name": "pages-workspace",
+  "private": true,
+  "workspaces": ["voxolith.github.io", "renderer", "engine", "generators/*"]
+}

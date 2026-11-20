@@ -14,6 +14,7 @@ bun run build        # regenerates the API reference and generator pages first (
 bun run links        # after a build: every internal link resolves
 bun run previews     # regenerate the generator contact sheets in public/generators/
 bun tools/api/run.ts --coverage   # undocumented exports; keep it at 0
+bun run lock         # after any dependency change here or in renderer, engine, generators: ci/bun.lock
 ```
 
 The API reference and the generator pages need the sibling repos checked out: renderer, engine,
@@ -32,6 +33,10 @@ generators.
 - `src/lib/shared.ts`: the site name, the demos on the landing page, and `appPages` (sitemap).
   `src/lib/tree.ts`: trims the page tree per page (it keeps the export small).
 - `public/shots/`: example screenshots (960 × 540 webp).
+- `ci/`: the workspace root CI assembles. `package.json` is that root's manifest, the one copy
+  both the workflow and `tools/lock.ts` use; `bun.lock` is its lockfile, written by `bun run lock`
+  (`--check` only compares, `--fresh` re-resolves everything). `tools/api/bun.lock` is the TypeDoc
+  install's own, installed frozen.
 - `next.config.mjs`: `turbopack.root` points at the workspace root when the site is in the
   workspace; `agentRules: false` stops Next writing its own AGENTS.md or CLAUDE.md here.
 
@@ -46,6 +51,12 @@ generators.
 - Credits: every paper an idea came from is on the page that uses it, under References, and on
   `/docs/credits/`, with a checked DOI.
 - Keep `bun run links` at 0 broken, and the API coverage at 0 undocumented.
+- Rerun `bun run lock` after any dependency bump in the site or in a sibling it builds with
+  (renderer, engine, generators), and commit `ci/bun.lock`. CI's install is not frozen: if the
+  lockfile is stale it still succeeds, keeping every locked version whose range still allows it
+  and resolving only the changed ranges to whatever is newest that day, unrecorded. After a bump in
+  `tools/api/package.json`, run `bun install --cwd tools/api` instead (that install is frozen, so
+  forgetting fails `bun run api`).
 
 ## Working in the Voxolith repos
 
