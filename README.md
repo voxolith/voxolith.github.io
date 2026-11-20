@@ -9,7 +9,7 @@
 
 The Voxolith website and documentation, served at <https://voxolith.github.io/>. Built with
 [Fumadocs](https://fumadocs.dev) as a static [Next.js export](https://nextjs.org/docs/app/guides/static-exports)
-and published by `.github/workflows/pages.yml` on every push to `main`.
+and published by `.github/workflows/pages.yml` on every push to `main`, and nightly.
 
 The apps are separate GitHub Pages sites on the same domain, deployed from their own repos:
 [/viewer/](https://voxolith.github.io/viewer/), [/editor/](https://voxolith.github.io/editor/),
@@ -20,11 +20,11 @@ The apps are separate GitHub Pages sites on the same domain, deployed from their
 ## Develop
 
 Inside the local Voxolith workspace, install from the workspace root and start it with
-`bun run dev docs`; `next.config.mjs` then points Turbopack at the root's `node_modules`. On its
-own (as in CI) it is an ordinary project:
+`bun run dev docs`; `next.config.mjs` then points Turbopack at the root's `node_modules`. CI
+assembles the same layout: it checks out renderer, engine and generators beside the site and
+writes a throwaway workspace root. From this folder, once the root is installed:
 
 ```sh
-bun install
 bun run dev          # http://localhost:3000
 bun run typecheck
 bun run build        # static site in out/
@@ -37,7 +37,7 @@ Links to the apps (`/viewer/`, `/examples/`, ...) are 404 locally: those pages l
 
 | path | what |
 |---|---|
-| `content/docs/(guide)/` | the Guide section (`/docs/...`): getting started, tutorial, manual, examples, troubleshooting |
+| `content/docs/(guide)/` | the Guide section (`/docs/...`): getting started, tutorial, manual, examples, troubleshooting, credits |
 | `content/docs/{renderer,engine,generators}/` | one section per package: concept pages, then `api/` |
 | `content/docs/*/api/` | **generated** API reference (`bun run api`, TypeDoc); gitignored |
 | `src/generated/generators.json` | **generated** generator data (`bun run generators`); gitignored |

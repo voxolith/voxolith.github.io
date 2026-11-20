@@ -53,8 +53,11 @@ generators.
   depends on its siblings as `"workspace:*"`. Run `bun install` from that root, never inside a
   repo. [CONTRIBUTING](https://github.com/voxolith/.github/blob/main/CONTRIBUTING.md) lists
   which siblings each repo needs.
-- **Toolchain: bun only.** There is no npm or node step anywhere. It is TypeScript 7 and Vite 8;
-  scripts run `tsc`, `vite` and `bun tools/x.ts`. Use current dependency versions.
+- **Toolchain: bun.** Install and run everything with bun (`bun install`, `bun run`), never npm.
+  Node may be present too (GitHub's runners have it, and bun hands tools with a node shebang, such
+  as `next` and `vite`, to it when it is), so config a tool loads must also run under Node. It is
+  TypeScript 7 and Vite 8; scripts run `tsc`, `vite` and `bun tools/x.ts`. Use current dependency
+  versions.
 - **`tsconfig.base.json` is byte-identical in every repo**, because consumers compile the
   renderer's and engine's sources under their own flags. Change it everywhere or nowhere.
 - **WebGPU, not WebGL.** Dev servers are HTTPS (`@vitejs/plugin-basic-ssl`), because WebGPU needs a

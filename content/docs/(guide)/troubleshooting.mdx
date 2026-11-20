@@ -253,9 +253,9 @@ Two of those steps can stop blocking instead
 
 - **The model uploads and the static placement**: give the instance layer a scene worker
   (`makeInstanceLayer(renderer, { worker })`) and `await layer.commitAsync()`; `setStatic` then
-  returns at once, and the page keeps painting while the models encode and the set bakes. With the
-  older bake-only placement worker, uploading new models in `setStatic` still blocks, so keep the
-  wait in front of that.
+  returns at once, and the page keeps painting while the models encode and the set bakes. With a
+  worker that only bakes (`{ placement }`), uploading new models in `setStatic` still blocks, so
+  keep the wait in front of that.
 - **The pipeline compile**: without `prepare`, the first frame after loading stalls while the
   browser compiles the pipelines it uses, and that stall is not in the `pipelines` phase. Create
   the renderer with `deferPipelines: true` and `await renderer.prepare()` behind the loading

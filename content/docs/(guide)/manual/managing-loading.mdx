@@ -371,28 +371,27 @@ try {
 }
 ```
 
-### Bake only, and the older names
+### Bake only
 
-The scene worker used to be a placement worker, which only baked. Its names still work:
-
-| older name | now |
-|---|---|
-| [`makePlacementWorker({ spawn })`](/docs/engine/api/worker/functions/makePlacementWorker/) | deprecated: `makeSceneWorker` typed as the bake-only [`PlacementWorker`](/docs/engine/api/worker/interfaces/PlacementWorker/) |
-| [`servePlacement()`](/docs/engine/api/worker/functions/servePlacement/) | deprecated: `serveScene()`, so an existing `placement.worker.ts` also serves encodes |
-| `makeInstanceLayer(renderer, { placement })` | bakes on the worker as before; `setStatic` still uploads new models on the main thread |
-
-Moving to the new names is two lines, the worker's import and the layer's option. `worker` takes
-the place of `placement` when both are given. A target without
-[`addEncodedModel`](/docs/engine/api/engine/interfaces/InstanceTarget/#addencodedmodel) (an
-`InstanceTarget` of your own) only bakes on a scene worker, and uploads on the main thread.
+A scene worker can do the bake alone. Give it to the layer as
+[`placement`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-placement) instead
+of `worker`: `commitAsync()` then bakes the static set on the worker, and `setStatic` still
+uploads new models on the main thread. The option is typed as the worker's bake half,
+[`PlacementWorker`](/docs/engine/api/worker/interfaces/PlacementWorker/), which every
+`SceneWorker` is. `worker` takes the place of `placement` when both are given.
 
 ```ts
 import { makeInstanceLayer } from "@voxolith/engine";
-import { makeSceneWorker } from "@voxolith/engine/worker"; // was makePlacementWorker
+import { makeSceneWorker } from "@voxolith/engine/worker";
 
-const worker = makeSceneWorker({ spawn }); // the worker file: serveScene(), was servePlacement()
-const layer = makeInstanceLayer(renderer, { load, worker }); // was { load, placement }
+const worker = makeSceneWorker({ spawn }); // the worker file calls serveScene()
+const layer = makeInstanceLayer(renderer, { load, placement: worker }); // bakes there, uploads here
 ```
+
+A target without
+[`addEncodedModel`](/docs/engine/api/engine/interfaces/InstanceTarget/#addencodedmodel) (an
+`InstanceTarget` of your own) only bakes on a scene worker either way, and uploads on the main
+thread.
 
 ### Adding a big model in slices
 
@@ -1112,8 +1111,6 @@ it:
 await layer.commitAsync();
 void worker.destroy(); // the bake is drawing; its cache write finishes in the background
 ```
-
-The deprecated `PlacementWorker` has the same `destroy()`.
 
 ## Coarse first, one swap
 

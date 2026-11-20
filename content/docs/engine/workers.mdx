@@ -363,17 +363,13 @@ if (scene) {
 The manual's [caching encodings and bakes](/docs/manual/managing-loading/#caching-encodings-and-bakes)
 has the trade-offs, the measured sizes and when a key is honest.
 
-### The older names
+### Bake only
 
-The scene worker used to be a placement worker, which only baked.
-[`makePlacementWorker`](/docs/engine/api/worker/functions/makePlacementWorker/) and
-[`servePlacement`](/docs/engine/api/worker/functions/servePlacement/) still work and are
-deprecated: `servePlacement()` is `serveScene()`, and `makePlacementWorker` is `makeSceneWorker`
-typed as the bake-only [`PlacementWorker`](/docs/engine/api/worker/interfaces/PlacementWorker/)
-(`register`, `has`, `drop`, `bake`, `pending`, `destroy`, which a `SceneWorker` has too). Given to
-a layer as `placement`, it bakes as before and the models upload on the main thread in
-`setStatic`. To move over, swap the two names and pass the worker as `worker` instead of
-`placement`.
+A [`SceneWorker`](/docs/engine/api/worker/interfaces/SceneWorker/) is also a
+[`PlacementWorker`](/docs/engine/api/worker/interfaces/PlacementWorker/), its bake half
+(`register`, `has`, `drop`, `bake`, `fromCache`, `pending`, `destroy`). Given to a layer as
+`placement` instead of `worker`, it only bakes, and the models upload on the main thread in
+`setStatic`. `worker` takes the place of `placement` when both are given.
 
 The request and response shapes are
 [`WorkerRequest`](/docs/engine/api/worker/type-aliases/WorkerRequest/) and

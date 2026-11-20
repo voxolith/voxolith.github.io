@@ -230,8 +230,8 @@ Two of those steps need not block, if the app opts in (see
 - **Uploads and placement.** With a scene worker, `setStatic` only sends the models it has not
   seen to be encoded, and `await layer.commitAsync()` adds them a few per frame and bakes the
   static set off the main thread. The page keeps painting throughout, so the `upload` and
-  `placement` rows count up like any other, and neither needs the paint-first wait. With the
-  older placement worker (`{ placement }`) only the bake moves: `setStatic` still uploads on the
+  `placement` rows count up like any other, and neither needs the paint-first wait. With a
+  worker that only bakes (`{ placement }`) only the bake moves: `setStatic` still uploads on the
   main thread, so keep the wait in front of it.
 - **Pipelines.** Without [`prepare`](/docs/manual/managing-loading/#awaitable-pipeline-warm-up),
   the `pipelines` phase times only the synchronous `createShaderModule` and `create*Pipeline`

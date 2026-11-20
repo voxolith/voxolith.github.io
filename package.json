@@ -4,7 +4,7 @@
   "type": "module",
   "description": "The Voxolith website and documentation at voxolith.github.io, built with Fumadocs as a static Next.js export",
   "scripts": {
-    "api": "bun install --cwd tools/api --silent && bun tools/api/run.ts",
+    "api": "bun install --cwd tools/api --frozen-lockfile --silent && bun tools/api/run.ts",
     "generators": "bun tools/generators.ts",
     "reference": "bun run api && bun run generators",
     "predev": "bun run reference",
@@ -17,26 +17,23 @@
     "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
-    "fumadocs-core": "^16.15.14",
-    "fumadocs-mdx": "^15.4.5",
-    "fumadocs-ui": "^16.15.14",
-    "lucide-react": "^1.48.0",
-    "next": "^16.3.6",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "fumadocs-core": "^16.19.5",
+    "fumadocs-mdx": "^15.6.4",
+    "fumadocs-ui": "^16.19.5",
+    "lucide-react": "^1.77.0",
+    "next": "^16.4.6",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.3",
+    "@tailwindcss/postcss": "^4.3.5",
     "@types/mdx": "^2.0.14",
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "postcss": "^8.5.28",
-    "serve": "^14.2.6",
-    "tailwindcss": "^4.3.3",
+    "postcss": "^8.5.33",
+    "serve": "^14.2.8",
+    "tailwindcss": "^4.3.5",
     "typescript": "^7.0.2"
-  },
-  "overrides": {
-    "mdast-util-to-markdown": "2.1.2"
   }
 }

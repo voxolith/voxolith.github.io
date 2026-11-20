@@ -192,9 +192,10 @@ loop.invalidate();
   [`hashModels: true`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-hashmodels)
   (a hash of the bytes on the worker, for models you built; saves the encode only). What the cache
   served ticks its phase with `cached: true`.
-- **Bake only.** The deprecated [`makePlacementWorker`](/docs/engine/api/worker/functions/makePlacementWorker/),
-  given as `placement`, bakes as before and leaves the uploads in `setStatic`. `worker` takes the
-  place of `placement` when both are given.
+- **Bake only.** The same scene worker given as
+  [`placement`](/docs/engine/api/engine/interfaces/InstanceLayerOptions/#property-placement)
+  instead of `worker` only bakes, and leaves the uploads in `setStatic`. `worker` takes the place
+  of `placement` when both are given.
 
 The manual's [scene worker](/docs/manual/managing-loading/#the-scene-worker) section covers it at
 length, with what it saved in the examples.
