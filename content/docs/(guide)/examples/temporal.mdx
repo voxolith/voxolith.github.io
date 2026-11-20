@@ -70,18 +70,23 @@ slowly, for the cost of a moving view.
 
 ## URL options
 
+All but `?show=` and `?e2e` are in the [Options panel](/docs/examples/#the-options-panel) (`?full` only on a device that gets the phone
+profile). `?temporal`, `?rotate`, `?always`, `?renderScale=`, `?angle=`, `?time=` and `?ambient=`
+apply at once, and the HUD's buttons change the same state, so the URL follows them;
+`?quality=`, `?yaw=`, `?seed=` and `?full` reload the page.
+
 | option | default (phone) | effect |
 |---|---|---|
-| `?temporal=1` | off | open with temporal accumulation on |
+| `?temporal` | off | open with temporal accumulation on |
 | `?rotate` | | open auto-rotating |
 | `?always` | | open redrawing every frame |
 | `?renderScale=` | 0.8 (0.5) | fixed render scale, 0.1 to 1; 0.3 on a CPU adapter |
 | `?quality=` | `medium` | `low`, `medium` or `high`; `low` on a CPU adapter, where temporal has nothing to accumulate (pass `?quality=medium` to exercise it there) |
-| `?angle=` | 0.02 | the moon's angular radius in radians |
+| `?angle=` | 0.02 | the moon's angular radius in radians, 0 to 0.2 |
 | `?time=` | 0.1 | time of day, 0 midnight to 0.5 noon; 0.1 is night with the moon 34° up, 0.98 is nightwood's higher moon, and by day the sun and sky are the engine's own |
-| `?ambient=` | 1 | sky light, as a multiple of the engine's own for that time; lower gives darker shadows |
+| `?ambient=` | 1 | sky light, as a multiple of the engine's own for that time, 0 to 4; lower gives darker shadows |
 | `?yaw=` | 305 | the camera's starting heading in degrees |
-| `?show=1`, `?show=2` | | the renderer's development views: tiles traced, samples per pixel |
+| `?show=1`, `?show=2` | | for tools: the renderer's development views: tiles traced, samples per pixel |
 | `?seed=` | `temporal` | a different layout |
 | `?full` | | desktop settings on a phone |
 | `?e2e` | | `window.temporalStats()` and `window.temporalSet({ temporal, rotate, always, angle })` |

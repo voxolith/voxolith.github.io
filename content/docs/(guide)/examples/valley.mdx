@@ -11,8 +11,8 @@ description: "The world valley at 20, 50 or 100 voxels per metre: coarse models 
 The same valley as the [world](/docs/examples/world/) (terrain, river, village, footpaths,
 forest, from the same `world/layout.ts`), at a finer voxel size. A desktop gets five times the
 resolution by default: 2 cm voxels, so single leaves and needles, bark furrows, bricks, roof
-tiles and mortar at their real size. A phone gets twice: 5 cm voxels. `?vpm=100`, or the scale
-button in the HUD on a desktop, makes it ten times: 1 cm voxels. At the default valley size that
+tiles and mortar at their real size. A phone gets twice: 5 cm voxels. `?vpm=100`, or "Voxels
+per metre" in the [Options panel](/docs/examples/#the-options-panel), makes it ten times: 1 cm voxels. At the default valley size that
 is a 128 m valley of 6,400 × 960 × 6,400 voxels at 2 cm (12,800 × 1,920 × 12,800 at 1 cm), which
 does not fit in memory at once, so the ground streams in around the view. At 1 cm, rats at
 their real size roam the village.
@@ -136,26 +136,29 @@ keeps the camera inside it.
 
 As on the [world](/docs/examples/world/#controls): drag to turn, right-drag or two fingers to
 pan, wheel or pinch to zoom, drag the lamp, double-tap to drop it, N for night and day, W for the
-weather. The button in the HUD steps between the device's default scale and one finer: 2 cm and
-1 cm on a desktop, 5 cm and 2 cm on a phone ("Switch to 1 cm", "Switch to 2 cm", ...). From any
-other scale it goes back to the default. It reloads the page, since every model is generated for
-its scale, and keeps every other URL option. The HUD title names the voxel size.
+weather. The scale is "Voxels per metre" in the [Options panel](/docs/examples/#the-options-panel): 20, 50 or
+100. Changing it reloads the page, since every model is generated for its scale, and keeps every
+other URL option. The HUD title names the voxel size.
 
 ## URL options
+
+All of these are in the [Options panel](/docs/examples/#the-options-panel) (`?full` only on a device that gets the phone profile).
+`?time=` and `?weather=` apply at once, as the Night/Day button, the weather menu and the N and W
+keys do; the rest reload the page.
 
 | option | default (phone) | effect |
 |---|---|---|
 | `?full` | | desktop settings on a phone |
-| `?vpm=` | 50 (20) | voxels per metre: 20, 50 or 100; anything else snaps to the nearest (the HUD's scale button) |
+| `?vpm=` | 50 (20) | voxels per metre: 20, 50 or 100; anything else snaps to the nearest |
 | `?scale=` | 4 (2) | valley size in 320-voxel tiles of the world page, 1 to 8 |
 | `?variants=` | 3 (1) | models per species, 1 to 10; 10 matches the world page exactly but needs over a gigabyte of GPU memory |
 | `?rats=` | 60 (20) at 100, else none | rats in the crowd, 0 to 400; a number forces a crowd at any scale, larger than life below 100 |
-| `?radius=` | 24 (16) | streamed radius, in metres (at least 8) |
+| `?radius=` | 24 (16) | streamed radius, in metres, 8 to 256 |
 | `?near=` | 18 | metres of ground around the view the first picture waits for (at most the radius); less is sooner, with holes at the edge of the first view |
 | `?coarse=` | on for a desktop at 50 and 100, off on a phone | `0`: no coarse stage, the fine models before the first picture; `1`: a coarse stage at any scale above 10 and on a phone |
 | `?seed=` | `voxolith` | a different valley |
-| `?season=` | `summer` | `spring`, `summer`, `autumn`, `winter` |
-| `?time=night` | | start at midnight by the lamp |
+| `?season=` | `summer` | `spring`, `summer`, `autumn`, `winter`; anything else is summer |
+| `?time=` | `day` | `night` starts at midnight by the lamp |
 | `?weather=` | `clear` | any [`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/) name |
 | `?rigged` | | pose the rats on the GPU instead of baking poses ([posed on the GPU](/docs/engine/stamping-and-crowds/#posed-on-the-gpu)) |
 

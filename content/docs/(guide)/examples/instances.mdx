@@ -47,12 +47,14 @@ the [valley](/docs/examples/valley/) does, and the 256-slot limit no longer appl
 
 ## URL options
 
+All are in the [Options panel](/docs/examples/#the-options-panel), and reload the page.
+
 | option | default | effect |
 |---|---|---|
 | `?trees=` | 160 | number of trees, 0 to 2000 |
 | `?rats=` | 400 | number of rats, 0 to 3000 |
 | `?stamp` | | stamp the trees into the world instead of instancing them |
-| `?upscale=` | | an integer of at least 2: a check of the renderer's [scaled models](/docs/renderer/instances/#scaled-models), not a pattern to copy. Every other tree is a copy of its model that many times coarser, drawn that many times larger (`addModel(src, { scale })`), so a blocky tree should have the outline and height of the fine trees of the same model, standing where it was placed. It uploads and places on the main thread, without the scene worker |
+| `?upscale=` | | an integer from 2 to 16: a check of the renderer's [scaled models](/docs/renderer/instances/#scaled-models), not a pattern to copy. Every other tree is a copy of its model that many times coarser, drawn that many times larger (`addModel(src, { scale })`), so a blocky tree should have the outline and height of the fine trees of the same model, standing where it was placed. It uploads and places on the main thread, without the scene worker |
 | `?seed=` | `instances` | a different field |
 
 Plus the [common ones](/docs/examples/#common-url-options), including `?perf`.

@@ -122,18 +122,22 @@ renderer.render({ ...frame(), ...atm, time: still ? 0 : now / 1000 });
 
 ## URL options
 
+All but the last two rows are in the [Options panel](/docs/examples/#the-options-panel). `?time=`, `?weather=` and `?still` apply at
+once (the Night/Day button, the weather menu and the N and W keys change the same state, and the
+URL follows); the rest reload the page.
+
 | option | default | effect |
 |---|---|---|
 | `?scale=` | 4 | the valley is `scale` × `scale` tiles of 320 voxels (1 to 8) |
 | `?seed=` | `voxolith` | any string; a different valley |
-| `?season=` | `summer` | `spring`, `summer`, `autumn` or `winter` foliage |
-| `?variants=` | 10 | models generated per species |
-| `?workers=0` | | generate the models and fill the ground on the main thread instead of workers |
+| `?season=` | `summer` | `spring`, `summer`, `autumn` or `winter` foliage; anything else is summer |
+| `?variants=` | 10 | models generated per species, 1 to 16 |
 | `?radius=` | 1.5 × width | streamed radius around the view, in voxels |
-| `?time=night` | | start at midnight, close to the lamp |
+| `?time=` | `day` | `night` starts at midnight, close to the lamp |
 | `?weather=` | `clear` | `clear`, `cloudy`, `rain`, `storm`, `snow`, `fog`; also any other [`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/) name |
 | `?still` | | freeze the water and render on demand |
-| `?selftest=1`, `2`, `3` | | voxel-lookup debug bands |
+| `?workers=0` | | for tools: generate the models and fill the ground on the main thread instead of workers |
+| `?selftest=1`, `2`, `3` | | for tools: voxel-lookup debug bands |
 
 Plus the [common ones](/docs/examples/#common-url-options).
 

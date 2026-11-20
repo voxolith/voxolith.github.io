@@ -100,7 +100,7 @@ this for a settlement.
 
 ## Streaming fine terrain
 
-At 20, 50 or 100 voxels per metre the ground no longer fits in memory at once, so it has to stream.
+At 20 voxels per metre and finer the ground no longer fits in memory at once, so it has to stream.
 `refineTerrain(terrain, k, { seed })` from `@voxolith/gen-terrain` is the same terrain `k` times
 finer, answered a brick at a time. The coarse heightfield stays the source of truth: levelled pads
 stay flat, the river stays put. The fine one adds a smooth surface, grass blades and pebbles, and

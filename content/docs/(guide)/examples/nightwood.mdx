@@ -23,7 +23,7 @@ world-space light comes next.
 
 - **5, 2 or 1 cm voxels close up.** Every model is generated at 50 voxels per metre by default
   on a desktop and 20 on a phone (a touch-only pointer, or storage bindings under 512 MiB), or one
-  scale finer with the HUD's scale button (which reloads the scene), on the generator workers (the world page's worker, with its model cache in production builds) and drawn as
+  scale finer from the [Options panel](/docs/examples/#the-options-panel) (which reloads the scene), on the generator workers (the world page's worker, with its model cache in production builds) and drawn as
   instances: about 250 trees, 850 shrubs and 900 plants from 12 models. See
   [Scales and refinement](/docs/generators/scales-and-refinement/).
 - **Mist.** The weather is the engine's `fog` preset
@@ -134,21 +134,23 @@ measuring.
 ## Controls
 
 Drag (or click for mouse look) to look around; Q/E turn and R/F look up and down; a gamepad's
-right stick works too. The button in the HUD steps between the device's default scale and one
-finer: 2 cm and 1 cm on a desktop, 5 cm and 2 cm on a phone. From any other scale it goes back to
-the default. It reloads the page and keeps every other URL option. The HUD title names the voxel
-size.
+right stick works too. The scale is "Voxels per metre" in the
+[Options panel](/docs/examples/#the-options-panel): 20, 50 or 100. Changing it reloads the page and keeps
+every other URL option. The HUD title names the voxel size.
 
 ## URL options
+
+All of these are in the [Options panel](/docs/examples/#the-options-panel) (`?full` only on a device that gets the phone profile).
+`?weather=` and `?mist=` apply at once; the rest reload the page.
 
 | option | default (phone) | effect |
 |---|---|---|
 | `?full` | | desktop settings on a phone |
-| `?vpm=` | 50 (20) | voxels per metre: 20, 50 or 100; anything else snaps to the nearest (the HUD's scale button) |
-| `?near=` | 8 | metres of ground around the camera the first picture waits for; 6 left holes in the fog at 100 |
+| `?vpm=` | 50 (20) | voxels per metre: 20, 50 or 100; anything else snaps to the nearest |
+| `?near=` | 8 | metres of ground around the camera the first picture waits for, 0 to 40; 6 left holes in the fog at 100 |
 | `?coarse=` | on for a desktop at 50 and 100, off on a phone | `0`: no coarse stage, the fine models before the first picture; `1`: a coarse stage at any scale above 10 and on a phone |
 | `?weather=` | `fog` | any [`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/) name; `clear` for no mist |
-| `?mist=` | 0.8 | the weather's fog thickness, times the engine's |
+| `?mist=` | 0.8 | the weather's fog thickness, times the engine's, 0 to 4 |
 | `?view=` | 24 | view distance in metres, 8 to 40 |
 | `?fireflies=` | 24 (12) | fireflies, 0 to 28 |
 | `?trees=`, `?shrubs=`, `?plants=` | 1 | density of each, 0 to 1 |
@@ -156,7 +158,7 @@ size.
 | `?temporal=` | on (off on the Low preset) | `0`: shadows and AO traced in full every frame |
 | `?reflections=` | off | `1`: metal, glass and water trace their secondary rays |
 | `?upscale=` | 1 (adaptive from 0.5) | the fraction of the output size the scene is traced at, 0.25 to 1; needs temporal |
-| `?renderScale=` | adaptive | a fixed render scale, for measuring |
+| `?renderScale=` | adaptive | a fixed render scale up to 2, for measuring; 0 is adaptive |
 
 Plus the [common ones](/docs/examples/#common-url-options).
 
