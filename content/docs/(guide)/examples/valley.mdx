@@ -65,7 +65,7 @@ above and the measurements at 100 below are from then, and an old `?vpm=100` lin
   none. `?rats=N` (the panel's Rats) forces a crowd at any scale, and `?rats=0` gives none.
 - **A phone profile.** A touch-only pointer, or a GPU whose storage bindings are under 512 MiB,
   gets a lighter valley: 5 cm voxels (20 per metre), a 2 × 2 tile map, one model per species, a
-  16 m streamed radius, the Low quality preset, and one loading stage: the fine models before the first picture, with no coarse stage. `?full` gives a phone
+  16 m streamed radius, the examples' [phone profile](/docs/manual/mobile-and-pwa/#the-examples-phone-profile) for rendering (Medium with temporal accumulation, the traced fraction adapted to the frame time; here with `maxSteps` 768 and shorter shadow rays), and one loading stage: the fine models before the first picture, with no coarse stage. `?full` gives a phone
   the desktop settings.
 - **A model cache.** Production builds keep the generated models in IndexedDB, keyed by the
   worker's hashed URL, so a second visit loads in seconds and a new build never reads an old
@@ -165,7 +165,7 @@ keys do, and so do the shared [renderer options](/docs/examples/#renderer-option
 | `?time=` | `day` | `night` starts at midnight by the lamp |
 | `?weather=` | `clear` | any [`ATMOSPHERES`](/docs/engine/api/atmosphere/variables/ATMOSPHERES/) name |
 | `?sky=` | `classic` | `physical`: the engine's physical sky as the background and the light |
-| `?quality=` and the other [renderer options](/docs/examples/#renderer-options) | `medium` (`low`) | as on every page; `low` on a CPU adapter too |
+| `?quality=` and the other [renderer options](/docs/examples/#renderer-options) | `medium` | as on every page: `low` on a CPU adapter, the [phone profile](/docs/manual/mobile-and-pwa/#the-examples-phone-profile) on a phone |
 | `?rigged` | | pose the rats on the GPU instead of baking poses ([posed on the GPU](/docs/engine/stamping-and-crowds/#posed-on-the-gpu)) |
 
 Plus the [common ones](/docs/examples/#common-url-options).

@@ -7,7 +7,8 @@ description: "Drop a Minecraft .mca region file on the page, crop and downsample
 [Source](https://github.com/voxolith/examples/blob/main/src/minecraft-region/main.ts)
 
 The page starts empty: drop a Minecraft Anvil region file (`r.X.Z.mca`, from any world's
-`region/` folder) onto it. It crops the middle 256 × 256 blocks of the region, keeps every second one, and
+`region/` folder) onto it, or pick one with the HUD's "Open .mca" button, which is how a phone
+loads a file. It crops the middle 256 × 256 blocks of the region, keeps every second one, and
 lets you fly through it in first person.
 
 <Callout>
@@ -70,6 +71,7 @@ const r = await createRenderer(gpu, {
 
 ## URL options
 
-None besides the [common ones](/docs/examples/#common-url-options).
+Only the shared [renderer options](/docs/examples/#renderer-options), in the [Options panel](/docs/examples/#the-options-panel), all applying at once: the
+`high` preset by default, and the [phone profile](/docs/manual/mobile-and-pwa/#the-examples-phone-profile) on a phone. Plus the [common ones](/docs/examples/#common-url-options).
 
 See also [File formats](/docs/manual/file-formats/).

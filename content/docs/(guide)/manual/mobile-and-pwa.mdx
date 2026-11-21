@@ -7,7 +7,7 @@ Phones run WebGPU, but with a fraction of a desktop GPU's memory and fill rate, 
 device pixels per CSS pixel, and a thumb instead of a mouse. This page covers how the examples
 adapt to that, how to add touch controls, and how Demolition Shot, the engine's showcase, ships as
 an installable app that plays offline. Which settings a phone gets is your game's decision; the
-values below are the valley example's (the nightwood example uses the same test and scales).
+values below are the examples', which share one phone profile, and the valley's for content.
 
 ## Knowing it is a phone
 
@@ -22,7 +22,7 @@ const phone = !params.has("full") && (touchOnly || smallGpu);
 ```
 
 A tablet with a keyboard and trackpad reports a fine pointer and gets the desktop settings, which is
-usually right.
+usually right. A software (CPU) adapter never gets the phone profile: it keeps the Low preset.
 
 ## A lighter profile
 
@@ -31,7 +31,7 @@ generate and draw). A phone gets 20 voxels per metre (5 cm voxels), which the en
 support as a scale of their own ([at 20 voxels per metre](/docs/generators/scales-and-refinement/#at-20-voxels-per-metre)):
 about an eighth of the bricks of 50, and 19 MB of GPU memory for the valley against 126 MB. It
 also shrinks the rest: a 2 × 2 tile map, one model per species, a 16 m streamed radius instead of
-24, the `low` preset with a shorter `maxSteps`, and a starting render scale of 0.6. The phone profile has
+24, and the render settings every example gives a phone ([below](#the-examples-phone-profile)). The phone profile has
 no rats: at 20 voxels per metre the page's smallest rat would be 1.25 m long (a desktop at 50 gets
 60 at real size), and `?rats=` adds them anyway; see
 [sizing for a world](/docs/generators/creature/#sizing-for-a-world). Each setting can still be
@@ -45,8 +45,8 @@ forced from the page's [Options panel](/docs/examples/#the-options-panel) or the
   show.
 - Traced pixels: with `temporal` on, [`upscale`](/docs/manual/performance/#temporal-upscaling)
   traces a fraction of the output and resolves the rest over frames, so the output keeps its
-  resolution. Nightwood starts a phone at 0.5 and lets `makePerf` move the fraction between 0.25
-  and 1 towards 30 fps.
+  resolution. The examples adapt that fraction to the frame time on a phone
+  ([below](#the-examples-phone-profile)).
 - Voxel size: a coarser `voxelsPerMetre` cuts memory and ray steps together (nightwood takes
   59 ms a frame at 20 against 144 ms at 50 at render scale 1, 1280 × 720).
 - Content: fewer model variants, a smaller streamed radius, fewer animated members.
@@ -56,9 +56,52 @@ forced from the page's [Options panel](/docs/examples/#the-options-panel) or the
   device's `uncapturederror` and `lost` for this.
 
 How far behind a phone is, measured: on a Xiaomi POCO F5 (Adreno 725, Chrome on Android 15)
-tracing costs roughly 45 to 90 times more per pixel than on a desktop Radeon 890M. Nightwood ran
-at 1 fps there with the phone profile alone and at about 46 fps with the adaptive traced
-fraction, at the price of a soft picture when it sits at 0.25.
+tracing costs roughly 45 to 90 times more per pixel than on a desktop Radeon 890M. With an
+earlier version of the profile, nightwood ran at 1 fps there with fixed settings and at about 46
+fps with an adaptive traced fraction, at the price of a soft picture when it sat at 0.25.
+
+### The examples' phone profile
+
+Every example page gives a phone the same render settings from one place
+([`shared/quality.ts`](https://github.com/voxolith/examples/blob/main/src/shared/quality.ts)),
+because what a phone is slow at is rays and their steps, not shading:
+
+- the Medium preset with temporal accumulation on, so a still view costs little more than its
+  primary rays, and reflections off;
+- the output at render scale 0.6 of a pixel ratio capped at 2, and `maxSteps` 256 unless the
+  page's scene needs more;
+- the traced fraction (`RenderQuality.upscale`) steered towards 60 fps by a small controller.
+
+The controller moves between a few levels (0.35, 0.42, 0.5, 0.6, 0.7, 0.85, 1), starting at the
+lowest. It reads the GPU time where the device has timestamp queries, and the gap between frames
+otherwise. Over budget for about a second, it steps down and remembers the level it left as too
+slow for a minute. It steps up only when the next level is predicted to fit with room to spare,
+held for two seconds. Between the two lies a wide band in which nothing changes, since every
+change restarts the resolve and a still picture should not be resampled.
+
+The floor is 0.35. Below it fine detail does not come back between two camera moves and the
+picture reads as a blur, so a page that cannot hold 60 fps at the floor runs slower, not softer.
+The profile aims at 60 fps and settles lower where the device cannot hold it; it has not been
+measured on a phone since it replaced the earlier one.
+
+Pages whose subject always moves (chase, rigged, instances) shrink the render scale by the same
+fraction instead of upscaling: temporal upscaling builds its sharpness from frames in which a
+surface stays put, and what moves under it smears. The picture there is blockier but crisp.
+
+Each setting is the default of an option, so the [Options panel](/docs/examples/#the-options-panel)
+shows the phone's effective values and any explicit option wins:
+
+| option | on a phone |
+|---|---|
+| `?full` | the desktop settings, content and rendering both |
+| `?perf` | a line in the HUD with the fps, the traced fraction and the GPU time |
+| `?upscale=0` | "adapt": the phone's default, and the same controller on any device |
+| `?upscale=`, `?renderScale=`, `?quality=`, `?temporal=0`, `?reflections` | that value, fixed |
+
+Some pages also carry less: the valley as above; nightwood at 20 voxels per metre with 12
+fireflies and half the shrubs and ground plants; swarm 120 rats instead of 300; instances 80 trees
+and 120 rats instead of 160 and 400. The temporal page fixes the traced fraction at 0.35 with no
+controller, so its numbers stay comparable. The bench takes no part.
 
 ## Touch controls and gestures
 

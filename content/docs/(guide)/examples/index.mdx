@@ -61,7 +61,7 @@ the query string, leaving out any value equal to its default on that device, so 
 always holds a link to what you see. Each example's page says which of its options apply at once.
 Beside its own options, every panel has the same [renderer options](#renderer-options): quality,
 temporal accumulation, the traced fraction, reflections, a fixed render scale and a debug view.
-hello-vox, orbit and minecraft-region have no options, so no button; switches meant for tools
+hello-vox, orbit and minecraft-region have only those. Switches meant for tools
 (`?e2e` and a few per page) work in the URL only. A toggle is on as `?key` or `?key=1` and off as
 `?key=0`; a number outside its range is clamped. Each page declares its options once, in its
 `main.ts`, through [`src/shared/options.ts`](https://github.com/voxolith/examples/blob/main/src/shared/options.ts).
@@ -73,17 +73,20 @@ be tried at another quality without editing code:
 
 | option | default | effect |
 |---|---|---|
-| `?quality=` | the page's (`low` on a CPU adapter) | `low`, `medium` or `high`: the renderer's [preset](/docs/renderer/quality-and-performance/) |
-| `?temporal` | off | [temporal accumulation](/docs/renderer/quality-and-performance/#temporal-accumulation) of shadows and ambient occlusion; nothing to accumulate on `low` |
-| `?upscale=` | 1 | with temporal on: the fraction of the output size that is traced, 0.25 to 1 ([temporal upscaling](/docs/renderer/quality-and-performance/#temporal-upscaling)) |
-| `?reflections=0` | on | off compiles out the secondary rays of water, metal and glass |
+| `?quality=` | the page's (`medium` on a phone, `low` on a CPU adapter) | `low`, `medium` or `high`: the renderer's [preset](/docs/renderer/quality-and-performance/) |
+| `?temporal` | off (on, on a phone) | [temporal accumulation](/docs/renderer/quality-and-performance/#temporal-accumulation) of shadows and ambient occlusion; nothing to accumulate on `low` |
+| `?upscale=` | 1 (0 on a phone) | with temporal on: the fraction of the output size that is traced, up to 1 ([temporal upscaling](/docs/renderer/quality-and-performance/#temporal-upscaling)); 0 adapts it to the frame time, between 0.35 and 1 |
+| `?reflections=0` | on (off on a phone) | off compiles out the secondary rays of water, metal and glass |
 | `?renderScale=` | 0 | a fixed render scale up to 2; 0 leaves it to the page, adaptive where it uses `makePerf` |
 | `?debug=` | | `10`: how many steps each primary ray took; `1`: the walk without empty-space skipping |
+| `?perf` | | the page's performance overlay; on a phone, or wherever the traced fraction adapts, also a HUD line with the fps, the traced fraction and the GPU time |
+| `?full` | | on a phone: the desktop settings (shown only on a device that gets the phone profile) |
 
-They apply at once on world, valley, creature, swarm, instances, rigged and bench. On temporal
-`?quality=` reloads and the rest apply at once; on nightwood all but `?debug=` reload. The
-instances page has an `?upscale=` of its own (scaled copies), so it lacks the shared one. A page's
-table lists them only where its defaults differ.
+The first six apply at once on every page; only on temporal does `?quality=` reload. `?perf` and
+`?full` reload. A phone's defaults are the examples' [phone profile](/docs/manual/mobile-and-pwa/#the-examples-phone-profile); a CPU adapter
+never gets it. The instances page has an `?upscale=` of its own (scaled copies), so it lacks the
+shared one, and the bench, which measures, takes no phone profile and no `?upscale=0`. A page's
+table lists these only where its defaults differ.
 
 ## Common URL options
 

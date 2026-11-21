@@ -44,8 +44,8 @@ world-space light comes next.
   door handle and gutter. Together they took a frame from 56.6 to 24.5 ms at 50 voxels per metre
   and render scale 1 on the desktop Radeon.
 - **Temporal upscaling.** `?upscale=0.5` traces at half the output size and resolves to it over
-  frames. A phone starts there, and its adaptive controller then drives the traced fraction
-  instead of the render scale ([below](#cost)).
+  frames. On a phone the fraction adapts to the frame time instead of the render scale
+  ([below](#cost)).
 - **Point lights.** The lantern is a shadowed point light with a halo. Each firefly is a small
   unshadowed one with a halo, wandering its own slow path and pulsing, up to 28 of the renderer's
   32 lights. The window glass is emissive, which lights only itself (see
@@ -119,16 +119,18 @@ into the instances there. So this page is expensive, and the cost follows the vo
 voxels per metre against 86 ms at 50, which is why phones start at 20; the adaptive render scale
 brings that down to what the device can keep up with. (Those two figures predate the defaults
 above: with temporal shadows on and reflections off, 50 voxels per metre takes 24.4 ms, and 9.0 ms
-at `?upscale=0.5`.) Phones also get 12 fireflies and the Medium
+at `?upscale=0.5`.) Phones also get 12 fireflies, half the shrubs and ground plants and the Medium
 preset, and load in one stage, with no coarse models first.
 
-On a phone the page does not lower the output resolution to keep up. The render scale stays
-fixed (0.6 at most), the scene starts at `upscale` 0.5, and `makePerf` drives the traced fraction
-between 0.25 and 1 towards 30 fps (`targetMs: 33.4`), calling `renderer.setQuality({ upscale })`
-when it changes. Measured on a Xiaomi POCO F5 (Adreno 725, Chrome on Android 15), tracing costs
-roughly 45 to 90 times more per pixel than on the desktop Radeon 890M; the page went from 1 fps to
-about 46 fps this way, with a soft picture at 0.25. `?upscale=`, `?renderScale=` or `?temporal=0`
-turns the adaptive fraction off. `?debug=10` (`renderer.setDebug(10)`) shows the steps each ray took; `?renderScale=` fixes the scale for
+On a phone the page does not lower the output resolution to keep up. It uses the examples'
+[phone profile](/docs/manual/mobile-and-pwa/#the-examples-phone-profile): the render scale stays at 0.6 and a
+controller steers the traced fraction between 0.35 and 1 towards 60 fps, settling lower where the
+device cannot hold it. Measured on a Xiaomi POCO F5 (Adreno 725, Chrome on Android 15), tracing
+costs roughly 45 to 90 times more per pixel than on the desktop Radeon 890M; an earlier
+controller, which went down to 0.25 and aimed at 30 fps, took the page from 1 fps to about 46 fps
+there, with a soft picture at 0.25. The current one has not been measured on a phone. `?upscale=`
+with a value, `?renderScale=` or `?temporal=0` turns the adaptive fraction off; `?upscale=0` turns
+it on anywhere. `?debug=10` (`renderer.setDebug(10)`) shows the steps each ray took; `?renderScale=` fixes the scale for
 measuring.
 
 ## Controls
@@ -141,8 +143,7 @@ every other URL option. The HUD title names the voxel size.
 ## URL options
 
 All of these are in the [Options panel](/docs/examples/#the-options-panel) (`?full` only on a device that gets the phone profile).
-`?weather=`, `?mist=` and `?debug=` apply at once; the rest reload the page, the other shared
-[renderer options](/docs/examples/#renderer-options) included.
+`?weather=`, `?mist=` and the shared [renderer options](/docs/examples/#renderer-options) apply at once; the rest reload the page.
 
 | option | default (phone) | effect |
 |---|---|---|
@@ -154,12 +155,13 @@ All of these are in the [Options panel](/docs/examples/#the-options-panel) (`?fu
 | `?mist=` | 0.8 | the weather's fog thickness, times the engine's, 0 to 4 |
 | `?view=` | 24 | view distance in metres, 8 to 40 |
 | `?fireflies=` | 24 (12) | fireflies, 0 to 28 |
-| `?trees=`, `?shrubs=`, `?plants=` | 1 | density of each, 0 to 1 |
+| `?trees=` | 1 | tree density, 0 to 1 |
+| `?shrubs=`, `?plants=` | 1 (0.5) | density of each, 0 to 1 |
 | `?seed=` | `nightwood` | a different wood |
 | `?quality=` | `high` (`medium`) | `low`, `medium` or `high`; `low` on a CPU adapter |
 | `?temporal=` | on (off on the Low preset) | `0`: shadows and AO traced in full every frame |
 | `?reflections=` | off | `1`: metal, glass and water trace their secondary rays |
-| `?upscale=` | 1 (adaptive from 0.5) | the fraction of the output size the scene is traced at, 0.25 to 1; needs temporal |
+| `?upscale=` | 1 (0, adaptive) | the fraction of the output size the scene is traced at, up to 1; needs temporal; 0 adapts it between 0.35 and 1 |
 | `?renderScale=` | adaptive | a fixed render scale up to 2, for measuring; 0 is adaptive |
 | `?debug=` | | `10`: the step heatmap; `1`: the walk without empty-space skipping |
 
