@@ -34,6 +34,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: voxolith.github.io
+          fetch-depth: 0 # the sitemap dates each page by its last commit
       - uses: actions/checkout@v7
         with:
           repository: voxolith/renderer
